@@ -14,6 +14,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # precisa das tags anteriores para montar as notas
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -26,6 +28,17 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: node scripts/write-oauth.mjs
+      # A Release é criada antes do build: se o electron-builder criar, ele cria duas ao mesmo tempo
+      # (uma só com o .blockmap). As notas são os commits desde a versão anterior.
+      - name: Criar a Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          git log ${prev:+$prev..}"$TAG" --no-merges --pretty='- %s' | grep -vE '^- [0-9]+\.[0-9]+\.[0-9]+$' > notes.md || true
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "janjahaters $TAG" --notes-file notes.md
       - run: npx electron-builder --win nsis --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
