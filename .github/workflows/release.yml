@@ -25,7 +25,7 @@ jobs:
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: node -e "const {GOOGLE_CLIENT_ID:id,GOOGLE_CLIENT_SECRET:s}=process.env; if(id&&s) require('fs').writeFileSync('oauth.json', JSON.stringify({clientId:id,clientSecret:s})); console.log(id&&s?'login com Google ativado':'sem secrets: login com Google desligado')"
+        run: node scripts/write-oauth.mjs
       - run: npx electron-builder --win nsis --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
