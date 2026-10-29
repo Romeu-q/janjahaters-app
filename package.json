@@ -6,7 +6,7 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "build:ui": "esbuild renderer/app.js --bundle --format=iife --target=chrome120 --outfile=renderer/bundle.js",
+    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --outfile=renderer/bundle.js",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
     "release": "npm version patch && git push --follow-tags"
@@ -20,7 +20,8 @@
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",
-      "renderer/icon.png"
+      "renderer/icon.png",
+      "renderer/vendor/**"
     ],
     "directories": {
       "output": "dist"
@@ -50,6 +51,14 @@
         "repo": "janjahaters-app",
         "releaseType": "release"
       }
+    ],
+    "protocols": [
+      {
+        "name": "janjahaters",
+        "schemes": [
+          "janjahaters"
+        ]
+      }
     ]
   },
   "dependencies": {
@@ -57,6 +66,7 @@
     "youtubei.js": "^18.3.0"
   },
   "devDependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "electron": "^45.1.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",

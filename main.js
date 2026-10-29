@@ -30,7 +30,7 @@ app.on('child-process-gone', (e, details) => {
 // o player do YouTube não funciona a partir de file://.
 const UI_PORT = 47610 + PROFILE;
 const RENDERER = path.join(__dirname, 'renderer');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml' };
+const MIME = { '.wasm': 'application/wasm', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 // O YouTube recusa embed vindo de um IP (erro 150), então a janela abre em "localhost".
 // Escuta só no loopback (IPv4 e, se existir, IPv6), nunca na rede.
@@ -91,10 +91,34 @@ function createWindow() {
   });
 }
 
-app.on('second-instance', () => {
+// ----- convite por link: janjahaters://join/CODIGO -----
+// A página do convite (GitHub Pages) abre esse endereço; o Windows chama o app com ele nos argumentos.
+const PROTOCOL = 'janjahaters';
+// só o app instalado se registra (o instalador também registra); o modo de desenvolvimento não toma o lugar dele
+if (app.isPackaged) app.setAsDefaultProtocolClient(PROTOCOL);
+let pendingInvite = null;
+function inviteFrom(argv) {
+  const url = argv.find((a) => String(a).toLowerCase().startsWith(PROTOCOL + '://'));
+  const m = url && decodeURIComponent(url).match(/join\/?([A-Za-z0-9-]{16,60})/);
+  return m ? m[1] : null;
+}
+function deliverInvite(code) {
+  if (!code) return;
+  pendingInvite = code;
+  if (win && !win.webContents.isLoading()) win.webContents.send('invite', code);
+}
+deliverInvite(inviteFrom(process.argv));
+ipcMain.handle('take-invite', () => {
+  const code = pendingInvite;
+  pendingInvite = null;
+  return code;
+});
+
+app.on('second-instance', (e, argv) => {
   if (!win) return;
   if (win.isMinimized()) win.restore();
   win.focus();
+  deliverInvite(inviteFrom(argv));
 });
 
 app.whenReady().then(async () => {

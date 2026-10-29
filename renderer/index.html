@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream:; connect-src 'self' wss: https:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream:; connect-src 'self' wss: https:">
   <title>janjahaters</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -66,7 +66,7 @@
       </header>
 
       <section id="textView" class="view">
-        <div id="messages"></div>
+        <div id="messages" class="chat-scroll"></div>
         <div id="typing"></div>
         <form id="composer" autocomplete="off">
           <div id="pending"></div>
@@ -84,6 +84,7 @@
           <img id="npArt" alt="">
           <div class="np-text"><b id="npTitle"></b><span id="npSub"></span></div>
           <div class="np-eq"><span></span><span></span><span></span></div>
+          <button type="button" class="icon-btn" id="npMute" title="Mutar música (só para você)"><i data-icon="volume-2"></i></button>
         </div>
         <section id="stage"></section>
         <div id="sndFeed"></div>
@@ -102,6 +103,7 @@
     <aside id="right">
       <nav class="tabs">
         <button class="tab active" data-tab="people"><i data-icon="users"></i>Pessoas</button>
+        <button class="tab" data-tab="chat"><i data-icon="message-square"></i>Chat<span class="badge" id="callBadge" hidden></span></button>
         <button class="tab" data-tab="music"><i data-icon="list-music"></i>Música</button>
         <button class="tab" data-tab="sounds"><i data-icon="drum"></i>Sons</button>
         <span class="tab-ink" id="tabInk"></span>
@@ -110,6 +112,15 @@
       <section class="pane" id="panePeople">
         <ul id="peopleList" class="people"></ul>
         <p class="hint" id="aloneHint">Ninguém mais online. Mande o convite para os amigos.</p>
+      </section>
+
+      <section class="pane" id="paneChat" hidden>
+        <div class="call-chat-head" id="callChatHead"></div>
+        <div id="callMessages" class="chat-scroll"></div>
+        <form id="callComposer" class="call-composer" autocomplete="off">
+          <textarea id="callInput" rows="1" maxlength="2000" placeholder="Mensagem para a call · /play música"></textarea>
+          <button type="button" class="icon-btn" id="callEmoji" title="Emoji"><i data-icon="face-slightly-smiling-plus"></i></button>
+        </form>
       </section>
 
       <section class="pane" id="paneMusic" hidden>
@@ -133,7 +144,7 @@
               <button class="icon-btn" id="plRestart" title="Voltar ao início"><i data-icon="skip-back"></i></button>
               <button class="play-btn" id="plPlay" title="Tocar / pausar"><i data-icon="play"></i></button>
               <button class="icon-btn" id="plSkip" title="Próxima"><i data-icon="skip-forward"></i></button>
-              <label class="pl-vol" title="Volume da música para você"><i data-icon="volume-2"></i><input type="range" id="plVol" min="0" max="100"></label>
+              <span class="pl-vol"><button type="button" class="icon-btn" id="plMute" title="Mutar música (só para você)"><i data-icon="volume-2"></i></button><input type="range" id="plVol" min="0" max="100" title="Volume da música para você"></span>
             </div>
           </div>
 
@@ -170,7 +181,8 @@
       <p class="muted">Call, stream e música com seus amigos. Sem conta e sem servidor: tudo direto entre vocês.</p>
       <label>Seu nome<input id="suName" maxlength="32" required autofocus></label>
       <label>Sua cor<div class="colors" id="suColors"></div></label>
-      <div class="seg">
+      <p class="invite-note" id="suInviteNote" hidden>Você recebeu um convite. É só escolher seu nome.</p>
+      <div class="seg" id="suSeg">
         <label><input type="radio" name="suMode" value="new" checked><span>Criar grupo</span></label>
         <label><input type="radio" name="suMode" value="join"><span>Entrar com convite</span></label>
       </div>
@@ -185,7 +197,8 @@
   <dialog id="inviteDlg">
     <h2>Convidar amigos</h2>
     <p class="muted">Mande o app janjahaters e este código. Quem tiver o código entra no grupo, então mande só para quem você confia.</p>
-    <div class="code-box"><input id="inviteCode" readonly><button class="primary" id="btnCopyCode"><i data-icon="copy"></i>Copiar</button></div>
+    <label>Link de convite<span class="code-box"><input id="inviteLink" readonly><button class="primary" id="btnCopyLink"><i data-icon="link"></i>Copiar link</button></span></label>
+    <label>Ou o código<span class="code-box"><input id="inviteCode" readonly><button class="ghost" id="btnCopyCode"><i data-icon="copy"></i>Copiar</button></span></label>
     <menu><button class="ghost" data-close>Fechar</button></menu>
   </dialog>
 
@@ -211,7 +224,15 @@
         <label>Microfone<select id="stMic"></select></label>
         <label>Saída de áudio<select id="stOut"></select></label>
         <div class="mic-test"><span>Teste do mic</span><div class="meter"><div id="micMeter"></div></div></div>
-        <label class="check"><input type="checkbox" id="stNoise"> Supressão de ruído e eco</label>
+        <label>Supressão de ruído
+          <select id="stNoise">
+            <option value="strong">Forte (IA: tira teclado, ventilador, barulho de fundo)</option>
+            <option value="basic">Básica (do Windows/navegador)</option>
+            <option value="off">Desligada</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="stEcho"> Cancelamento de eco (para quem usa caixa de som)</label>
+        <label class="check"><input type="checkbox" id="stHear"> Me ouvir no teste do mic (use fone)</label>
         <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair</label>
       </div>
     </div>
