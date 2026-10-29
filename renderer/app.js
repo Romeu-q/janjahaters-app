@@ -3,7 +3,12 @@ import { animate, stagger } from 'motion';
 import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
 import {
   createElement,
+  ArrowDown,
   AudioLines,
+  Check,
+  PictureInPicture2,
+  RefreshCw,
+  Reply,
   BadgeCheck,
   Bot,
   LogOut,
@@ -95,7 +100,12 @@ function fmtTime(ms) {
 
 // ----- ícones (lucide) -----
 const ICONS = {
+  'arrow-down': ArrowDown,
   'audio-lines': AudioLines,
+  check: Check,
+  pip: PictureInPicture2,
+  refresh: RefreshCw,
+  reply: Reply,
   copy: Copy,
   'disc-3': Disc3,
   'face-slightly-smiling-plus': FaceSlightlySmilingPlus,
@@ -326,14 +336,14 @@ function onRecsChanged(list) {
         else if (last && m.ts >= Number(last)) appendMessage(m, box);
         else rerender.add(box);
       }
-      if (m.del || m.uid === me.id) continue;
+      if (m.del || m.edited || m.uid === me.id) continue;
       const isCall = channel(m.ch)?.type === 'voice';
       if (isCall && m.ch === callChatCh() && currentTab !== 'chat') S.callUnread++;
       else if (!isCall && !shownIn.length) S.unread.add(m.ch);
     }
     for (const box of rerender) renderChat(box, boxes.find((b) => b.box === box).ch, true);
     renderCallBadge();
-    const notifyMsgs = fresh.filter((m) => !m.del && m.uid !== me.id && Date.now() - m.ts < 60_000);
+    const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000);
     if (notifyMsgs.length && (!document.hasFocus() || notifyMsgs.some((m) => !boxes.some((b) => b.ch === m.ch)) || (currentTab !== 'chat' && notifyMsgs.some((m) => m.ch === callChatCh())))) {
       sfx.msg();
       window.desk?.flash();
@@ -2052,6 +2062,7 @@ function format(text) {
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
   s = s.replace(/https?:\/\/[^\s<]+[^\s<.,:;"')\]!?]/g, (u) => hold(`<a href="${u}" target="_blank">${u}</a>`));
   s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/~~(.+?)~~/g, '<s>$1</s>');
+  s = s.replace(/^&gt; ?(.*)(\n|$)/gm, '<span class="quote">$1</span>'); // "> citação" (o Responder usa)
   s = s.replace(/\n/g, '<br>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[i]);
 }
@@ -2080,18 +2091,25 @@ function messageEl(m, prev) {
     head.append(t);
     body.append(head);
   }
-  if (m.uid === me.id) {
-    const actions = el('div', 'msg-actions');
-    const del = el('button', 'icon-btn');
-    del.title = 'Apagar mensagem';
-    del.append(icon('trash-2', 'sm'));
-    del.onclick = (e) => deleteMessage(m, e.shiftKey);
-    actions.append(del);
-    d.append(actions);
+  const actions = el('div', 'msg-actions');
+  const action = (name, title, fn, cls = '') => {
+    const b = el('button', 'icon-btn ' + cls);
+    b.title = title;
+    b.append(icon(name, 'sm'));
+    b.onclick = (e) => fn(e, b);
+    actions.append(b);
+  };
+  action('reply', 'Responder', () => replyTo(m, d));
+  if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
+  if (m.uid === me.id && !m.bot) {
+    if (m.text) action('pencil', 'Editar (ou seta para cima no campo vazio)', () => startEdit(m, d));
+    action('trash-2', 'Apagar mensagem (Shift+clique apaga sem perguntar)', (e) => deleteMessage(m, e.shiftKey), 'danger');
   }
+  d.append(actions);
   if (m.text) {
     const text = el('div', 'text' + (isJumbo(m.text) ? ' jumbo' : ''));
     text.innerHTML = format(String(m.text));
+    if (m.edited) text.append(el('span', 'edited', '(editado)'));
     body.append(text);
   }
   const atts = Array.isArray(m.att) ? m.att.filter(validAtt).slice(0, 10) : [];
@@ -2200,6 +2218,69 @@ function renderCallChat() {
   if (ch) renderChat($('#callMessages'), ch);
   else $('#callMessages').replaceChildren();
 }
+// ----- ações rápidas das mensagens -----
+const composerOf = (box) => (box?.id === 'callMessages' ? callInput : input);
+function replyTo(m, node) {
+  const box = node.closest('.chat-scroll');
+  const field = composerOf(box);
+  const quoted = String(m.text || (m.att?.length ? '[anexo]' : '')).replace(/\s+/g, ' ').slice(0, 90);
+  field.value = `> **${m.name}**: ${quoted}${m.text?.length > 90 ? '…' : ''}\n` + field.value.replace(/^>.*\n/, '');
+  field.dispatchEvent(new Event('input'));
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+}
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    setIcon(btn, 'check');
+    setTimeout(() => btn.isConnected && setIcon(btn, 'copy'), 1200);
+  } catch {
+    toast('Não consegui copiar');
+  }
+}
+function startEdit(m, node) {
+  const textEl = node.querySelector('.text');
+  if (!textEl || node.querySelector('.edit-box')) return;
+  const box = el('div', 'edit-box');
+  const ta = el('textarea');
+  ta.value = m.text;
+  ta.maxLength = 2000;
+  const hint = el('div', 'edit-hint', 'Enter salva · Esc cancela');
+  box.append(ta, hint);
+  textEl.replaceWith(box);
+  const fit = () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(220, ta.scrollHeight) + 'px';
+  };
+  fit();
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  const close = () => box.isConnected && box.replaceWith(textEl);
+  ta.oninput = fit;
+  ta.onblur = close;
+  ta.onkeydown = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      const text = ta.value.trim();
+      close();
+      if (!text) return deleteMessage(m);
+      if (text !== m.text) put({ ...m, text: text.slice(0, 2000), edited: true });
+    }
+  };
+}
+// seta para cima com o campo vazio: edita a sua última mensagem (como no Discord)
+function editLast(field, box, e) {
+  if (e.key !== 'ArrowUp' || field.value) return;
+  const node = [...box.querySelectorAll(`.msg[data-uid="${me.id}"]:not([data-bot])`)].pop();
+  const m = node && recs.get(node.dataset.id);
+  if (!m?.text) return;
+  e.preventDefault();
+  startEdit(m, node);
+}
+
 async function deleteMessage(m, skipConfirm) {
   if (m.uid !== me.id) return;
   if (!skipConfirm && !confirm('Apagar esta mensagem para todo mundo?')) return;
@@ -2282,6 +2363,26 @@ callInput.addEventListener('keydown', (e) => {
   if (isCommand(text)) return runCommand(text, ch, $('#callMessages'));
   put({ k: 'msg', id: 'm:' + randId(), ch, uid: me.id, name: me.name, color: me.color, text: text.slice(0, 2000), att: [], ts: Date.now() });
 });
+input.addEventListener('keydown', (e) => editLast(input, $('#messages'), e));
+callInput.addEventListener('keydown', (e) => editLast(callInput, $('#callMessages'), e));
+
+// botão "ir para as mensagens novas" quando você rolou para cima
+for (const box of $$('.chat-scroll')) {
+  const btn = el('button', 'jump-down');
+  btn.type = 'button';
+  btn.hidden = true;
+  btn.append(icon('arrow-down', 'sm'), el('span', '', 'Ir para as mais recentes'));
+  btn.onclick = () => box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
+  box.parentElement.classList.add('has-jump');
+  box.after(btn);
+  box.addEventListener('scroll', () => {
+    const away = box.scrollHeight - box.scrollTop - box.clientHeight > 250;
+    if (away === !btn.hidden) return;
+    btn.hidden = !away;
+    if (away) springIn(btn);
+  });
+}
+
 $('#callEmoji').onclick = (e) =>
   openEmoji(e.currentTarget, (emoji) => {
     const pos = callInput.selectionStart ?? callInput.value.length;
@@ -2828,8 +2929,18 @@ function renderStage() {
     fs.title = 'Tela cheia';
     fs.append(icon('maximize', 'sm'));
     fs.onclick = () => (document.fullscreenElement ? document.exitFullscreen() : big.requestFullscreen());
-    if (focus.stream) big.append(videoFor(focus.stream));
-    else {
+    if (focus.stream) {
+      const video = videoFor(focus.stream);
+      big.append(video);
+      // janelinha flutuante: continua vendo a stream com o app minimizado ou em outro programa
+      if (document.pictureInPictureEnabled && focus.stream.getVideoTracks().length) {
+        const pip = el('button', 'fs pip');
+        pip.title = 'Janela flutuante (fica por cima dos outros programas)';
+        pip.append(icon('pip', 'sm'));
+        pip.onclick = () => (document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture()).catch((err) => toast('Não deu para abrir a janela flutuante: ' + err.message));
+        big.append(pip);
+      }
+    } else {
       const wait = el('div', 'connecting');
       wait.append(icon('loader', 'spin'), el('span', '', `Conectando à stream de ${focus.name}…`));
       big.append(wait);
@@ -3095,6 +3206,9 @@ $('#btnSettings').onclick = async () => {
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
+  $('#stHotkeys').checked = desktopPrefs.hotkeys;
+  $('#stTray').checked = desktopPrefs.tray;
+  $('#stAutostart').checked = desktopPrefs.autostart;
   await fillDevices();
   openDialog($('#settingsDlg'));
   startMicTest();
@@ -3111,6 +3225,12 @@ $('#btnSaveSettings').onclick = async () => {
   settings.noise = $('#stNoise').value;
   settings.echo = $('#stEcho').checked;
   settings.sounds = $('#stSounds').checked;
+  if (window.desk?.setPrefs) {
+    window.desk
+      .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked })
+      .then((p) => (desktopPrefs = p))
+      .catch(() => {});
+  }
   saveSettings();
   for (const p of peers.values()) for (const a of p.audios.values()) a.setSinkId?.(settings.out).catch(() => {});
   audioCtx()
@@ -3231,12 +3351,57 @@ $('#tbUpdate').onclick = () => {
   if (C.ch && !confirm('Reiniciar agora vai te tirar da call. Atualizar mesmo assim?')) return;
   window.desk?.installUpdate();
 };
+// o app só procura sozinho ao abrir; este botão procura na hora
+const setUpdStatus = (t) => ($('#updStatus').textContent = t);
+async function checkUpdateNow() {
+  const b = $('#btnCheckUpdate');
+  b.disabled = true;
+  b.classList.add('busy');
+  setUpdStatus('Procurando…');
+  try {
+    const r = await window.desk.checkUpdate();
+    if (r.status === 'ready') {
+      showUpdate(r.version);
+      setUpdStatus(`Versão ${r.version} pronta: clique em Reiniciar lá em cima`);
+    } else if (r.status === 'downloading') setUpdStatus(`Baixando a versão ${r.version}…`);
+    else if (r.status === 'latest') setUpdStatus('Você já está na versão mais nova');
+    else setUpdStatus('Modo de desenvolvimento: sem atualizações');
+    return r;
+  } catch (err) {
+    setUpdStatus(ipcError(err));
+  } finally {
+    b.disabled = false;
+    b.classList.remove('busy');
+  }
+}
+$('#btnCheckUpdate').onclick = checkUpdateNow;
+
+let desktopPrefs = { tray: true, hotkeys: true, autostart: false };
 if (window.desk?.appInfo) {
-  window.desk.onUpdateReady(showUpdate);
-  window.desk.appInfo().then(({ version, updateReady, google }) => {
+  $$('[data-desk]').forEach((e) => (e.hidden = false));
+  window.desk.onUpdateReady((v) => {
+    showUpdate(v);
+    setUpdStatus(`Versão ${v} pronta: clique em Reiniciar lá em cima`);
+  });
+  window.desk.onUpdateProgress((pct) => setUpdStatus(`Baixando atualização… ${pct}%`));
+  window.desk.appInfo().then(({ version, updateReady, google, prefs }) => {
     $('#appVersion').textContent = `janjahaters v${version}`;
     $$('[data-google]').forEach((e) => (e.hidden = !google));
+    if (prefs) desktopPrefs = prefs;
     if (updateReady) showUpdate(updateReady);
+  });
+  // atalhos globais e menu da bandeja
+  window.desk.onHotkey((action) => {
+    if (action === 'mute') {
+      toggleMute();
+      toast(C.muted ? 'Microfone mutado' : 'Microfone ligado');
+    } else if (action === 'deafen') {
+      toggleDeafen();
+      toast(C.deafened ? 'Áudio desligado' : 'Áudio ligado');
+    } else if (action === 'check-update') {
+      if (!$('#settingsDlg').open) $('#btnSettings').click();
+      checkUpdateNow();
+    }
   });
 }
 

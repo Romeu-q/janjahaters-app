@@ -78,7 +78,14 @@ function createWindow() {
     },
   });
   win.loadURL(`http://localhost:${UI_PORT}/`);
-  win.once('ready-to-show', () => win.show());
+  // aberto pelo "iniciar com o Windows": fica só na bandeja
+  win.once('ready-to-show', () => !(process.argv.includes('--hidden') && prefs().tray) && win.show());
+  // com a bandeja ligada, o X só esconde a janela (a call e a música continuam)
+  win.on('close', (e) => {
+    if (quitting || !prefs().tray) return;
+    e.preventDefault();
+    win.hide();
+  });
   win.on('maximize', () => win.webContents.send('maximized', true));
   win.on('unmaximize', () => win.webContents.send('maximized', false));
   win.on('focus', () => win.flashFrame(false));
@@ -116,8 +123,7 @@ ipcMain.handle('take-invite', () => {
 
 app.on('second-instance', (e, argv) => {
   if (!win) return;
-  if (win.isMinimized()) win.restore();
-  win.focus();
+  showWindow();
   deliverInvite(inviteFrom(argv));
 });
 
@@ -150,25 +156,117 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => app.quit());
 
-// ----- atualização automática pelas Releases do GitHub (só no app instalado) -----
+// ----- atualização pelas Releases do GitHub (só no app instalado) -----
+// Procura uma vez ao abrir o app; depois, só quando a pessoa clica em "Procurar atualizações".
 let updateReady = null;
+let updater = null;
+let checking = null;
 function setupAutoUpdate() {
   if (!app.isPackaged) return;
   const { autoUpdater } = require('electron-updater');
+  updater = autoUpdater;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true; // se não reiniciar agora, instala ao fechar
+  autoUpdater.on('download-progress', (p) => win?.webContents.send('update-progress', Math.round(p.percent)));
   autoUpdater.on('update-downloaded', (info) => {
     updateReady = info.version;
     win?.webContents.send('update-ready', info.version);
   });
   autoUpdater.on('error', (err) => console.warn('atualização:', err?.message));
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  check();
-  setInterval(check, 30 * 60 * 1000);
-  ipcMain.on('install-update', () => autoUpdater.quitAndInstall(true, true));
+  checkForUpdates().catch(() => {});
+}
+// resposta: { status: 'dev' | 'latest' | 'downloading' | 'ready', version }
+async function checkForUpdates() {
+  if (!updater) return { status: 'dev', version: app.getVersion() };
+  if (updateReady) return { status: 'ready', version: updateReady };
+  checking ||= updater.checkForUpdates().finally(() => (checking = null));
+  const res = await checking;
+  const next = res?.isUpdateAvailable ? res.updateInfo?.version : null;
+  if (updateReady) return { status: 'ready', version: updateReady };
+  return next ? { status: 'downloading', version: next } : { status: 'latest', version: app.getVersion() };
 }
 app.whenReady().then(setupAutoUpdate);
-ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, google: !!oauthConfig() }));
+ipcMain.handle('check-update', async () => {
+  try {
+    return await checkForUpdates();
+  } catch (err) {
+    throw new Error('Não consegui falar com o GitHub: ' + (err?.message || err));
+  }
+});
+ipcMain.on('install-update', () => {
+  quitting = true;
+  updater?.quitAndInstall(true, true);
+});
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, google: !!oauthConfig(), prefs: prefs() }));
+
+// ----- bandeja, atalhos globais e iniciar com o Windows -----
+const { Tray, Menu, globalShortcut, nativeImage } = require('electron');
+const PREFS_FILE = path.join(app.getPath('userData'), 'desktop-prefs.json');
+const PREF_DEFAULTS = { tray: true, hotkeys: true, autostart: false };
+let prefsCache = null;
+function prefs() {
+  if (!prefsCache) {
+    try {
+      prefsCache = { ...PREF_DEFAULTS, ...JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8')) };
+    } catch {
+      prefsCache = { ...PREF_DEFAULTS };
+    }
+  }
+  return prefsCache;
+}
+let quitting = false;
+let tray = null;
+const HOTKEYS = { 'CommandOrControl+Shift+M': 'mute', 'CommandOrControl+Shift+D': 'deafen' };
+
+function showWindow() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+function applyPrefs() {
+  const p = prefs();
+  globalShortcut.unregisterAll();
+  if (p.hotkeys) for (const [accel, action] of Object.entries(HOTKEYS)) globalShortcut.register(accel, () => win?.webContents.send('hotkey', action));
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!p.autostart, args: ['--hidden'] });
+  if (p.tray && !tray) {
+    tray = new Tray(nativeImage.createFromBuffer(fs.readFileSync(path.join(__dirname, 'renderer', 'icon.png'))).resize({ width: 16, height: 16 }));
+    tray.setToolTip('janjahaters');
+    tray.on('click', showWindow);
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'Abrir janjahaters', click: showWindow },
+        { type: 'separator' },
+        { label: 'Mutar / desmutar microfone', click: () => win?.webContents.send('hotkey', 'mute') },
+        { label: 'Ensurdecer / voltar a ouvir', click: () => win?.webContents.send('hotkey', 'deafen') },
+        { label: 'Procurar atualizações', click: () => (showWindow(), win?.webContents.send('hotkey', 'check-update')) },
+        { type: 'separator' },
+        {
+          label: 'Sair',
+          click: () => {
+            quitting = true;
+            app.quit();
+          },
+        },
+      ]),
+    );
+  } else if (!p.tray && tray) {
+    tray.destroy();
+    tray = null;
+  }
+}
+ipcMain.handle('set-prefs', (e, next) => {
+  const p = prefs();
+  for (const k of Object.keys(PREF_DEFAULTS)) if (typeof next?.[k] === 'boolean') p[k] = next[k];
+  try {
+    fs.writeFileSync(PREFS_FILE, JSON.stringify(p));
+  } catch {}
+  applyPrefs();
+  return p;
+});
+app.whenReady().then(applyPrefs);
+app.on('before-quit', () => (quitting = true));
+app.on('will-quit', () => globalShortcut.unregisterAll());
 
 ipcMain.handle('sources', async () => {
   const sources = await desktopCapturer.getSources({
@@ -364,6 +462,10 @@ ipcMain.on('win', (e, cmd) => {
   if (cmd === 'min') win.minimize();
   else if (cmd === 'max') win.isMaximized() ? win.unmaximize() : win.maximize();
   else if (cmd === 'close') win.close();
+  else if (cmd === 'quit') {
+    quitting = true;
+    app.quit();
+  }
 });
 
 ipcMain.on('flash', () => {

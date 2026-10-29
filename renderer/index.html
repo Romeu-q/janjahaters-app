@@ -244,9 +244,19 @@
         <label class="check"><input type="checkbox" id="stEcho"> Cancelamento de eco (para quem usa caixa de som)</label>
         <label class="check"><input type="checkbox" id="stHear"> Me ouvir no teste do mic (use fone)</label>
         <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair</label>
+        <div data-desk hidden>
+          <h3>App</h3>
+          <label class="check"><input type="checkbox" id="stHotkeys"> Atalhos que funcionam até dentro do jogo: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> muta o mic, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> ensurdece</label>
+          <label class="check"><input type="checkbox" id="stTray"> O X esconde na bandeja (a call e a música continuam)</label>
+          <label class="check"><input type="checkbox" id="stAutostart"> Abrir junto com o Windows</label>
+        </div>
       </div>
     </div>
-    <div class="app-version" id="appVersion"></div>
+    <div class="update-row">
+      <span class="app-version" id="appVersion"></span>
+      <span class="update-status" id="updStatus"></span>
+      <button type="button" class="ghost sm" id="btnCheckUpdate" data-desk hidden><i data-icon="refresh"></i>Procurar atualizações</button>
+    </div>
     <menu>
       <button class="ghost danger-text" id="btnLeaveGroup">Sair do grupo</button>
       <span class="grow"></span>
