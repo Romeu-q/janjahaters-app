@@ -92,6 +92,7 @@
           <button class="ctl" id="ctlMute" title="Microfone"><i data-icon="mic"></i><span>Mic</span></button>
           <button class="ctl" id="ctlDeafen" title="Áudio"><i data-icon="headphones"></i><span>Áudio</span></button>
           <button class="ctl" id="ctlStream" title="Transmitir tela"><i data-icon="screen-share"></i><span>Stream</span></button>
+          <button class="ctl" id="ctlStreamCfg" title="Qualidade da stream" hidden><i data-icon="sliders"></i><span>Qualidade</span></button>
           <button class="ctl" id="ctlMusic" title="Música"><i data-icon="list-music"></i><span>Música</span></button>
           <button class="ctl" id="ctlSounds" title="Soundboard"><i data-icon="drum"></i><span>Sons</span></button>
           <button class="ctl join" id="ctlCall"><i data-icon="phone"></i><span>Entrar</span></button>
@@ -178,7 +179,12 @@
     <form class="card" id="setupForm">
       <img class="setup-logo" src="icon.png" alt="">
       <h1>Bem-vindo ao janjahaters</h1>
-      <p class="muted">Call, stream e música com seus amigos. Sem conta e sem servidor: tudo direto entre vocês.</p>
+      <p class="muted">Call, stream e música com seus amigos. Sem servidor: tudo direto entre vocês.</p>
+      <div class="google-row" data-google hidden>
+        <button type="button" class="google-btn" id="suGoogle"><span class="g-logo"></span><span>Entrar com Google</span></button>
+        <div class="google-acc" id="suGoogleAcc" hidden></div>
+        <div class="or"><span>ou só escolha um nome</span></div>
+      </div>
       <label>Seu nome<input id="suName" maxlength="32" required autofocus></label>
       <label>Sua cor<div class="colors" id="suColors"></div></label>
       <p class="invite-note" id="suInviteNote" hidden>Você recebeu um convite. É só escolher seu nome.</p>
@@ -218,6 +224,10 @@
     <div>
       <div>
         <h3>Perfil</h3>
+        <div class="google-row" data-google hidden>
+          <button type="button" class="google-btn" id="stGoogle"><span class="g-logo"></span><span>Conectar conta Google</span></button>
+          <div class="google-acc" id="stGoogleAcc" hidden></div>
+        </div>
         <label>Nome<input id="stName" maxlength="32"></label>
         <label>Cor<div class="colors" id="stColors"></div></label>
         <h3>Áudio</h3>
@@ -264,18 +274,41 @@
   </dialog>
 
   <dialog id="streamDlg">
-    <h2>Transmitir</h2>
-    <div class="src-tabs"><button class="src-tab active" data-src="screen">Telas</button><button class="src-tab" data-src="window">Janelas</button></div>
-    <div class="sources" id="sources"></div>
-    <div class="stream-opts">
-      <label>Qualidade
-        <select id="streamQuality">
-          <option value="720-30">720p · 30 fps</option>
-          <option value="1080-30" selected>1080p · 30 fps</option>
-          <option value="1080-60">1080p · 60 fps</option>
+    <h2 id="streamDlgTitle">Transmitir</h2>
+    <div id="srcPick">
+      <div class="src-tabs"><button class="src-tab active" data-src="screen">Telas</button><button class="src-tab" data-src="window">Janelas</button></div>
+      <div class="sources" id="sources"></div>
+    </div>
+    <div class="sq">
+      <label>Predefinição
+        <select id="sqPreset">
+          <option value="light">Leve · 720p 30 fps (internet fraca)</option>
+          <option value="std">Padrão · 1080p 30 fps</option>
+          <option value="games">Jogos · 1080p 60 fps</option>
+          <option value="text">Texto e código · 1080p 15 fps, nitidez máxima</option>
+          <option value="max">Máxima · 1440p 60 fps</option>
+          <option value="custom">Personalizado</option>
         </select>
       </label>
+      <div class="sq-grid">
+        <label>Resolução<select id="sqRes"></select></label>
+        <label>Quadros por segundo<select id="sqFps"></select></label>
+        <label>Codec<select id="sqCodec"></select></label>
+        <label>Quando a internet apertar
+          <select id="sqMode">
+            <option value="motion">Manter a fluidez (baixa a nitidez)</option>
+            <option value="detail">Manter a nitidez (baixa os fps)</option>
+            <option value="balanced">Equilibrar</option>
+          </select>
+        </label>
+      </div>
+      <label class="sq-rate">
+        <span class="sq-rate-head">Taxa de bits <b id="sqRateVal"></b></span>
+        <input type="range" id="sqRate" min="0" max="50" step="0.5">
+        <small class="muted">No 0 fica automático pela resolução e fps. Mais alto = mais nítido, mas precisa de upload bom (cada amigo assistindo usa essa taxa).</small>
+      </label>
       <label class="check"><input type="checkbox" id="streamAudio"> Transmitir o áudio do PC <small class="muted">(use fone, senão o pessoal ouve o próprio eco)</small></label>
+      <div class="sq-live" id="sqLive" hidden></div>
     </div>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="btnGoLive" disabled>Transmitir</button></menu>
   </dialog>

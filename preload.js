@@ -13,5 +13,8 @@ contextBridge.exposeInMainWorld('desk', {
   appInfo: () => ipcRenderer.invoke('app-info'),
   onUpdateReady: (fn) => ipcRenderer.on('update-ready', (e, v) => fn(v)),
   installUpdate: () => ipcRenderer.send('install-update'),
+  googleLogin: (uid) => ipcRenderer.invoke('google-login', uid),
+  googleCancel: () => ipcRenderer.send('google-cancel'),
+  googleVerify: (token, uid) => ipcRenderer.invoke('google-verify', token, uid),
   onMaximized: (fn) => ipcRenderer.on('maximized', (e, v) => fn(v)),
 });

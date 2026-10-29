@@ -1,7 +1,7 @@
 # janjahaters
 
 Call de voz, stream de tela, música do YouTube Music junto, soundboard e chat para você e seus amigos.
-Sem conta e sem servidor: os PCs se conectam direto (WebRTC) e só entra quem tem o código de convite do grupo.
+Sem servidor: os PCs se conectam direto (WebRTC) e só entra quem tem o código de convite do grupo.
 
 ## Instalar
 
@@ -15,6 +15,25 @@ Na primeira vez, um cria o grupo e manda o código `JANJA-…` para os outros, q
 
 O app procura versão nova sozinho (ao abrir e a cada 30 minutos), baixa em segundo plano e mostra um botão
 verde **Reiniciar** na barra de cima. Se ninguém clicar, a atualização é instalada quando o app for fechado.
+
+## Login com Google (opcional)
+
+Quem quiser entra com a conta Google: o app usa o nome e a foto, e os amigos veem um selo azul
+(o app de cada um confere a assinatura do Google, então ninguém consegue fingir ser outra conta).
+Quem não quiser continua entrando só com um nome.
+
+Para ligar o botão, o dono do repositório cria um cliente OAuth uma vez:
+
+1. Em [console.cloud.google.com](https://console.cloud.google.com/), crie um projeto (ex.: `janjahaters`).
+2. **APIs e serviços → Tela de consentimento OAuth** (ou "Google Auth Platform"): tipo **Externo**, nome `janjahaters`,
+   seu e-mail como suporte. Escopos: só os padrão (`openid`, `email`, `profile`). Depois clique em **Publicar app**
+   (com esses escopos não precisa de verificação do Google). Se preferir deixar em teste, adicione o Gmail de cada amigo
+   em "Usuários de teste".
+3. **Credenciais → Criar credenciais → ID do cliente OAuth → App para computador**. Copie o ID e a chave secreta.
+4. No GitHub, em **Settings → Secrets and variables → Actions**, crie `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`.
+
+A próxima versão publicada já sai com o botão "Entrar com Google". Para testar no modo de desenvolvimento,
+defina as variáveis de ambiente `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` antes do `npm start`.
 
 ## Desenvolvimento
 

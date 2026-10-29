@@ -21,7 +21,8 @@
       "renderer/style.css",
       "renderer/bundle.js",
       "renderer/icon.png",
-      "renderer/vendor/**"
+      "renderer/vendor/**",
+      "oauth.json"
     ],
     "directories": {
       "output": "dist"

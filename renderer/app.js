@@ -4,7 +4,10 @@ import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppresso
 import {
   createElement,
   AudioLines,
+  BadgeCheck,
   Bot,
+  LogOut,
+  SlidersHorizontal,
   CircleX,
   Copy,
   Disc3,
@@ -121,7 +124,10 @@ const ICONS = {
   'user-plus': UserPlus,
   users: Users,
   'volume-2': Volume2,
+  'badge-check': BadgeCheck,
   bot: Bot,
+  'log-out': LogOut,
+  sliders: SlidersHorizontal,
   'circle-x': CircleX,
   'message-square': MessageSquare,
   'volume-x': VolumeX,
@@ -163,9 +169,18 @@ async function closeDialog(dlg) {
   dlg.style.transform = '';
 }
 
-function avatar(name, color, cls = '') {
+// uid: mostra a foto da conta Google, se a pessoa entrou com Google (só fotos conferidas)
+function avatar(name, color, cls = '', uid) {
   const a = el('span', 'avatar ' + cls, (name || '?').trim()[0] || '?');
   a.style.background = color;
+  const pic = uid && googleOf(uid)?.picture;
+  if (pic) {
+    const img = el('img');
+    img.referrerPolicy = 'no-referrer';
+    img.src = pic;
+    img.onerror = () => img.remove();
+    a.append(img);
+  }
   return a;
 }
 let toastTimer;
@@ -186,11 +201,15 @@ function toast(msg) {
 // ============================================================ estado local
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
-  { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {} },
+  { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
+    stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false } },
   store.get('settings', {}),
 );
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
 const saveSettings = () => store.set('settings', settings);
+// contas Google conferidas dos amigos (uid -> { email, picture }), lembradas para as mensagens antigas
+const googleUsers = store.get('googleUsers', {});
+const googleOf = (uid) => (uid === me.id ? me.google : googleUsers[uid]) || null;
 let R = store.get('room', null); // { key, hash }
 const S = { view: null, unread: new Set(), callUnread: 0, firstRender: true };
 
@@ -343,7 +362,32 @@ function ensurePeer(pid) {
 function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, watch: [...C.watching] } : null;
 }
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color }, voice: myVoice() });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken }, voice: myVoice() });
+
+// o login Google do amigo é conferido no processo principal (assinatura do Google + ligado ao uid dele)
+async function checkGoogle(p, token) {
+  const uid = p.user.id;
+  if (typeof token !== 'string' || !window.desk?.googleVerify) {
+    if (!token && googleUsers[uid] && p.gToken) {
+      delete googleUsers[uid]; // desconectou a conta
+      store.set('googleUsers', googleUsers);
+      p.gToken = null;
+      renderPresence();
+    }
+    return;
+  }
+  if (p.gToken === token) return;
+  p.gToken = token;
+  const res = await window.desk.googleVerify(token, uid).catch(() => null);
+  if (!res) return;
+  const prev = googleUsers[uid];
+  googleUsers[uid] = { email: res.email, picture: res.picture };
+  store.set('googleUsers', googleUsers);
+  if (prev?.picture !== res.picture || prev?.email !== res.email) {
+    renderPresence();
+    for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
+  }
+}
 const sendHi = () => A.hi?.send(hiPayload());
 
 function sendRecs(list, target) {
@@ -410,6 +454,7 @@ function onHi(pid, d) {
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color) };
+  checkGoogle(p, d?.user?.g);
   const v = d?.voice;
   p.voice =
     v && typeof v.ch === 'string'
@@ -577,7 +622,6 @@ const C = {
   ch: null, // canal de voz em que estou
   mic: null,
   screen: null,
-  quality: { fps: 30, bitrate: 6_000_000 },
   muted: store.get('muted', false),
   deafened: false,
   sent: new Map(), // peerId -> Map(tipo -> stream enviada)
@@ -722,29 +766,52 @@ function syncMedia() {
   setTimeout(tuneSenders, 5000);
 }
 
+function peerConnections() {
+  const pcs = room?.getPeers() || {};
+  return pcs instanceof Map ? [...pcs.entries()] : Object.entries(pcs);
+}
 function tuneSenders() {
   if (!room) return;
-  const pcs = room.getPeers();
-  const list = pcs instanceof Map ? [...pcs.values()] : Object.values(pcs || {});
-  for (const pc of list) {
+  for (const [, pc] of peerConnections()) {
     for (const sender of pc.getSenders?.() || []) {
       const t = sender.track;
       if (!t) continue;
-      let max = 0;
-      let fps;
-      if (C.screen?.getVideoTracks().includes(t)) {
-        max = C.quality.bitrate;
-        fps = C.quality.fps;
-      } else if (C.mic?.getAudioTracks().includes(t)) max = 64_000;
-      if (!max) continue;
       const params = sender.getParameters();
       if (!params.encodings?.length) continue;
-      params.encodings[0].maxBitrate = max;
-      if (fps) params.encodings[0].maxFramerate = fps;
-      sender.setParameters(params).catch(() => {});
+      if (C.screen?.getVideoTracks().includes(t)) {
+        const q = streamTarget();
+        params.encodings[0].maxBitrate = q.bitrate;
+        params.encodings[0].maxFramerate = q.fps;
+        params.encodings[0].scaleResolutionDownBy = 1;
+        params.degradationPreference = { motion: 'maintain-framerate', detail: 'maintain-resolution', balanced: 'balanced' }[q.mode];
+      } else if (C.mic?.getAudioTracks().includes(t)) params.encodings[0].maxBitrate = 64_000;
+      else continue;
+      sender.setParameters(params).catch(() => {
+        delete params.degradationPreference; // versões que não aceitam esse campo
+        sender.setParameters(params).catch(() => {});
+      });
     }
   }
 }
+
+// Codec escolhido: a stream de tela entra na conexão com ele em primeiro lugar na negociação
+const CODEC_MIME = { h264: 'video/H264', vp8: 'video/VP8', vp9: 'video/VP9', av1: 'video/AV1' };
+const nativeAddTrack = RTCPeerConnection.prototype.addTrack;
+RTCPeerConnection.prototype.addTrack = function (track, ...streams) {
+  const sender = nativeAddTrack.call(this, track, ...streams);
+  const mime = CODEC_MIME[settings.stream.codec];
+  if (mime && track.kind === 'video' && C.screen?.getVideoTracks().includes(track)) {
+    try {
+      const caps = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
+      const first = caps.filter((c) => c.mimeType === mime);
+      const tr = this.getTransceivers().find((x) => x.sender === sender);
+      if (first.length && tr?.setCodecPreferences) tr.setCodecPreferences([...first, ...caps.filter((c) => c.mimeType !== mime)]);
+    } catch (err) {
+      console.warn('codec', err);
+    }
+  }
+  return sender;
+};
 
 function onPeerStream(stream, pid, meta) {
   const p = ensurePeer(pid);
@@ -853,22 +920,131 @@ $('#ctlCall').onclick = () => (C.ch === S.view ? leaveVoice() : joinVoice(S.view
 $('#ctlMusic').onclick = () => selectTab('music');
 
 // ============================================================ stream de tela
+// ----- qualidade da stream -----
+const STREAM_PRESETS = {
+  light: { res: 720, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' },
+  std: { res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' },
+  games: { res: 1080, fps: 60, rate: 0, codec: 'auto', mode: 'motion' },
+  text: { res: 1080, fps: 15, rate: 0, codec: 'auto', mode: 'detail' },
+  max: { res: 1440, fps: 60, rate: 0, codec: 'auto', mode: 'motion' },
+};
+const RES_OPTS = [
+  [480, '480p'],
+  [720, '720p (HD)'],
+  [1080, '1080p (Full HD)'],
+  [1440, '1440p (2K)'],
+  [2160, '2160p (4K)'],
+  [0, 'Original da tela'],
+];
+const FPS_OPTS = [5, 10, 15, 24, 30, 48, 60, 90, 120, 144];
+const CODEC_OPTS = [
+  ['h264', 'H.264 (leve, usa a placa de vídeo)'],
+  ['vp8', 'VP8 (o mais compatível)'],
+  ['vp9', 'VP9 (mais nítido, pesa mais)'],
+  ['av1', 'AV1 (o mais eficiente, pesa bastante)'],
+];
+const CONTENT_HINT = { motion: 'motion', detail: 'detail', balanced: '' };
+
+function codecOptions() {
+  const have = new Set((window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs || []).map((c) => c.mimeType));
+  return [['auto', 'Automático'], ...CODEC_OPTS.filter(([k]) => have.has(CODEC_MIME[k]))];
+}
+function autoBitrate(q, w, h) {
+  const perPixel = q.codec === 'vp9' || q.codec === 'av1' ? 0.045 : 0.07;
+  return Math.round(clamp(w * h * q.fps * perPixel, 800_000, 30_000_000));
+}
+// o que a stream deve usar agora (a taxa automática sai da resolução real capturada)
+function streamTarget(q = settings.stream) {
+  const s = C.screen?.getVideoTracks()[0]?.getSettings?.() || {};
+  const h = q.res ? Math.min(q.res, s.height || q.res) : s.height || 1080;
+  const w = s.width && s.height ? Math.round((s.width / s.height) * h) : Math.round((h * 16) / 9);
+  return { ...q, bitrate: q.rate ? Math.round(q.rate * 1_000_000) : autoBitrate(q, w, h) };
+}
+function videoConstraints(q) {
+  const v = { frameRate: { ideal: q.fps, max: q.fps } };
+  if (q.res) Object.assign(v, { height: { max: q.res }, width: { max: Math.round((q.res * 16) / 9) } });
+  return v;
+}
+
+function fillSelect(sel, opts, value) {
+  sel.replaceChildren(...opts.map(([v, label]) => new Option(label, v)));
+  sel.value = String(value);
+  if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+}
+function readQualityForm() {
+  return {
+    preset: $('#sqPreset').value,
+    res: Number($('#sqRes').value),
+    fps: Number($('#sqFps').value),
+    rate: Number($('#sqRate').value),
+    codec: $('#sqCodec').value,
+    mode: $('#sqMode').value,
+    audio: $('#streamAudio').checked,
+  };
+}
+function fillQualityForm(q) {
+  $('#sqPreset').value = q.preset;
+  fillSelect($('#sqRes'), RES_OPTS, q.res);
+  fillSelect(
+    $('#sqFps'),
+    FPS_OPTS.map((f) => [f, f + ' fps']),
+    q.fps,
+  );
+  fillSelect($('#sqCodec'), codecOptions(), q.codec);
+  $('#sqMode').value = q.mode;
+  $('#sqRate').value = q.rate;
+  $('#streamAudio').checked = !!q.audio;
+  renderRateLabel();
+}
+function renderRateLabel() {
+  const q = readQualityForm();
+  const h = q.res || 1080;
+  $('#sqRateVal').textContent = q.rate ? `${q.rate} Mbps` : `Automático (~${(autoBitrate(q, Math.round((h * 16) / 9), h) / 1e6).toFixed(1)} Mbps)`;
+}
+$('#sqPreset').onchange = () => {
+  const p = STREAM_PRESETS[$('#sqPreset').value];
+  if (p) fillQualityForm({ ...readQualityForm(), ...p, preset: $('#sqPreset').value });
+};
+for (const id of ['#sqRes', '#sqFps', '#sqCodec', '#sqMode', '#sqRate']) {
+  $(id).addEventListener('input', () => {
+    const q = readQualityForm();
+    const match = Object.entries(STREAM_PRESETS).find(([, p]) => p.res === q.res && p.fps === q.fps && p.rate === q.rate && p.codec === q.codec && p.mode === q.mode);
+    $('#sqPreset').value = match ? match[0] : 'custom';
+    renderRateLabel();
+  });
+}
+
+// ----- seletor de tela / ajuste ao vivo -----
 let pickedSource = null;
+let streamSource = null; // fonte da stream atual (para reiniciar com outro codec)
 let allSources = [];
 let srcType = 'screen';
+let sqAdjust = false;
 
+function openStreamDlg(adjust) {
+  sqAdjust = adjust;
+  $('#streamDlgTitle').textContent = adjust ? 'Qualidade da stream' : 'Transmitir';
+  $('#srcPick').hidden = adjust || !isDesktop;
+  $('#btnGoLive').textContent = adjust ? 'Aplicar' : 'Transmitir';
+  $('#btnGoLive').disabled = !adjust && isDesktop;
+  $('#streamDlg [data-close]').textContent = adjust ? 'Fechar' : 'Cancelar';
+  fillQualityForm(settings.stream);
+  $('#sqLive').hidden = !adjust;
+  openDialog($('#streamDlg'));
+  if (adjust) startLiveStats();
+}
 async function openStreamPicker() {
   if (C.screen) return stopStream(true);
   if (!C.ch) return toast('Entre em um canal de voz para transmitir');
-  if (!isDesktop) return startStream(null, false); // modo navegador (testes)
   pickedSource = null;
-  $('#btnGoLive').disabled = true;
+  openStreamDlg(false);
+  if (!isDesktop) return; // modo navegador (testes): o navegador pergunta a tela
   $('#sources').replaceChildren(el('p', 'muted', 'Carregando…'));
-  openDialog($('#streamDlg'));
   allSources = await window.desk.sources();
   renderSources(true);
 }
 $('#ctlStream').onclick = $('#vbStream').onclick = openStreamPicker;
+$('#ctlStreamCfg').onclick = () => C.screen && openStreamDlg(true);
 $$('.src-tab').forEach(
   (b) =>
     (b.onclick = () => {
@@ -903,28 +1079,40 @@ function renderSources(animateIn) {
   if (!box.children.length) box.append(el('p', 'muted', 'Nada encontrado.'));
   else if (animateIn) popIn([...box.children], { delay: stagger(0.025) });
 }
-$('#btnGoLive').onclick = () => {
-  closeDialog($('#streamDlg'));
-  startStream(pickedSource, $('#streamAudio').checked);
+$('#btnGoLive').onclick = async () => {
+  const prev = settings.stream;
+  settings.stream = readQualityForm();
+  saveSettings();
+  if (!sqAdjust) {
+    closeDialog($('#streamDlg'));
+    return startStream(pickedSource, settings.stream.audio);
+  }
+  if (!C.screen) return closeDialog($('#streamDlg'));
+  // codec e áudio só mudam reiniciando a captura; o resto muda na hora
+  if (prev.codec !== settings.stream.codec || !!prev.audio !== settings.stream.audio) await restartStream();
+  else await applyStreamQuality();
+  toast('Qualidade da stream atualizada');
 };
+$('#streamDlg').addEventListener('close', stopLiveStats);
 
+async function captureScreen(sourceId, withAudio) {
+  const q = settings.stream;
+  if (isDesktop) await window.desk.pick(sourceId, withAudio);
+  const s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio: withAudio });
+  const vt = s.getVideoTracks()[0];
+  if (vt) {
+    vt.contentHint = CONTENT_HINT[q.mode] || '';
+    vt.addEventListener('ended', () => C.screen === s && stopStream(true));
+  }
+  return s;
+}
 async function startStream(sourceId, withAudio) {
-  const [h, fps] = $('#streamQuality').value.split('-').map(Number);
-  C.quality = { fps, bitrate: h >= 1080 ? (fps > 30 ? 8_000_000 : 6_000_000) : 3_000_000 };
   try {
-    if (isDesktop) await window.desk.pick(sourceId, withAudio);
-    C.screen = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: Math.round((h * 16) / 9) }, height: { ideal: h }, frameRate: { ideal: fps, max: fps } },
-      audio: withAudio,
-    });
+    C.screen = await captureScreen(sourceId, withAudio);
+    streamSource = sourceId;
   } catch (err) {
     C.screen = null;
     return toast('Não foi possível transmitir: ' + err.message);
-  }
-  const vt = C.screen.getVideoTracks()[0];
-  if (vt) {
-    vt.contentHint = fps > 30 ? 'motion' : 'detail';
-    vt.addEventListener('ended', () => stopStream(true));
   }
   C.focus = 'me';
   if (S.view !== C.ch) openView(C.ch);
@@ -932,16 +1120,96 @@ async function startStream(sourceId, withAudio) {
   syncMedia();
   renderPresence();
 }
+// troca a captura sem avisar "parou": quem está assistindo continua assistindo
+async function restartStream() {
+  const old = C.screen;
+  let next;
+  try {
+    next = await captureScreen(streamSource, settings.stream.audio);
+  } catch (err) {
+    return toast('Não consegui reiniciar a stream: ' + err.message);
+  }
+  if (C.screen !== old) return next.getTracks().forEach((t) => t.stop());
+  C.screen = next;
+  syncMedia();
+  old.getTracks().forEach((t) => t.stop());
+  renderPresence();
+}
+async function applyStreamQuality() {
+  const q = settings.stream;
+  const vt = C.screen?.getVideoTracks()[0];
+  if (!vt) return;
+  vt.contentHint = CONTENT_HINT[q.mode] || '';
+  try {
+    await vt.applyConstraints(videoConstraints(q));
+  } catch (err) {
+    toast('A tela não aceitou essa resolução/fps: ' + err.message);
+  }
+  tuneSenders();
+}
 function stopStream(notify) {
   if (!C.screen) return;
   const s = C.screen;
   C.screen = null;
   syncMedia();
   s.getTracks().forEach((t) => t.stop());
+  if (sqAdjust && $('#streamDlg').open) closeDialog($('#streamDlg'));
   if (notify) {
     sendHi();
     renderPresence();
   }
+}
+
+// números reais da stream (o que a tela entrega e o que chega a cada amigo)
+let statsTimer = null;
+const lastSent = new Map();
+const LIMIT = { bandwidth: 'limitado pela internet', cpu: 'limitado pelo processador', other: 'limitado' };
+function startLiveStats() {
+  stopLiveStats();
+  liveStats();
+  statsTimer = setInterval(liveStats, 1000);
+}
+function stopLiveStats() {
+  clearInterval(statsTimer);
+  statsTimer = null;
+  lastSent.clear();
+}
+async function liveStats() {
+  const box = $('#sqLive');
+  const vt = C.screen?.getVideoTracks()[0];
+  if (!vt) return box.replaceChildren(el('p', 'muted', 'A stream acabou.'));
+  const s = vt.getSettings();
+  const t = streamTarget();
+  const rows = [
+    el('div', 'sq-live-head', `Capturando ${s.width || '?'}×${s.height || '?'} a ${Math.round(s.frameRate || 0)} fps · teto de ${(t.bitrate / 1e6).toFixed(1)} Mbps por amigo`),
+  ];
+  for (const [pid, pc] of peerConnections()) {
+    const sender = pc.getSenders?.().find((x) => x.track === vt);
+    if (!sender) continue;
+    const stats = await sender.getStats().catch(() => null);
+    let out = null;
+    stats?.forEach((r) => {
+      if (r.type === 'outbound-rtp' && r.kind === 'video') out = r;
+    });
+    if (!out) continue;
+    const codec = out.codecId && stats.get(out.codecId);
+    const prev = lastSent.get(pid);
+    lastSent.set(pid, { b: out.bytesSent, t: out.timestamp });
+    const mbps = prev && out.timestamp > prev.t ? ((out.bytesSent - prev.b) * 8) / (out.timestamp - prev.t) / 1000 : 0;
+    const parts = [
+      out.frameWidth ? `${out.frameWidth}×${out.frameHeight}` : 'iniciando',
+      `${Math.round(out.framesPerSecond || 0)} fps`,
+      `${mbps.toFixed(1)} Mbps`,
+      codec?.mimeType?.replace('video/', '') || '',
+      out.powerEfficientEncoder === true ? 'placa de vídeo' : out.powerEfficientEncoder === false ? 'processador' : '',
+    ].filter(Boolean);
+    const row = el('div', 'sq-live-row');
+    row.append(el('b', '', peers.get(pid)?.user?.name || 'Amigo'), el('span', '', parts.join(' · ')));
+    if (out.qualityLimitationReason && out.qualityLimitationReason !== 'none') row.append(el('em', '', LIMIT[out.qualityLimitationReason] || LIMIT.other));
+    rows.push(row);
+  }
+  if (rows.length === 1) rows.push(el('p', 'muted', 'Ninguém está assistindo agora. O que chega em cada amigo aparece aqui quando alguém clicar em Assistir.'));
+  if (statsTimer || !box.children.length) box.replaceChildren(...rows);
 }
 
 // ============================================================ música (YouTube Music)
@@ -1799,7 +2067,7 @@ function messageEl(m, prev) {
     d.classList.add('bot');
     d.dataset.bot = '1';
   }
-  d.append(avatar(m.name, m.color));
+  d.append(avatar(m.name, m.color, '', m.uid));
   const body = el('div');
   if (!grouped) {
     const head = el('div', 'head');
@@ -2384,7 +2652,7 @@ function renderSidebar() {
           const u = el('li' + '');
           u.dataset.speak = m.key;
           u.classList.toggle('speaking', C.speaking.has(m.key));
-          u.append(avatar(m.user.name, m.user.color, 'xs'), el('span', 'pname', m.user.name), flagsEl(m.voice, m.key));
+          u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name), flagsEl(m.voice, m.key));
           if (m.key !== 'me') u.onclick = () => openVolume(m.user, u);
           ul.append(u);
           rows.push([c.id + ':' + m.user.id, u]);
@@ -2430,13 +2698,19 @@ function renderPeopleList() {
       const li = el('li');
       li.dataset.uid = m.user.id;
       const who = el('div', 'who');
-      who.append(el('div', 'pname', m.user.name + (m.key === 'me' ? ' (você)' : '')));
+      const pname = el('div', 'pname', m.user.name + (m.key === 'me' ? ' (você)' : ''));
+      const g = googleOf(m.user.id);
+      if (g) {
+        pname.append(icon('badge-check', 'g-badge'));
+        li.title = 'Conta Google: ' + g.email;
+      }
+      who.append(pname);
       const sub = el('div', 'psub');
       const vch = m.voice && channel(m.voice.ch);
       if (vch) sub.append(icon(m.voice.streaming ? 'screen-share' : 'volume-2'), el('span', '', (m.voice.streaming ? 'Ao vivo em ' : '') + vch.name));
       else sub.append(el('span', '', 'Online'));
       who.append(sub);
-      li.append(avatar(m.user.name, m.user.color), who, flagsEl(m.voice));
+      li.append(avatar(m.user.name, m.user.color, '', m.user.id), who, flagsEl(m.voice));
       if (m.key !== 'me') li.onclick = () => openVolume(m.user, li);
       return li;
     }),
@@ -2451,7 +2725,7 @@ function renderPeopleList() {
 }
 
 function renderMeCard() {
-  $('#meAvatar').replaceWith(Object.assign(avatar(me.name, me.color), { id: 'meAvatar' }));
+  $('#meAvatar').replaceWith(Object.assign(avatar(me.name, me.color, '', me.id), { id: 'meAvatar' }));
   $('#meName').textContent = me.name;
   $('#meSub').textContent = C.ch ? (C.screen ? 'Ao vivo' : 'Na call') : 'Online';
   const off = C.muted || C.deafened || (C.ch && !C.mic);
@@ -2486,7 +2760,7 @@ function renderStage() {
     lobby.append(el('h2', '', members.length ? `${members.length} ${members.length === 1 ? 'pessoa' : 'pessoas'} em ${c.name}` : `${c.name} está vazia`));
     if (members.length) {
       const faces = el('div', 'faces');
-      members.forEach((m) => faces.append(avatar(m.user.name, m.user.color)));
+      members.forEach((m) => faces.append(avatar(m.user.name, m.user.color, '', m.user.id)));
       lobby.append(faces, el('p', 'muted', members.map((m) => m.user.name).join(', ')));
     } else lobby.append(el('p', 'muted', 'Entre e chame a galera.'));
     const join = el('button', 'primary big-btn');
@@ -2534,7 +2808,7 @@ function renderStage() {
       const isLive = m.key !== 'me' && m.voice?.streaming;
       const card = el('div', 'pcard' + (C.speaking.has(m.key) ? ' speaking' : '') + (isLive ? ' live-card' : ''));
       card.dataset.speak = m.key;
-      card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color), el('div', 'pc-name', m.user.name + (m.key === 'me' ? ' (você)' : '')));
+      card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), el('div', 'pc-name', m.user.name + (m.key === 'me' ? ' (você)' : '')));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
       if (m.key !== 'me') card.onclick = () => openVolume(m.user, card);
       grid.append(card);
@@ -2591,7 +2865,7 @@ function renderStage() {
     for (const m of members) {
       const t = el('div', 'thumb' + (C.speaking.has(m.key) ? ' speaking' : ''));
       t.dataset.speak = m.key;
-      t.append(avatar(m.user.name, m.user.color), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
+      t.append(avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
       strip.append(t);
     }
     stage.replaceChildren(big, strip);
@@ -2621,6 +2895,7 @@ function renderControls() {
   st.classList.toggle('on', !!C.screen);
   setIcon(st, C.screen ? 'screen-share-off' : 'screen-share');
   st.querySelector('span').textContent = C.screen ? 'Parar' : 'Stream';
+  $('#ctlStreamCfg').hidden = !C.screen;
 }
 
 function renderHeader() {
@@ -2812,6 +3087,7 @@ function stopMicTest() {
   $('#micMeter').style.width = '0';
 }
 $('#btnSettings').onclick = async () => {
+  renderGoogleAcc();
   $('#stName').value = me.name;
   pendingColor = me.color;
   colorPicker($('#stColors'), me.color, (c) => (pendingColor = c));
@@ -2857,6 +3133,76 @@ $('#btnSaveSettings').onclick = async () => {
   sendHi();
   renderPresence();
 };
+// ----- conta Google (opcional): nome e foto, com selo conferido pelos amigos -----
+const ipcError = (err) => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const GOOGLE_PIC = /^https:\/\/[\w.-]+\.googleusercontent\.com\//;
+let googleBusy = null;
+async function googleLogin(btn) {
+  if (!window.desk?.googleLogin) return null;
+  const label = btn.lastElementChild;
+  label.textContent = 'Continue no navegador…';
+  const run = (googleBusy = window.desk.googleLogin(me.id));
+  try {
+    const g = await run;
+    me.google = { idToken: g.idToken, email: g.email, picture: GOOGLE_PIC.test(g.picture) ? g.picture : '' };
+    store.set('profile', me);
+    renderGoogleAcc();
+    if (R) {
+      sendHi();
+      renderPresence();
+    }
+    toast('Conta Google conectada: ' + g.email);
+    return g;
+  } catch (err) {
+    if (googleBusy === run) toast(ipcError(err));
+    return null;
+  } finally {
+    if (googleBusy === run) {
+      googleBusy = null;
+      renderGoogleAcc();
+    }
+  }
+}
+function googleLogout() {
+  delete me.google;
+  store.set('profile', me);
+  renderGoogleAcc();
+  if (R) {
+    sendHi();
+    renderPresence();
+  }
+}
+function renderGoogleAcc() {
+  const pairs = [
+    [$('#suGoogle'), $('#suGoogleAcc'), 'Entrar com Google'],
+    [$('#stGoogle'), $('#stGoogleAcc'), 'Conectar conta Google'],
+  ];
+  for (const [btn, acc, text] of pairs) {
+    const g = me.google;
+    btn.hidden = !!g;
+    btn.lastElementChild.textContent = text;
+    acc.hidden = !g;
+    if (!g) continue;
+    const out = el('button', 'icon-btn', null);
+    out.type = 'button';
+    out.title = 'Desconectar a conta Google';
+    out.append(icon('log-out'));
+    out.onclick = googleLogout;
+    const txt = el('div', 'ga-text');
+    txt.append(el('div', 'ga-title', 'Conta Google'), el('div', 'ga-mail', g.email));
+    acc.replaceChildren(avatar(me.name || g.email, me.color, '', me.id), txt, out);
+  }
+}
+$('#suGoogle').onclick = async () => {
+  const g = await googleLogin($('#suGoogle'));
+  if (g?.name && !cleanName($('#suName').value)) $('#suName').value = cleanName(g.name);
+};
+$('#stGoogle').onclick = async () => {
+  const g = await googleLogin($('#stGoogle'));
+  if (g?.name && !cleanName($('#stName').value)) $('#stName').value = cleanName(g.name);
+};
+renderGoogleAcc();
+
 $('#btnLeaveGroup').onclick = () => {
   if (!confirm('Sair deste grupo? Você vai precisar do código de convite para voltar.')) return;
   leaveVoice();
@@ -2887,8 +3233,9 @@ $('#tbUpdate').onclick = () => {
 };
 if (window.desk?.appInfo) {
   window.desk.onUpdateReady(showUpdate);
-  window.desk.appInfo().then(({ version, updateReady }) => {
+  window.desk.appInfo().then(({ version, updateReady, google }) => {
     $('#appVersion').textContent = `janjahaters v${version}`;
+    $$('[data-google]').forEach((e) => (e.hidden = !google));
     if (updateReady) showUpdate(updateReady);
   });
 }

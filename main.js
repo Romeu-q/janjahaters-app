@@ -168,7 +168,7 @@ function setupAutoUpdate() {
   ipcMain.on('install-update', () => autoUpdater.quitAndInstall(true, true));
 }
 app.whenReady().then(setupAutoUpdate);
-ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady }));
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, google: !!oauthConfig() }));
 
 ipcMain.handle('sources', async () => {
   const sources = await desktopCapturer.getSources({
@@ -232,6 +232,126 @@ ipcMain.handle('yt-search', async (e, query) => {
   ];
   if (!list.length && songs.status === 'rejected') throw songs.reason;
   return list;
+});
+
+// ----- login com Google (OAuth para apps de desktop: navegador + retorno em 127.0.0.1 + PKCE) -----
+// O ID e o "segredo" do cliente vêm de oauth.json (gerado pelo workflow a partir dos secrets do GitHub)
+// ou das variáveis GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Em app de desktop o Google não trata o segredo como sigiloso.
+const crypto = require('crypto');
+function oauthConfig() {
+  let file = {};
+  try {
+    file = JSON.parse(fs.readFileSync(path.join(__dirname, 'oauth.json'), 'utf8'));
+  } catch {}
+  const id = process.env.GOOGLE_CLIENT_ID || file.clientId;
+  const secret = process.env.GOOGLE_CLIENT_SECRET || file.clientSecret;
+  return id && secret ? { id, secret } : null;
+}
+const b64url = (buf) => buf.toString('base64url');
+const nonceFor = (uid) => crypto.createHash('sha256').update('janja-google:' + uid).digest('hex');
+const jwtPart = (token, i) => JSON.parse(Buffer.from(String(token).split('.')[i] || '', 'base64url').toString('utf8'));
+
+const DONE_PAGE = (ok) =>
+  `<!doctype html><meta charset="utf-8"><title>janjahaters</title><body style="margin:0;height:100vh;display:grid;place-items:center;background:#141619;color:#e4e6ea;font:16px 'Segoe UI',sans-serif"><div style="text-align:center"><h2>${
+    ok ? 'Pronto! Pode voltar para o janjahaters.' : 'O login não deu certo.'
+  }</h2><p style="color:#8b929c">Você já pode fechar esta aba.</p></div>`;
+
+let loginInProgress = null;
+ipcMain.handle('google-login', (e, uid) => {
+  const cfg = oauthConfig();
+  if (!cfg) throw new Error('O login com Google não foi configurado nesta versão do app.');
+  loginInProgress?.cancel();
+  return new Promise((resolve, reject) => {
+    const verifier = b64url(crypto.randomBytes(48));
+    const state = b64url(crypto.randomBytes(16));
+    let redirect;
+    const finish = (err, val) => {
+      clearTimeout(timer);
+      server.close();
+      loginInProgress = null;
+      win?.show();
+      win?.focus();
+      err ? reject(err) : resolve(val);
+    };
+    const server = http.createServer(async (req, res) => {
+      const url = new URL(req.url, redirect);
+      if (url.pathname !== '/') return res.writeHead(404).end();
+      const code = url.searchParams.get('code');
+      if (url.searchParams.get('state') !== state || !code) {
+        res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }).end(DONE_PAGE(false));
+        return finish(new Error(url.searchParams.get('error') === 'access_denied' ? 'Login cancelado.' : 'Resposta inválida do Google.'));
+      }
+      try {
+        const r = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ code, client_id: cfg.id, client_secret: cfg.secret, redirect_uri: redirect, grant_type: 'authorization_code', code_verifier: verifier }),
+        });
+        const tok = await r.json();
+        if (!tok.id_token) throw new Error(tok.error_description || tok.error || 'O Google não devolveu o login.');
+        // veio direto do Google por HTTPS, então dá para ler sem verificar a assinatura aqui
+        const p = jwtPart(tok.id_token, 1);
+        if (p.nonce !== nonceFor(uid)) throw new Error('Resposta inválida do Google.');
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(DONE_PAGE(true));
+        finish(null, { idToken: tok.id_token, sub: p.sub, email: p.email, name: p.given_name || p.name || '', picture: p.picture || '' });
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' }).end(DONE_PAGE(false));
+        finish(err);
+      }
+    });
+    const timer = setTimeout(() => finish(new Error('O login demorou demais. Tente de novo.')), 5 * 60 * 1000);
+    loginInProgress = { cancel: () => finish(new Error('Login cancelado.')) };
+    server.listen(0, '127.0.0.1', () => {
+      redirect = `http://127.0.0.1:${server.address().port}`;
+      const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      auth.search = new URLSearchParams({
+        client_id: cfg.id,
+        redirect_uri: redirect,
+        response_type: 'code',
+        scope: 'openid email profile',
+        state,
+        nonce: nonceFor(uid),
+        code_challenge: b64url(crypto.createHash('sha256').update(verifier).digest()),
+        code_challenge_method: 'S256',
+        prompt: 'select_account',
+      });
+      shell.openExternal(auth.toString());
+    });
+  });
+});
+ipcMain.on('google-cancel', () => loginInProgress?.cancel());
+
+// Confere o login que um amigo mandou: assinatura do Google, feito para este app e ligado ao ID dele no grupo.
+let googleKeys = null;
+async function googleKey(kid) {
+  if (!googleKeys || Date.now() - googleKeys.at > 6 * 3600_000 || !googleKeys.keys[kid]) {
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    const { keys } = await r.json();
+    googleKeys = { at: Date.now(), keys: Object.fromEntries(keys.map((k) => [k.kid, crypto.createPublicKey({ key: k, format: 'jwk' })])) };
+  }
+  return googleKeys.keys[kid];
+}
+const verified = new Map(); // token -> resultado
+ipcMain.handle('google-verify', async (e, token, uid) => {
+  const cfg = oauthConfig();
+  if (!cfg || typeof token !== 'string' || token.length > 4096 || typeof uid !== 'string') return null;
+  const cacheKey = token + '|' + uid;
+  if (verified.has(cacheKey)) return verified.get(cacheKey);
+  let out = null;
+  try {
+    const [h, p, s] = token.split('.');
+    const head = jwtPart(token, 0);
+    const body = jwtPart(token, 1);
+    const key = head.alg === 'RS256' && (await googleKey(head.kid));
+    const okSig = key && crypto.verify('RSA-SHA256', Buffer.from(h + '.' + p), key, Buffer.from(s, 'base64url'));
+    // o vencimento (1 h) é ignorado: o token serve como "carteirinha" assinada pelo Google
+    if (okSig && body.aud === cfg.id && /^(https:\/\/)?accounts\.google\.com$/.test(body.iss) && body.nonce === nonceFor(uid)) {
+      out = { sub: body.sub, email: body.email, picture: /^https:\/\/[\w.-]+\.googleusercontent\.com\//.test(body.picture || '') ? body.picture : '' };
+    }
+  } catch {}
+  if (verified.size > 500) verified.clear();
+  verified.set(cacheKey, out);
+  return out;
 });
 
 ipcMain.on('open-external', (e, url) => {

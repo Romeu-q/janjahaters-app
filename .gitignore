@@ -3,3 +3,4 @@ dist/
 renderer/bundle.js
 *.log
 renderer/vendor/
+oauth.json
