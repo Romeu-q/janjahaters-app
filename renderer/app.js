@@ -10,6 +10,11 @@ import {
   RefreshCw,
   Reply,
   BadgeCheck,
+  Brush,
+  Image as ImageIcon,
+  Palette,
+  Puzzle,
+  User,
   Bot,
   LogOut,
   SlidersHorizontal,
@@ -59,6 +64,11 @@ import {
 // ============================================================ utilidades
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+function wrapEl(tag, cls, ...kids) {
+  const e = el(tag, cls);
+  e.append(...kids);
+  return e;
+}
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -135,6 +145,11 @@ const ICONS = {
   users: Users,
   'volume-2': Volume2,
   'badge-check': BadgeCheck,
+  brush: Brush,
+  image: ImageIcon,
+  palette: Palette,
+  puzzle: Puzzle,
+  user: User,
   bot: Bot,
   'log-out': LogOut,
   sliders: SlidersHorizontal,
@@ -179,19 +194,48 @@ async function closeDialog(dlg) {
   dlg.style.transform = '';
 }
 
-// uid: mostra a foto da conta Google, se a pessoa entrou com Google (só fotos conferidas)
+// uid: usa o avatar escolhido no perfil (arquivo P2P) ou a foto conferida da conta Google,
+// e a decoração do perfil
+const avatarMiss = new Map(); // arquivo de avatar que ninguém online tem: não pergunta de novo por 30 s
 function avatar(name, color, cls = '', uid) {
   const a = el('span', 'avatar ' + cls, (name || '?').trim()[0] || '?');
   a.style.background = color;
-  const pic = uid && googleOf(uid)?.picture;
-  if (pic) {
+  if (!uid) return a;
+  const prof = profileOf(uid);
+  const addImg = (src) => {
     const img = el('img');
     img.referrerPolicy = 'no-referrer';
-    img.src = pic;
     img.onerror = () => img.remove();
+    img.src = src;
     a.append(img);
+  };
+  if (prof.avatar && !(Date.now() - (avatarMiss.get(prof.avatar) || 0) < 30_000)) {
+    if (blobUrls.has(prof.avatar)) addImg(blobUrls.get(prof.avatar));
+    else
+      fileUrl(prof.avatar, uid).then((url) => {
+        if (url) addImg(url);
+        else avatarMiss.set(prof.avatar, Date.now());
+      });
+  } else if (googleOf(uid)?.picture) addImg(googleOf(uid).picture);
+  if (prof.deco && !(look.noFx && uid !== me.id)) {
+    a.classList.add('deco', 'deco-' + prof.deco);
+    a.style.setProperty('--deco', cleanColor(color));
   }
   return a;
+}
+// nome com a cor, fonte, degradê e efeito do perfil
+function nameEl(name, color, uid, cls = '') {
+  const s = el('span', ('uname ' + cls).trim(), name);
+  const prof = uid ? profileOf(uid) : {};
+  s.style.color = cleanColor(color);
+  if (prof.font) s.classList.add('nf-' + prof.font);
+  if (prof.grad) {
+    s.classList.add('name-grad');
+    s.style.setProperty('--n1', cleanColor(color));
+    s.style.setProperty('--n2', prof.grad);
+  }
+  if (prof.nameFx && !(look.noFx && uid !== me.id)) s.classList.add('nfx-' + prof.nameFx);
+  return s;
 }
 let toastTimer;
 function toast(msg) {
@@ -216,10 +260,48 @@ const settings = Object.assign(
   store.get('settings', {}),
 );
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
+// aparência (só deste PC) e plugins ligados
+const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
+settings.look = { ...LOOK_DEFAULTS, ...settings.look };
+settings.plugins = { ...settings.plugins };
+const look = settings.look;
+const plug = (id) => !!settings.plugins[id];
 const saveSettings = () => store.set('settings', settings);
 // contas Google conferidas dos amigos (uid -> { email, picture }), lembradas para as mensagens antigas
 const googleUsers = store.get('googleUsers', {});
 const googleOf = (uid) => (uid === me.id ? me.google : googleUsers[uid]) || null;
+
+// ----- perfil personalizável (tipo Nitro, de graça): vai junto no "hi" para os amigos -----
+const NAME_FONTS = ['serif', 'mono', 'round', 'hand', 'display', 'elegant'];
+const NAME_FX = ['glow', 'shine', 'wave'];
+const DECOS = ['ring', 'glow', 'rainbow', 'fire', 'ice', 'gold', 'pulse'];
+const EFFECTS = ['sparkle', 'snow', 'hearts', 'stars', 'confetti'];
+const cleanHex = (c) => (/^#[0-9a-f]{6}$/i.test(c) ? c.toLowerCase() : '');
+function cleanProfile(p) {
+  if (!p || typeof p !== 'object') return {};
+  const str = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '');
+  const pick = (v, list) => (list.includes(v) ? v : '');
+  const fid = (v) => (typeof v === 'string' && /^f:[0-9a-f]{24}$/.test(v) ? v : '');
+  const theme = Array.isArray(p.theme) && cleanHex(p.theme[0]) && cleanHex(p.theme[1]) ? [cleanHex(p.theme[0]), cleanHex(p.theme[1])] : null;
+  return {
+    avatar: fid(p.avatar),
+    banner: fid(p.banner),
+    bannerColor: cleanHex(p.bannerColor),
+    bio: str(p.bio, 300),
+    pronouns: str(p.pronouns, 40),
+    status: str(p.status, 60),
+    statusEmoji: str(p.statusEmoji, 16),
+    theme,
+    font: pick(p.font, NAME_FONTS),
+    grad: cleanHex(p.grad),
+    nameFx: pick(p.nameFx, NAME_FX),
+    deco: pick(p.deco, DECOS),
+    effect: pick(p.effect, EFFECTS),
+  };
+}
+me.p = cleanProfile(me.p);
+const profiles = store.get('profiles', {}); // uid -> perfil dos amigos (para mensagens antigas também)
+const profileOf = (uid) => (uid === me.id ? me.p : profiles[uid]) || {};
 let R = store.get('room', null); // { key, hash }
 const S = { view: null, unread: new Set(), callUnread: 0, firstRender: true };
 
@@ -294,6 +376,7 @@ function merge(list, quiet) {
     const cur = recs.get(r.id);
     if (!newer(r, cur)) continue;
     if (cur?.k === 'msg' && cur.uid !== r.uid) continue; // só o autor muda a própria mensagem
+    if (cur?.k === 'msg' && !cur.del && plug('messageLogger')) logMessageChange(cur, r);
     recs.set(r.id, r);
     clock = Math.max(clock, Math.min(r.v, Date.now() + 60_000));
     changed.push(r);
@@ -313,7 +396,30 @@ const channel = (id) => {
   const c = recs.get(id);
   return c?.k === 'ch' && !c.del ? c : null;
 };
-const messagesOf = (ch) => all('msg').filter((m) => m.ch === ch).sort((a, b) => a.ts - b.ts);
+const messagesOf = (ch) => {
+  let list = all('msg').filter((m) => m.ch === ch);
+  if (plug('hideBot')) list = list.filter((m) => !m.bot);
+  if (plug('messageLogger')) list = list.concat(Object.values(ghosts).filter((g) => g.ch === ch && recs.get(g.id)?.del));
+  return list.sort((a, b) => a.ts - b.ts);
+};
+// plugin "Mensagens apagadas": guarda neste PC o texto antes de apagar/editar
+const ghosts = {}; // id -> mensagem apagada
+const editLog = {}; // id -> textos anteriores
+function loadLogger() {
+  if (!R) return;
+  Object.assign(ghosts, store.get('ghosts:' + R.hash, {}));
+  Object.assign(editLog, store.get('edits:' + R.hash, {}));
+}
+function logMessageChange(cur, next) {
+  if (next.del && cur.uid !== me.id && (cur.text || cur.att?.length)) ghosts[cur.id] = { ...cur, ghost: true };
+  else if (next.text !== cur.text && cur.text) editLog[cur.id] = [...(editLog[cur.id] || []), cur.text].slice(-5);
+  else return;
+  const trim = (o) => Object.keys(o).length > 300 && delete o[Object.keys(o)[0]];
+  trim(ghosts);
+  trim(editLog);
+  store.set('ghosts:' + R.hash, ghosts);
+  store.set('edits:' + R.hash, editLog);
+}
 const groupName = () => recs.get('grp')?.name || 'Grupo';
 
 function onRecsChanged(list) {
@@ -344,8 +450,12 @@ function onRecsChanged(list) {
     for (const box of rerender) renderChat(box, boxes.find((b) => b.box === box).ch, true);
     renderCallBadge();
     const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000);
-    if (notifyMsgs.length && (!document.hasFocus() || notifyMsgs.some((m) => !boxes.some((b) => b.ch === m.ch)) || (currentTab !== 'chat' && notifyMsgs.some((m) => m.ch === callChatCh())))) {
-      sfx.msg();
+    for (const m of notifyMsgs) pluginEmit('message', m);
+    if (plug('mentions') && notifyMsgs.some((m) => mentionsMe(m.text))) {
+      if (!plug('noTypingSounds')) sfx.msg();
+      window.desk?.flash();
+    } else if (notifyMsgs.length && (!document.hasFocus() || notifyMsgs.some((m) => !boxes.some((b) => b.ch === m.ch)) || (currentTab !== 'chat' && notifyMsgs.some((m) => m.ch === callChatCh())))) {
+      if (!plug('noTypingSounds')) sfx.msg();
       window.desk?.flash();
     }
     renderSidebar();
@@ -372,7 +482,19 @@ function ensurePeer(pid) {
 function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, watch: [...C.watching] } : null;
 }
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken }, voice: myVoice() });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p }, voice: myVoice() });
+// guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
+function updateProfile(uid, raw) {
+  const prof = cleanProfile(raw);
+  if (JSON.stringify(prof) === JSON.stringify(profiles[uid] || {})) return;
+  profiles[uid] = prof;
+  store.set('profiles', profiles);
+  clearTimeout(updateProfile.t);
+  updateProfile.t = setTimeout(() => {
+    for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
+    renderPresence();
+  }, 50);
+}
 
 // o login Google do amigo é conferido no processo principal (assinatura do Google + ligado ao uid dele)
 async function checkGoogle(p, token) {
@@ -465,6 +587,7 @@ function onHi(pid, d) {
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color) };
   checkGoogle(p, d?.user?.g);
+  updateProfile(p.user.id, d?.user?.p);
   const v = d?.voice;
   p.voice =
     v && typeof v.ch === 'string'
@@ -478,8 +601,14 @@ function onHi(pid, d) {
       : null;
   const isIn = C.ch && p.voice?.ch === C.ch;
   const isLive = isIn && p.voice.streaming;
-  if (!wasIn && isIn) sfx.join();
-  if (wasIn && !isIn) sfx.leave();
+  if (!wasIn && isIn) {
+    sfx.join();
+    pluginEmit('join', { id: p.user.id, name: p.user.name, channel: C.ch });
+  }
+  if (wasIn && !isIn) {
+    sfx.leave();
+    pluginEmit('leave', { id: p.user.id, name: p.user.name, channel: C.ch });
+  }
   if (!wasLive && isLive) toast(`${p.user.name} começou uma stream. Clique em Assistir para ver.`);
   if (!isLive && C.watching.delete(pid)) sendHi();
   if (!isIn) dropMedia(p);
@@ -708,6 +837,7 @@ async function joinVoice(ch) {
     toast('Sem microfone: você entrou só para ouvir');
   }
   C.ch = ch;
+  C.joinedAt = Date.now();
   applyMicEnabled();
   if (C.mic) meter('me', C.mic);
   sfx.join();
@@ -855,6 +985,10 @@ function attachAudio(p, kind, stream) {
 function detachAudio(p, kind) {
   const a = p.audios.get(kind);
   if (!a) return;
+  if (a._boost) {
+    a._boost.src.disconnect();
+    a._boost.gain.disconnect();
+  }
   a.pause();
   a.srcObject = null;
   p.audios.delete(kind);
@@ -868,8 +1002,24 @@ function dropMedia(p) {
 function applyVolumes() {
   for (const p of peers.values()) {
     for (const a of p.audios.values()) {
-      a.volume = clamp(settings.volumes[p.user?.id] ?? 1, 0, 1);
-      a.muted = C.deafened || !C.ch;
+      const v = clamp(settings.volumes[p.user?.id] ?? 1, 0, plug('volumeBoost') ? 3 : 1);
+      const off = C.deafened || !C.ch;
+      // acima de 100% o som passa por um amplificador (Web Audio) e o <audio> fica mudo
+      if (v > 1 && a.srcObject) {
+        if (!a._boost) {
+          const ctx = audioCtx();
+          const src = ctx.createMediaStreamSource(a.srcObject);
+          const gain = ctx.createGain();
+          src.connect(gain).connect(ctx.destination);
+          a._boost = { src, gain };
+        }
+        a._boost.gain.gain.value = off ? 0 : v;
+        a.muted = true;
+      } else {
+        if (a._boost) a._boost.gain.gain.value = 0;
+        a.volume = v;
+        a.muted = off;
+      }
     }
   }
   applyMusicVolume();
@@ -2050,6 +2200,12 @@ $('#ctlSounds').onclick = () => selectTab('sounds');
 // ============================================================ chat
 const typingOf = new Map(); // userId -> { name, ch, until }
 const hhmm = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const fullTime = new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const mentionsMe = (text) => {
+  const n = me.name?.trim();
+  return !!n && new RegExp(`(^|[^\\p{L}\\p{N}])@?${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(String(text || ''));
+};
+document.addEventListener('click', (e) => e.target.closest?.('.spoiler')?.classList.add('shown'));
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -2062,6 +2218,7 @@ function format(text) {
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
   s = s.replace(/https?:\/\/[^\s<]+[^\s<.,:;"')\]!?]/g, (u) => hold(`<a href="${u}" target="_blank">${u}</a>`));
   s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/~~(.+?)~~/g, '<s>$1</s>');
+  s = s.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler" title="Spoiler: clique para ver">$1</span>');
   s = s.replace(/^&gt; ?(.*)(\n|$)/gm, '<span class="quote">$1</span>'); // "> citação" (o Responder usa)
   s = s.replace(/\n/g, '<br>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[i]);
@@ -2078,19 +2235,36 @@ function messageEl(m, prev) {
     d.classList.add('bot');
     d.dataset.bot = '1';
   }
-  d.append(avatar(m.name, m.color, '', m.uid));
+  const uid = m.bot ? null : m.uid; // o DJ não usa o perfil de quem chamou o comando
+  const who = { id: m.uid, name: m.name, color: m.color };
+  const av = avatar(m.name, m.color, '', uid);
+  if (uid) av.onclick = () => openProfile(who, av);
+  d.append(av);
   const body = el('div');
+  const when = plug('fullTime') ? fullTime.format(m.ts) : hhmm.format(m.ts);
   if (!grouped) {
     const head = el('div', 'head');
-    const a = el('span', 'author', m.name);
-    a.style.color = cleanColor(m.color);
-    const t = el('time', '', hhmm.format(m.ts));
+    const a = nameEl(m.name, m.color, uid, 'author');
+    if (uid) a.onclick = () => openProfile(who, a);
+    const t = el('time', '', when);
     t.title = new Date(m.ts).toLocaleString('pt-BR');
     head.append(a);
     if (m.bot) head.append(el('span', 'bot-tag', 'BOT'));
     head.append(t);
     body.append(head);
+  } else {
+    const gt = el('time', 'gtime', hhmm.format(m.ts)); // horário ao passar o mouse
+    gt.title = new Date(m.ts).toLocaleString('pt-BR');
+    d.append(gt);
   }
+  if (m.ghost) d.classList.add('ghost');
+  if (plug('mentions') && m.uid !== me.id && mentionsMe(m.text)) d.classList.add('mention');
+  if (plug('dblClick') && !m.ghost && !m.bot)
+    d.ondblclick = (e) => {
+      if (e.target.closest('a, button, img, video, audio, textarea')) return;
+      getSelection()?.removeAllRanges();
+      m.uid === me.id && m.text ? startEdit(m, d) : replyTo(m, d);
+    };
   const actions = el('div', 'msg-actions');
   const action = (name, title, fn, cls = '') => {
     const b = el('button', 'icon-btn ' + cls);
@@ -2099,17 +2273,19 @@ function messageEl(m, prev) {
     b.onclick = (e) => fn(e, b);
     actions.append(b);
   };
-  action('reply', 'Responder', () => replyTo(m, d));
+  if (!m.ghost) action('reply', 'Responder', () => replyTo(m, d));
   if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
-  if (m.uid === me.id && !m.bot) {
+  if (m.uid === me.id && !m.bot && !m.ghost) {
     if (m.text) action('pencil', 'Editar (ou seta para cima no campo vazio)', () => startEdit(m, d));
     action('trash-2', 'Apagar mensagem (Shift+clique apaga sem perguntar)', (e) => deleteMessage(m, e.shiftKey), 'danger');
   }
   d.append(actions);
+  if (plug('messageLogger') && editLog[m.id]) for (const old of editLog[m.id]) body.append(el('div', 'edit-old', old));
   if (m.text) {
     const text = el('div', 'text' + (isJumbo(m.text) ? ' jumbo' : ''));
     text.innerHTML = format(String(m.text));
     if (m.edited) text.append(el('span', 'edited', '(editado)'));
+    if (m.ghost) text.append(el('span', 'edited', '(apagada)'));
     body.append(text);
   }
   const atts = Array.isArray(m.att) ? m.att.filter(validAtt).slice(0, 10) : [];
@@ -2315,7 +2491,7 @@ input.addEventListener('input', () => {
   autosize();
   if (input.value && Date.now() - lastTyping > 2500) {
     lastTyping = Date.now();
-    A.typing?.send({ ch: S.view });
+    if (!plug('silentTyping')) A.typing?.send({ ch: S.view });
   }
 });
 input.addEventListener('keydown', (e) => {
@@ -2409,7 +2585,7 @@ const DJ_CMDS = new Map(
 );
 const isCommand = (text) => {
   const m = text.match(CMD);
-  return !!m && DJ_CMDS.has(m[1].toLowerCase());
+  return !!m && (DJ_CMDS.has(m[1].toLowerCase()) || pluginCommands.has(m[1].toLowerCase()));
 };
 function botSay(ch, text) {
   put({ k: 'msg', id: 'm:' + randId(), ch, uid: me.id, name: 'DJ', color: '#ff7a1a', bot: true, text, att: [], ts: Date.now() });
@@ -2436,7 +2612,18 @@ async function runCommand(text, ch, box) {
   const [, name, rawArg] = text.match(CMD);
   const cmd = DJ_CMDS.get(name.toLowerCase());
   const arg = rawArg.trim();
-  if (cmd === 'help') return note(box, HELP);
+  const pc = !cmd && pluginCommands.get(name.toLowerCase());
+  if (pc) {
+    try {
+      const out = await pc.fn(arg, { channel: ch });
+      if (out) note(box, String(out));
+    } catch (err) {
+      note(box, 'O comando do plugin deu erro: ' + err.message);
+    }
+    return;
+  }
+  if (cmd === 'help') return note(box, HELP + [...pluginCommands].map(([n, c]) => `
+/${n}  ${c.desc}`).join(''));
   if (cmd === 'volume') {
     const v = parseInt(arg, 10);
     if (!(v >= 0 && v <= 100)) return note(box, `Volume da música: ${Math.round(settings.musicVol * 100)}. Use /volume 0 a 100.`);
@@ -2615,10 +2802,19 @@ $('#btnEmoji').onclick = (e) =>
 const pop = $('#popover');
 function openPopover(anchor, content) {
   pop.replaceChildren(content);
+  pop.classList.toggle('bare', content.classList.contains('profile-card'));
   pop.hidden = false;
   const r = anchor.getBoundingClientRect();
-  pop.style.left = clamp(r.left, 8, innerWidth - pop.offsetWidth - 8) + 'px';
-  pop.style.top = (r.top - pop.offsetHeight - 8 > 40 ? r.top - pop.offsetHeight - 8 : r.bottom + 8) + 'px';
+  const h = pop.offsetHeight;
+  // cartão de perfil abre ao lado de quem foi clicado; o resto abre em cima/embaixo
+  if (content.classList.contains('profile-card')) {
+    const right = r.right + 10 + pop.offsetWidth < innerWidth;
+    pop.style.left = (right ? r.right + 10 : Math.max(8, r.left - pop.offsetWidth - 10)) + 'px';
+    pop.style.top = clamp(r.top - 20, 40, innerHeight - h - 8) + 'px';
+  } else {
+    pop.style.left = clamp(r.left, 8, innerWidth - pop.offsetWidth - 8) + 'px';
+    pop.style.top = clamp(r.top - h - 8 > 40 ? r.top - h - 8 : r.bottom + 8, 8, innerHeight - h - 8) + 'px';
+  }
   animate(pop, { opacity: [0, 1], scale: [0.95, 1] }, { duration: 0.15, ease: EASE });
 }
 document.addEventListener('mousedown', (e) => {
@@ -2638,23 +2834,100 @@ function openEmoji(anchor, pick) {
   }
   openPopover(anchor, grid);
 }
-function openVolume(user, anchor) {
-  const box = el('div', 'vol-pop');
-  box.append(el('b', '', user.name));
-  const label = el('label', '', 'Volume');
-  const range = el('input');
-  range.type = 'range';
-  range.min = 0;
-  range.max = 100;
-  range.value = Math.round((settings.volumes[user.id] ?? 1) * 100);
-  range.oninput = () => {
-    settings.volumes[user.id] = range.value / 100;
-    saveSettings();
-    applyVolumes();
-  };
-  label.append(range);
-  box.append(label);
-  openPopover(anchor, box);
+// ----- cartão de perfil (clicar em alguém) -----
+// user: { id, name, color }; prof: perfil a mostrar (a prévia do editor passa o rascunho)
+function profileCard(user, prof = profileOf(user.id), opts = {}) {
+  const card = el('div', 'profile-card');
+  const theme = prof.theme;
+  if (theme) {
+    card.classList.add('themed');
+    card.style.setProperty('--pc1', theme[0]);
+    card.style.setProperty('--pc2', theme[1]);
+  }
+  const banner = el('div', 'pc-banner');
+  banner.style.background = prof.bannerColor || cleanColor(user.color);
+  if (prof.banner) {
+    const setBg = (url) => url && (banner.style.backgroundImage = `url("${url}")`);
+    opts.bannerUrl ? setBg(opts.bannerUrl) : fileUrl(prof.banner, user.id).then(setBg);
+  }
+  card.append(banner);
+  if (prof.effect && !(look.noFx && user.id !== me.id)) card.append(effectLayer(prof.effect));
+  // a prévia do editor usa o rascunho; o resto usa o perfil salvo
+  const av = opts.avatarEl || avatar(user.name, user.color, 'pc-avatar', user.id);
+  av.classList.add('pc-avatar');
+  card.append(av);
+  const body = el('div', 'pc-body');
+  const nameRow = el('div', 'pc-name-row');
+  nameRow.append(opts.nameEl || nameEl(user.name, user.color, user.id, 'pc-uname'));
+  const g = googleOf(user.id);
+  if (g && !opts.preview) {
+    const b = icon('badge-check', 'g-badge');
+    b.setAttribute('aria-label', 'Conta Google: ' + g.email);
+    nameRow.append(b);
+  }
+  body.append(nameRow);
+  if (prof.pronouns) body.append(el('div', 'pc-pron', prof.pronouns));
+  if (prof.status || prof.statusEmoji) body.append(el('div', 'pc-status', `${prof.statusEmoji || ''} ${prof.status || ''}`.trim()));
+  if (g && !opts.preview) body.append(el('div', 'pc-mail', g.email));
+  if (prof.bio) {
+    body.append(el('div', 'pc-sec', 'Sobre mim'));
+    const bio = el('div', 'pc-bio');
+    bio.innerHTML = format(prof.bio);
+    body.append(bio);
+  }
+  const live = [...peers.values()].find((p) => p.user?.id === user.id && p.voice?.ch);
+  const vch = user.id === me.id ? C.ch : live?.voice.ch;
+  if (vch && channel(vch)) body.append(el('div', 'pc-sec', 'Na call'), el('div', 'pc-call', channel(vch).name));
+  if (!opts.preview && user.id !== me.id) {
+    const max = plug('volumeBoost') ? 300 : 100;
+    const label = el('label', 'pc-vol');
+    const val = el('b');
+    const range = el('input');
+    range.type = 'range';
+    range.min = 0;
+    range.max = max;
+    range.value = Math.min(max, Math.round((settings.volumes[user.id] ?? 1) * 100));
+    const show = () => (val.textContent = range.value + '%');
+    range.oninput = () => {
+      settings.volumes[user.id] = range.value / 100;
+      show();
+      saveSettings();
+      applyVolumes();
+    };
+    show();
+    label.append(wrapEl('span', 'pc-vol-head', document.createTextNode('Volume'), val), range);
+    body.append(label);
+  }
+  if (!opts.preview && user.id === me.id) {
+    const edit = el('button', 'primary sm wide', 'Editar perfil');
+    edit.onclick = () => {
+      pop.hidden = true;
+      openSettings('profile');
+    };
+    body.append(edit);
+  }
+  card.append(body);
+  return card;
+}
+function openProfile(user, anchor) {
+  if (!user?.id) return;
+  openPopover(anchor, profileCard(user));
+}
+// partículas do "efeito de perfil"
+function effectLayer(kind) {
+  const layer = el('div', 'pfx pfx-' + kind);
+  const glyph = { sparkle: '✦', snow: '❄', hearts: '❤', stars: '★', confetti: '▮' }[kind] || '✦';
+  const colors = ['#ff7a1a', '#ffd166', '#4fd18b', '#3aa8f0', '#b07cff', '#ff6fb5'];
+  for (let i = 0; i < 16; i++) {
+    const p = el('span', '', glyph);
+    p.style.left = Math.random() * 100 + '%';
+    p.style.animationDelay = -Math.random() * 6 + 's';
+    p.style.animationDuration = 4 + Math.random() * 4 + 's';
+    p.style.fontSize = 8 + Math.random() * 10 + 'px';
+    if (kind === 'confetti' || kind === 'sparkle') p.style.color = colors[i % colors.length];
+    layer.append(p);
+  }
+  return layer;
 }
 
 // ============================================================ abas da direita
@@ -2754,7 +3027,7 @@ function renderSidebar() {
           u.dataset.speak = m.key;
           u.classList.toggle('speaking', C.speaking.has(m.key));
           u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name), flagsEl(m.voice, m.key));
-          if (m.key !== 'me') u.onclick = () => openVolume(m.user, u);
+          u.onclick = (e) => (e.stopPropagation(), openProfile(m.user, u));
           ul.append(u);
           rows.push([c.id + ':' + m.user.id, u]);
         }
@@ -2799,7 +3072,9 @@ function renderPeopleList() {
       const li = el('li');
       li.dataset.uid = m.user.id;
       const who = el('div', 'who');
-      const pname = el('div', 'pname', m.user.name + (m.key === 'me' ? ' (você)' : ''));
+      const pname = el('div', 'pname');
+      pname.append(nameEl(m.user.name, m.user.color, m.user.id));
+      if (m.key === 'me') pname.append(el('span', 'muted', ' (você)'));
       const g = googleOf(m.user.id);
       if (g) {
         pname.append(icon('badge-check', 'g-badge'));
@@ -2809,10 +3084,13 @@ function renderPeopleList() {
       const sub = el('div', 'psub');
       const vch = m.voice && channel(m.voice.ch);
       if (vch) sub.append(icon(m.voice.streaming ? 'screen-share' : 'volume-2'), el('span', '', (m.voice.streaming ? 'Ao vivo em ' : '') + vch.name));
-      else sub.append(el('span', '', 'Online'));
+      else {
+        const st = profileOf(m.user.id);
+        sub.append(el('span', '', st.status || st.statusEmoji ? `${st.statusEmoji} ${st.status}`.trim() : 'Online'));
+      }
       who.append(sub);
       li.append(avatar(m.user.name, m.user.color, '', m.user.id), who, flagsEl(m.voice));
-      if (m.key !== 'me') li.onclick = () => openVolume(m.user, li);
+      li.onclick = () => openProfile(m.user, li);
       return li;
     }),
   );
@@ -2827,8 +3105,9 @@ function renderPeopleList() {
 
 function renderMeCard() {
   $('#meAvatar').replaceWith(Object.assign(avatar(me.name, me.color, '', me.id), { id: 'meAvatar' }));
-  $('#meName').textContent = me.name;
-  $('#meSub').textContent = C.ch ? (C.screen ? 'Ao vivo' : 'Na call') : 'Online';
+  $('#meName').replaceChildren(nameEl(me.name, me.color, me.id));
+  $('#meAvatar').onclick = $('#meName').onclick = () => openProfile(me, $('#meAvatar'));
+  $('#meSub').textContent = C.ch ? (C.screen ? 'Ao vivo' : 'Na call') : `${me.p.statusEmoji || ''} ${me.p.status || ''}`.trim() || 'Online';
   const off = C.muted || C.deafened || (C.ch && !C.mic);
   setIcon($('#btnMute'), off ? 'mic-off' : 'mic');
   $('#btnMute').classList.toggle('off', off);
@@ -2909,9 +3188,9 @@ function renderStage() {
       const isLive = m.key !== 'me' && m.voice?.streaming;
       const card = el('div', 'pcard' + (C.speaking.has(m.key) ? ' speaking' : '') + (isLive ? ' live-card' : ''));
       card.dataset.speak = m.key;
-      card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), el('div', 'pc-name', m.user.name + (m.key === 'me' ? ' (você)' : '')));
+      card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
-      if (m.key !== 'me') card.onclick = () => openVolume(m.user, card);
+      card.onclick = (e) => !e.target.closest('button') && openProfile(m.user, card);
       grid.append(card);
       const k = 'card:' + m.key + (isLive ? ':live' : '');
       keysNow.add(k);
@@ -3151,7 +3430,6 @@ function colorPicker(box, current, onPick) {
 
 let testStream = null;
 let testTimer = null;
-let pendingColor = me.color;
 async function fillDevices() {
   const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
   const fill = (sel, kind, value) => {
@@ -3197,11 +3475,30 @@ function stopMicTest() {
   testStream = null;
   $('#micMeter').style.width = '0';
 }
-$('#btnSettings').onclick = async () => {
+// ============================================================ configurações (em abas, como no Discord)
+let stPage = 'profile';
+function showStPage(page) {
+  stPage = page;
+  $$('.st-tab[data-st]').forEach((t) => t.classList.toggle('active', t.dataset.st === page));
+  $$('.st-page').forEach((p) => (p.hidden = p.dataset.page !== page));
+  // Salvar só faz sentido onde há coisa para salvar
+  const saves = ['profile', 'voice', 'app'].includes(page);
+  $('#btnSaveSettings').hidden = !saves;
+  $('#stFootNote').textContent = saves ? '' : 'Isto é salvo na hora.';
+  $('.st-foot [data-close]').textContent = saves ? 'Cancelar' : 'Fechar';
+  if (page === 'voice') startMicTest();
+  else stopMicTest();
+  if (page === 'plugins') renderPluginList();
+  if (page === 'themes') renderThemeList();
+  if (page === 'look') fillLookForm();
+  popIn($(`.st-page[data-page="${page}"]`), { duration: 0.16 });
+}
+$$('.st-tab[data-st]').forEach((t) => (t.onclick = () => showStPage(t.dataset.st)));
+
+async function openSettings(page = 'profile') {
   renderGoogleAcc();
-  $('#stName').value = me.name;
-  pendingColor = me.color;
-  colorPicker($('#stColors'), me.color, (c) => (pendingColor = c));
+  $$('[data-nogoogle]').forEach((e) => (e.hidden = !$('[data-google]').hidden));
+  fillProfileForm();
   $('#stNoise').value = settings.noise;
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
@@ -3210,15 +3507,19 @@ $('#btnSettings').onclick = async () => {
   $('#stTray').checked = desktopPrefs.tray;
   $('#stAutostart').checked = desktopPrefs.autostart;
   await fillDevices();
-  openDialog($('#settingsDlg'));
-  startMicTest();
-};
+  if (!$('#settingsDlg').open) openDialog($('#settingsDlg'));
+  showStPage(page);
+}
+$('#btnSettings').onclick = () => openSettings(stPage === 'voice' ? 'voice' : 'profile');
 $('#stMic').onchange = $('#stNoise').onchange = $('#stEcho').onchange = $('#stHear').onchange = startMicTest;
 $('#settingsDlg').addEventListener('close', stopMicTest);
 $('#btnSaveSettings').onclick = async () => {
+  // perfil
   me.name = cleanName($('#stName').value) || me.name;
-  me.color = pendingColor;
+  me.color = cleanHex(draft.color) || me.color;
+  me.p = cleanProfile(draft);
   store.set('profile', me);
+  // voz
   const micChanged = settings.mic !== $('#stMic').value || settings.noise !== $('#stNoise').value || settings.echo !== $('#stEcho').checked;
   settings.mic = $('#stMic').value;
   settings.out = $('#stOut').value;
@@ -3252,7 +3553,700 @@ $('#btnSaveSettings').onclick = async () => {
   }
   sendHi();
   renderPresence();
+  for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
 };
+
+// ----- editor de perfil com prévia ao vivo -----
+let draft = {};
+const MAX_PROFILE_IMG = 6 * 1024 * 1024;
+const draftUrls = {}; // prévia das imagens novas antes de salvar
+function fillProfileForm() {
+  draft = { ...me.p, color: me.color };
+  $('#stName').value = me.name;
+  $('#pfPronouns').value = draft.pronouns || '';
+  $('#pfStatus').value = draft.status || '';
+  $('#pfStatusEmoji').textContent = draft.statusEmoji || '🙂';
+  $('#pfStatusEmoji').classList.toggle('unset', !draft.statusEmoji);
+  $('#pfBio').value = draft.bio || '';
+  $('#pfBannerColor').value = draft.bannerColor || me.color;
+  $('#pfNameColor').value = me.color;
+  $('#pfGradOn').checked = !!draft.grad;
+  $('#pfGrad').value = draft.grad || '#ffffff';
+  $('#pfFont').value = draft.font || '';
+  $('#pfNameFx').value = draft.nameFx || '';
+  $('#pfThemeOn').checked = !!draft.theme;
+  $('#pfTheme1').value = draft.theme?.[0] || '#2a1d14';
+  $('#pfTheme2').value = draft.theme?.[1] || me.color;
+  $('#pfDeco').value = draft.deco || '';
+  $('#pfEffect').value = draft.effect || '';
+  renderProfilePreview();
+}
+function readProfileForm() {
+  draft.pronouns = $('#pfPronouns').value;
+  draft.status = $('#pfStatus').value;
+  draft.bio = $('#pfBio').value;
+  draft.bannerColor = $('#pfBannerColor').value;
+  draft.color = $('#pfNameColor').value;
+  draft.grad = $('#pfGradOn').checked ? $('#pfGrad').value : '';
+  draft.font = $('#pfFont').value;
+  draft.nameFx = $('#pfNameFx').value;
+  draft.theme = $('#pfThemeOn').checked ? [$('#pfTheme1').value, $('#pfTheme2').value] : null;
+  draft.deco = $('#pfDeco').value;
+  draft.effect = $('#pfEffect').value;
+  renderProfilePreview();
+}
+for (const id of ['#stName', '#pfPronouns', '#pfStatus', '#pfBio', '#pfBannerColor', '#pfNameColor', '#pfGradOn', '#pfGrad', '#pfFont', '#pfNameFx', '#pfThemeOn', '#pfTheme1', '#pfTheme2', '#pfDeco', '#pfEffect'])
+  $(id).addEventListener('input', readProfileForm);
+function renderProfilePreview() {
+  $('#pfBioCount').textContent = `${$('#pfBio').value.length}/300`;
+  $('#pfGradWrap').hidden = !$('#pfGradOn').checked;
+  $('#pfThemeWrap').hidden = !$('#pfThemeOn').checked;
+  $('#pfAvatarDel').hidden = !draft.avatar;
+  $('#pfBannerDel').hidden = !draft.banner;
+  const prof = cleanProfile(draft);
+  const user = { id: me.id, name: cleanName($('#stName').value) || me.name, color: cleanHex(draft.color) || me.color };
+  // avatar e nome do rascunho (os do perfil salvo continuam iguais até Salvar)
+  const av = el('span', 'avatar', user.name[0] || '?');
+  av.style.background = user.color;
+  const avUrl = prof.avatar && (draftUrls[prof.avatar] || blobUrls.get(prof.avatar));
+  if (avUrl) av.append(Object.assign(el('img'), { src: avUrl }));
+  else if (!prof.avatar && me.google?.picture) av.append(Object.assign(el('img'), { src: me.google.picture, referrerPolicy: 'no-referrer' }));
+  if (prof.deco) {
+    av.classList.add('deco', 'deco-' + prof.deco);
+    av.style.setProperty('--deco', user.color);
+  }
+  const nm = el('span', 'uname pc-uname', user.name);
+  nm.style.color = user.color;
+  if (prof.font) nm.classList.add('nf-' + prof.font);
+  if (prof.grad) {
+    nm.classList.add('name-grad');
+    nm.style.setProperty('--n1', user.color);
+    nm.style.setProperty('--n2', prof.grad);
+  }
+  if (prof.nameFx) nm.classList.add('nfx-' + prof.nameFx);
+  const bannerUrl = prof.banner && (draftUrls[prof.banner] || blobUrls.get(prof.banner));
+  $('#pfPreview').replaceChildren(profileCard(user, prof, { preview: true, avatarEl: av, nameEl: nm, bannerUrl }));
+}
+let pfFileTarget = 'avatar';
+$('#pfAvatarBtn').onclick = () => {
+  pfFileTarget = 'avatar';
+  $('#pfFile').click();
+};
+$('#pfBannerBtn').onclick = () => {
+  pfFileTarget = 'banner';
+  $('#pfFile').click();
+};
+$('#pfAvatarDel').onclick = () => {
+  draft.avatar = '';
+  renderProfilePreview();
+};
+$('#pfBannerDel').onclick = () => {
+  draft.banner = '';
+  renderProfilePreview();
+};
+$('#pfFile').onchange = async () => {
+  const file = $('#pfFile').files[0];
+  $('#pfFile').value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) return toast('Escolha uma imagem (PNG, JPG, GIF ou WebP)');
+  if (file.size > MAX_PROFILE_IMG) return toast('A imagem passa de 6 MB');
+  const id = 'f:' + randId(12);
+  await blobPut(id, file);
+  draftUrls[id] = URL.createObjectURL(file);
+  draft[pfFileTarget] = id;
+  renderProfilePreview();
+};
+$('#pfStatusEmoji').onclick = (e) =>
+  openEmoji(e.currentTarget, (emoji) => {
+    draft.statusEmoji = draft.statusEmoji === emoji ? '' : emoji;
+    $('#pfStatusEmoji').textContent = draft.statusEmoji || '🙂';
+    $('#pfStatusEmoji').classList.toggle('unset', !draft.statusEmoji);
+    renderProfilePreview();
+  });
+
+// ============================================================ aparência
+const THEMES = {
+  padrao: { name: 'Janja', accent: '#ff7a1a', bg: '#141619', panel: '#1c1f23', panel2: '#23272c', panel3: '#2c3137', line: '#2a2e34', text: '#e4e6ea', muted: '#8b929c', faint: '#5d636c', input: '#121416', code: '#0f1113' },
+  grafite: { name: 'Grafite', accent: '#5865f2', bg: '#1e1f22', panel: '#2b2d31', panel2: '#313338', panel3: '#3f4147', line: '#3a3c42', text: '#f2f3f5', muted: '#b5bac1', faint: '#80848e', input: '#1e1f22', code: '#1e1f22' },
+  meianoite: { name: 'Meia-noite', accent: '#ff7a1a', bg: '#000000', panel: '#0a0a0c', panel2: '#121215', panel3: '#1c1c20', line: '#1c1c21', text: '#e8e8ec', muted: '#8a8a94', faint: '#55555e', input: '#000000', code: '#050506' },
+  roxo: { name: 'Uva', accent: '#b07cff', bg: '#15111c', panel: '#1d1726', panel2: '#251d31', panel3: '#30263f', line: '#2c2338', text: '#ece6f5', muted: '#9d93ad', faint: '#665c75', input: '#120e18', code: '#100c15' },
+  oceano: { name: 'Oceano', accent: '#3aa8f0', bg: '#0c141c', panel: '#111c26', panel2: '#162330', panel3: '#1e2e3e', line: '#1b2a38', text: '#e2ecf5', muted: '#8aa0b4', faint: '#566a7c', input: '#0a1118', code: '#081016' },
+  floresta: { name: 'Floresta', accent: '#4fd18b', bg: '#0f1712', panel: '#141f18', panel2: '#1a271f', panel3: '#223328', line: '#1f2d24', text: '#e3efe7', muted: '#8fa597', faint: '#5a6e61', input: '#0c140f', code: '#0a110d' },
+  sakura: { name: 'Sakura', accent: '#ff6fb5', bg: '#1a1216', panel: '#22171d', panel2: '#2b1d25', panel3: '#382530', line: '#33222c', text: '#f5e6ee', muted: '#b096a4', faint: '#7a6170', input: '#160f13', code: '#130d11' },
+  claro: { name: 'Claro', light: true, accent: '#e8640c', bg: '#e3e5e8', panel: '#f2f3f5', panel2: '#ffffff', panel3: '#e3e5e8', line: '#d4d7dc', text: '#1e1f22', muted: '#5c6370', faint: '#8a919c', input: '#ffffff', code: '#e8eaee' },
+};
+const FONT_FAMILIES = {
+  inter: 'system-ui, -apple-system, "Segoe UI Variable Text", sans-serif',
+  round: '"Segoe UI Variable Display", "Arial Rounded MT Bold", "Segoe UI", sans-serif',
+  mono: 'Consolas, "Cascadia Mono", monospace',
+  serif: 'Georgia, "Times New Roman", serif',
+};
+const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgba = (h, a) => `rgba(${hexRgb(h).join(', ')}, ${a})`;
+const mixHex = (h, w, t) => '#' + hexRgb(h).map((c, i) => Math.round(c + (hexRgb(w)[i] - c) * t).toString(16).padStart(2, '0')).join('');
+const isLight = (h) => {
+  const [r, g, b] = hexRgb(h).map((c) => c / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55;
+};
+let lookBgUrl = null;
+async function applyLook() {
+  const t = THEMES[look.theme] || THEMES.padrao;
+  const accent = cleanHex(look.accent) || t.accent;
+  const glassA = look.bg ? 1 - look.glass / 100 : 1;
+  const panel = (h) => (look.bg ? rgba(h, glassA) : h);
+  const vars = {
+    '--bg': look.bg ? rgba(t.bg, Math.max(0, glassA - 0.25)) : t.bg,
+    '--titlebar': look.bg ? rgba(mixHex(t.bg, t.light ? '#ffffff' : '#000000', 0.3), glassA) : mixHex(t.bg, t.light ? '#ffffff' : '#000000', 0.3),
+    '--panel': panel(t.panel),
+    '--panel-2': panel(t.panel2),
+    '--panel-3': t.panel3,
+    '--line': t.line,
+    '--text': t.text,
+    '--muted': t.muted,
+    '--faint': t.faint,
+    '--input': look.bg ? rgba(t.input, Math.min(1, glassA + 0.15)) : t.input,
+    '--code': t.code,
+    '--accent': accent,
+    '--accent-2': mixHex(accent, t.light ? '#000000' : '#ffffff', 0.25),
+    '--accent-soft': rgba(accent, 0.14),
+    '--on-accent': isLight(accent) ? '#1a0d02' : '#ffffff',
+    '--font-ui': FONT_FAMILIES[look.family] || '"Segoe UI", system-ui, sans-serif',
+  };
+  let tag = $('#lookVars');
+  if (!tag) {
+    tag = el('style');
+    tag.id = 'lookVars';
+    document.head.append(tag);
+  }
+  tag.textContent = `:root {${Object.entries(vars)
+    .map(([k, v]) => `${k}: ${v};`)
+    .join(' ')} color-scheme: ${t.light ? 'light' : 'dark'}; }`;
+  const b = document.body;
+  b.classList.toggle('light', !!t.light);
+  b.classList.toggle('compact', !!look.compact);
+  b.classList.toggle('no-anim', !!look.noAnim);
+  b.classList.toggle('r-square', look.radius === 'square');
+  b.classList.toggle('r-round', look.radius === 'round');
+  b.classList.toggle('has-bg', !!look.bg);
+  $('#app').style.zoom = look.font === 100 ? '' : look.font / 100;
+  // fundo
+  let layer = $('#bgLayer');
+  if (look.bg) {
+    if (!layer) {
+      layer = el('div');
+      layer.id = 'bgLayer';
+      document.body.prepend(layer);
+    }
+    const url = blobUrls.get(look.bg) || (await fileUrl(look.bg, me.id));
+    lookBgUrl = url;
+    layer.style.backgroundImage = url ? `url("${url}")` : '';
+    layer.style.filter = look.blur ? `blur(${look.blur}px)` : '';
+    layer.style.setProperty('--dim', look.dim / 100);
+  } else layer?.remove();
+  // temas importados e CSS rápido vêm por último para poder sobrescrever tudo
+  $$('style[data-user-theme]').forEach((s) => s.remove());
+  for (const th of look.themes.filter((x) => x.on)) {
+    const s = el('style');
+    s.dataset.userTheme = th.id;
+    s.textContent = th.css;
+    document.head.append(s);
+  }
+  let quick = $('#quickCssTag');
+  if (!quick) {
+    quick = el('style');
+    quick.id = 'quickCssTag';
+  }
+  quick.textContent = look.css || '';
+  document.head.append(quick); // sempre o último
+}
+const saveLook = () => {
+  saveSettings();
+  applyLook();
+};
+function fillLookForm() {
+  const grid = $('#lkThemes');
+  grid.replaceChildren(
+    ...Object.entries(THEMES).map(([id, t]) => {
+      const b = el('button', 'theme-tile' + (look.theme === id ? ' active' : ''));
+      b.type = 'button';
+      const sw = el('span', 'theme-swatch');
+      sw.style.background = `linear-gradient(135deg, ${t.bg} 0 45%, ${t.panel2} 45% 75%, ${t.accent} 75%)`;
+      b.append(sw, el('span', '', t.name));
+      b.onclick = () => {
+        look.theme = id;
+        saveLook();
+        fillLookForm();
+      };
+      return b;
+    }),
+  );
+  $('#lkAccent').value = cleanHex(look.accent) || (THEMES[look.theme] || THEMES.padrao).accent;
+  $('#lkDim').value = look.dim;
+  $('#lkBlur').value = look.blur;
+  $('#lkGlass').value = look.glass;
+  $('#lkFont').value = look.font;
+  $('#lkFontFamily').value = look.family;
+  $('#lkRadius').value = look.radius;
+  $('#lkCompact').checked = look.compact;
+  $('#lkNoAnim').checked = look.noAnim;
+  $('#lkNoFx').checked = look.noFx;
+  $('#lkBgDel').hidden = !look.bg;
+  $('#lkBgOpts').hidden = !look.bg;
+  renderLookLabels();
+}
+function renderLookLabels() {
+  $('#lkDimVal').textContent = look.dim + '%';
+  $('#lkBlurVal').textContent = look.blur + 'px';
+  $('#lkGlassVal').textContent = look.glass + '%';
+  $('#lkFontVal').textContent = look.font + '%';
+}
+const lookInputs = {
+  '#lkAccent': (v) => (look.accent = v),
+  '#lkDim': (v) => (look.dim = +v),
+  '#lkBlur': (v) => (look.blur = +v),
+  '#lkGlass': (v) => (look.glass = +v),
+  '#lkFont': (v) => (look.font = +v),
+  '#lkFontFamily': (v) => (look.family = v),
+  '#lkRadius': (v) => (look.radius = v),
+};
+for (const [id, set] of Object.entries(lookInputs))
+  $(id).addEventListener('input', () => {
+    set($(id).value);
+    renderLookLabels();
+    saveLook();
+  });
+for (const [id, key] of [
+  ['#lkCompact', 'compact'],
+  ['#lkNoAnim', 'noAnim'],
+  ['#lkNoFx', 'noFx'],
+])
+  $(id).addEventListener('change', () => {
+    look[key] = $(id).checked;
+    saveLook();
+    renderPresence();
+    for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
+  });
+$('#lkAccentReset').onclick = () => {
+  look.accent = '';
+  saveLook();
+  fillLookForm();
+};
+$('#lkBgBtn').onclick = () => $('#lkBgFile').click();
+$('#lkBgDel').onclick = () => {
+  look.bg = '';
+  saveLook();
+  fillLookForm();
+};
+$('#lkBgFile').onchange = async () => {
+  const file = $('#lkBgFile').files[0];
+  $('#lkBgFile').value = '';
+  if (!file?.type.startsWith('image/')) return;
+  if (file.size > 30 * 1024 * 1024) return toast('A imagem passa de 30 MB');
+  const id = 'f:' + randId(12);
+  await blobPut(id, file);
+  blobUrls.set(id, URL.createObjectURL(file));
+  look.bg = id;
+  saveLook();
+  fillLookForm();
+};
+
+// ----- temas importados (formato do BetterDiscord) e CSS rápido -----
+function parseMeta(src) {
+  const block = String(src).match(/\/\*\*([\s\S]*?)\*\//)?.[1] || '';
+  const meta = {};
+  for (const m of block.matchAll(/@(\w+)\s+([^\n\r]*)/g)) meta[m[1]] = m[2].replace(/\s*\*?\s*$/, '').trim().slice(0, 200);
+  return meta;
+}
+async function readImport(fileInput, urlPrompt) {
+  if (fileInput) {
+    const f = fileInput.files[0];
+    fileInput.value = '';
+    if (!f) return null;
+    if (f.size > 1024 * 1024) throw new Error('Arquivo grande demais (máximo 1 MB)');
+    return f.text();
+  }
+  const url = prompt(urlPrompt);
+  if (!url) return null;
+  if (!/^https:\/\//.test(url)) throw new Error('Use um link https://');
+  const r = await fetch(url.replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\//, 'https://raw.githubusercontent.com/$1/$2/'));
+  if (!r.ok) throw new Error('O link respondeu ' + r.status);
+  const text = await r.text();
+  if (text.length > 1024 * 1024) throw new Error('Arquivo grande demais (máximo 1 MB)');
+  return text;
+}
+async function importTheme(fromUrl) {
+  try {
+    const css = await readImport(fromUrl ? null : $('#thFile'), 'Link do tema (.theme.css), ex.: um arquivo raw do GitHub');
+    if (css == null) return;
+    const meta = parseMeta(css);
+    const th = { id: 't:' + randId(6), name: meta.name || 'Tema sem nome', author: meta.author || '', description: meta.description || '', version: meta.version || '', css, on: true };
+    look.themes = look.themes.filter((x) => x.name !== th.name).concat(th);
+    saveLook();
+    renderThemeList();
+    toast(`Tema "${th.name}" instalado`);
+  } catch (err) {
+    toast('Não deu para importar: ' + err.message);
+  }
+}
+$('#thImport').onclick = () => $('#thFile').click();
+$('#thFile').onchange = () => importTheme(false);
+$('#thFromUrl').onclick = () => importTheme(true);
+function renderThemeList() {
+  const list = $('#thList');
+  list.replaceChildren(
+    ...look.themes.map((th) =>
+      pluginRow({
+        name: th.name,
+        desc: th.description,
+        author: th.author,
+        version: th.version,
+        on: th.on,
+        onToggle: (on) => {
+          th.on = on;
+          saveLook();
+        },
+        onDelete: () => {
+          look.themes = look.themes.filter((x) => x !== th);
+          saveLook();
+          renderThemeList();
+        },
+      }),
+    ),
+  );
+  if (!look.themes.length) list.append(el('p', 'muted small', 'Nenhum tema instalado.'));
+  $('#quickCss').value = look.css;
+}
+let quickTimer;
+$('#quickCss').addEventListener('input', () => {
+  clearTimeout(quickTimer);
+  quickTimer = setTimeout(() => {
+    look.css = $('#quickCss').value;
+    saveLook();
+  }, 150);
+});
+$('#quickCss').addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return;
+  e.preventDefault();
+  const ta = e.target;
+  ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+  ta.dispatchEvent(new Event('input'));
+});
+
+// linha de plugin/tema com interruptor
+function pluginRow({ name, desc, author, version, on, onToggle, onDelete, error }) {
+  const row = el('div', 'plugin-row' + (on ? ' on' : ''));
+  const info = el('div', 'pl-info');
+  const title = el('div', 'pl-name', name);
+  if (version) title.append(el('span', 'pl-ver', 'v' + version));
+  info.append(title);
+  if (author) info.append(el('div', 'pl-author', 'por ' + author));
+  if (desc) info.append(el('div', 'pl-desc', desc));
+  if (error) info.append(el('div', 'pl-error', error));
+  const sw = el('label', 'switch');
+  const cb = el('input');
+  cb.type = 'checkbox';
+  cb.checked = on;
+  cb.onchange = () => {
+    row.classList.toggle('on', cb.checked);
+    onToggle(cb.checked);
+  };
+  sw.append(cb, el('span', 'slider'));
+  row.append(info);
+  if (onDelete) {
+    const del = el('button', 'icon-btn danger');
+    del.type = 'button';
+    del.title = 'Remover';
+    del.append(icon('trash-2', 'sm'));
+    del.onclick = () => confirm(`Remover "${name}"?`) && onDelete();
+    row.append(del);
+  }
+  row.append(sw);
+  return row;
+}
+
+// ============================================================ plugins embutidos (estilo Vencord)
+const BUILTIN_PLUGINS = [
+  { id: 'messageLogger', name: 'Mensagens apagadas', desc: 'Guarda neste PC o que os outros apagaram ou editaram e mostra riscado/em vermelho. Só funciona para o que chegar depois de ligar.' },
+  { id: 'volumeBoost', name: 'Volume até 300%', desc: 'O volume de cada amigo (clique na pessoa) vai até 300%, para quem tem o mic baixinho.' },
+  { id: 'imageZoom', name: 'Zoom nas imagens', desc: 'Na imagem aberta em tela cheia: roda do mouse dá zoom e arrastar move.' },
+  { id: 'fullTime', name: 'Horário completo', desc: 'Mostra data e horário com segundos nas mensagens.' },
+  { id: 'dblClick', name: 'Clique duplo', desc: 'Clique duplo na sua mensagem edita; na dos outros, responde.' },
+  { id: 'charCount', name: 'Contador de caracteres', desc: 'Mostra quantos caracteres faltam (máximo 2000) enquanto você digita.' },
+  { id: 'mentions', name: 'Destacar quando falam de você', desc: 'Mensagem com o seu nome (ou @nome) fica destacada e toca o som mesmo com o chat aberto.' },
+  { id: 'silentTyping', name: 'Digitação silenciosa', desc: 'Os outros não veem "está digitando…" quando você escreve.' },
+  { id: 'hideBot', name: 'Esconder o DJ', desc: 'Esconde as mensagens do DJ no chat (os comandos continuam funcionando).' },
+  { id: 'callTimer', name: 'Tempo de call', desc: 'Mostra há quanto tempo você está na call, embaixo do nome do canal.' },
+  { id: 'noTypingSounds', name: 'Sem som de mensagem', desc: 'Não toca som quando chega mensagem (a janela ainda pisca).' },
+];
+function renderPluginList() {
+  const q = $('#plSearch').value.trim().toLowerCase();
+  const match = (p) => !q || (p.name + ' ' + p.desc).toLowerCase().includes(q);
+  $('#plBuiltin').replaceChildren(
+    ...BUILTIN_PLUGINS.filter(match).map((p) =>
+      pluginRow({
+        name: p.name,
+        desc: p.desc,
+        on: plug(p.id),
+        onToggle: (on) => {
+          settings.plugins[p.id] = on;
+          saveSettings();
+          onPluginToggled(p.id);
+        },
+      }),
+    ),
+  );
+  $('#plUser').replaceChildren(
+    ...userPlugins.filter(match).map((p) =>
+      pluginRow({
+        name: p.name,
+        desc: p.desc,
+        author: p.author,
+        version: p.version,
+        on: p.on,
+        error: pluginErrors.get(p.id),
+        onToggle: (on) => {
+          p.on = on;
+          saveUserPlugins();
+          on ? startUserPlugin(p) : stopUserPlugin(p.id);
+          setTimeout(renderPluginList, 50);
+        },
+        onDelete: () => {
+          stopUserPlugin(p.id);
+          userPlugins = userPlugins.filter((x) => x !== p);
+          saveUserPlugins();
+          renderPluginList();
+        },
+      }),
+    ),
+  );
+  if (!userPlugins.length) $('#plUser').append(el('p', 'muted small', 'Nenhum plugin seu instalado ainda. Veja o exemplo no README do projeto.'));
+}
+$('#plSearch').addEventListener('input', renderPluginList);
+function onPluginToggled(id) {
+  if (['messageLogger', 'fullTime', 'mentions', 'dblClick', 'hideBot'].includes(id)) for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
+  if (id === 'volumeBoost') applyVolumes();
+  if (id === 'charCount') updateCharCounts();
+  if (id === 'callTimer') renderCallTimer();
+}
+
+// contador de caracteres
+function updateCharCounts() {
+  for (const field of [input, callInput]) {
+    let c = field.parentElement.querySelector(':scope > .char-count');
+    if (!c) {
+      c = el('span', 'char-count');
+      field.parentElement.append(c);
+      field.addEventListener('input', updateCharCounts);
+    }
+    const n = field.value.length;
+    c.hidden = !plug('charCount') || !n;
+    c.textContent = `${n}/2000`;
+    c.classList.toggle('over', n > 2000);
+  }
+}
+updateCharCounts();
+
+// tempo de call
+function renderCallTimer() {
+  let t = $('#vbTimer');
+  if (!t) {
+    t = el('span', 'vb-timer');
+    t.id = 'vbTimer';
+    $('#vbChannel').after(t);
+  }
+  t.hidden = !plug('callTimer') || !C.ch || !C.joinedAt;
+  if (t.hidden) return;
+  const s = Math.floor((Date.now() - C.joinedAt) / 1000);
+  const p2 = (n) => String(n).padStart(2, '0');
+  t.textContent = `${Math.floor(s / 3600)}:${p2(Math.floor(s / 60) % 60)}:${p2(s % 60)}`;
+}
+setInterval(renderCallTimer, 1000);
+
+// zoom nas imagens
+{
+  const img = $('#lightboxImg');
+  const z = { s: 1, x: 0, y: 0, drag: null, moved: false };
+  const apply = () => (img.style.transform = `translate(${z.x}px, ${z.y}px) scale(${z.s})`);
+  $('#lightbox').addEventListener('click', (e) => {
+    if (plug('imageZoom') && (e.target === img || z.moved)) e.stopImmediatePropagation();
+    z.moved = false;
+  }, true);
+  img.addEventListener('wheel', (e) => {
+    if (!plug('imageZoom')) return;
+    e.preventDefault();
+    z.s = clamp(z.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 1, 8);
+    if (z.s === 1) z.x = z.y = 0;
+    apply();
+  });
+  img.addEventListener('pointerdown', (e) => {
+    if (!plug('imageZoom') || z.s === 1) return;
+    z.drag = { x: e.clientX - z.x, y: e.clientY - z.y };
+    img.setPointerCapture(e.pointerId);
+  });
+  img.addEventListener('pointermove', (e) => {
+    if (!z.drag) return;
+    z.x = e.clientX - z.drag.x;
+    z.y = e.clientY - z.drag.y;
+    z.moved = true;
+    apply();
+  });
+  img.addEventListener('pointerup', () => (z.drag = null));
+  new MutationObserver(() => {
+    if (!$('#lightbox').hidden) return;
+    Object.assign(z, { s: 1, x: 0, y: 0 });
+    img.style.transform = '';
+  }).observe($('#lightbox'), { attributes: true, attributeFilter: ['hidden'] });
+}
+
+// ============================================================ plugins do usuário (estilo BetterDiscord)
+// Um plugin é um .plugin.js com cabeçalho /** @name … */ e module.exports = class { start() {} stop() {} }.
+// Ele recebe a API em `janja` (veja o README).
+let userPlugins = store.get('userPlugins', []);
+const saveUserPlugins = () => store.set('userPlugins', userPlugins);
+const pluginErrors = new Map();
+const running = new Map(); // id -> { inst, cleanup: [] }
+const pluginHooks = { message: new Map(), join: new Map(), leave: new Map() }; // evento -> Map(pluginId -> Set(fn))
+const pluginCommands = new Map(); // nome -> { plugin, desc, fn }
+function pluginEmit(event, payload) {
+  for (const [pid, fns] of pluginHooks[event] || []) {
+    for (const fn of fns) {
+      try {
+        fn(payload);
+      } catch (err) {
+        console.warn('plugin', pid, err);
+      }
+    }
+  }
+}
+function pluginApi(pid) {
+  const cleanup = () => running.get(pid)?.cleanup;
+  const on = (event, fn) => {
+    const map = pluginHooks[event];
+    if (!map || typeof fn !== 'function') throw new Error('Evento desconhecido: ' + event);
+    if (!map.has(pid)) map.set(pid, new Set());
+    map.get(pid).add(fn);
+    const off = () => map.get(pid)?.delete(fn);
+    cleanup()?.push(off);
+    return off;
+  };
+  const msgOut = (m) => ({ id: m.id, channel: m.ch, author: m.name, authorId: m.uid, text: m.text, mine: m.uid === me.id, bot: !!m.bot, time: m.ts });
+  return Object.freeze({
+    version: () => $('#appVersion').textContent.replace('janjahaters v', ''),
+    me: () => ({ id: me.id, name: me.name, color: me.color }),
+    channel: () => {
+      const c = channel(S.view);
+      return c ? { id: c.id, name: c.name, type: c.type } : null;
+    },
+    friends: () => uniquePeers(() => true).map((p) => ({ id: p.user.id, name: p.user.name, inCall: !!p.voice?.ch })),
+    toast: (text) => toast(String(text).slice(0, 200)),
+    send(text, ch) {
+      const target = ch || textChatCh() || callChatCh();
+      if (!target || !channel(target)) throw new Error('Nenhum canal aberto');
+      put({ k: 'msg', id: 'm:' + randId(), ch: target, uid: me.id, name: me.name, color: me.color, text: String(text).slice(0, 2000), att: [], ts: Date.now() });
+    },
+    messages: (ch = S.view) => messagesOf(ch).map(msgOut),
+    onMessage: (fn) => on('message', (m) => fn(msgOut(m))),
+    on,
+    command(name, desc, fn) {
+      const n = String(name).toLowerCase();
+      if (!/^\w{1,24}$/.test(n) || DJ_CMDS.has(n)) throw new Error('Nome de comando inválido ou já usado: ' + name);
+      pluginCommands.set(n, { plugin: pid, desc: String(desc || ''), fn });
+      const off = () => pluginCommands.get(n)?.plugin === pid && pluginCommands.delete(n);
+      cleanup()?.push(off);
+      return off;
+    },
+    addCSS(id, css) {
+      const tagId = `plugcss-${pid}-${id}`.replace(/[^\w-]/g, '');
+      let tag = document.getElementById(tagId);
+      if (!tag) {
+        tag = el('style');
+        tag.id = tagId;
+        document.head.append(tag);
+        cleanup()?.push(() => tag.remove());
+      }
+      tag.textContent = String(css);
+    },
+    removeCSS: (id) => document.getElementById(`plugcss-${pid}-${id}`.replace(/[^\w-]/g, ''))?.remove(),
+    storage: {
+      get: (k, d) => store.get(`plug:${pid}:${k}`, d),
+      set: (k, v) => store.set(`plug:${pid}:${k}`, v),
+    },
+  });
+}
+// o código roda como <script> (blob) para os erros apontarem a linha certa
+window.__janjaLoad = (pid, factory) => {
+  const slot = running.get(pid);
+  if (!slot) return;
+  const p = userPlugins.find((x) => x.id === pid);
+  const module = { exports: {} };
+  factory(module, module.exports, pluginApi(pid));
+  let ex = module.exports;
+  const meta = { name: p?.name, author: p?.author, version: p?.version };
+  const inst = typeof ex === 'function' ? (ex.prototype?.start ? new ex(meta) : ex(meta)) : ex;
+  slot.inst = inst;
+  inst?.start?.();
+};
+function startUserPlugin(p) {
+  if (running.has(p.id)) return;
+  pluginErrors.delete(p.id);
+  running.set(p.id, { inst: null, cleanup: [] });
+  const src = `try { window.__janjaLoad(${JSON.stringify(p.id)}, function (module, exports, janja) {\n${p.code}\n}); } catch (err) { window.__janjaFail(${JSON.stringify(p.id)}, err); }`;
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  const s = el('script');
+  s.src = url;
+  s.onload = s.onerror = () => {
+    URL.revokeObjectURL(url);
+    s.remove();
+  };
+  document.head.append(s);
+}
+window.__janjaFail = (pid, err) => {
+  pluginErrors.set(pid, 'Erro: ' + (err?.message || err));
+  stopUserPlugin(pid);
+  const p = userPlugins.find((x) => x.id === pid);
+  toast(`O plugin "${p?.name || pid}" deu erro: ${err?.message || err}`);
+  if ($('#settingsDlg').open && stPage === 'plugins') renderPluginList();
+};
+function stopUserPlugin(pid) {
+  const slot = running.get(pid);
+  if (!slot) return;
+  running.delete(pid);
+  try {
+    slot.inst?.stop?.();
+  } catch (err) {
+    console.warn('plugin stop', err);
+  }
+  for (const fn of slot.cleanup) fn();
+  for (const map of Object.values(pluginHooks)) map.delete(pid);
+}
+async function importPlugin(fromUrl) {
+  try {
+    const code = await readImport(fromUrl ? null : $('#plFile'), 'Link do plugin (.plugin.js), ex.: um arquivo raw do GitHub');
+    if (code == null) return;
+    const meta = parseMeta(code);
+    if (!confirm(`Instalar o plugin "${meta.name || 'sem nome'}"${meta.author ? ' de ' + meta.author : ''}?\n\nEle vai rodar com acesso total ao app. Só continue se você confia em quem fez.`)) return;
+    const p = { id: 'p:' + randId(6), name: meta.name || 'Plugin sem nome', author: meta.author || '', desc: meta.description || '', version: meta.version || '', code, on: true };
+    const old = userPlugins.find((x) => x.name === p.name);
+    if (old) {
+      stopUserPlugin(old.id);
+      userPlugins = userPlugins.filter((x) => x !== old);
+    }
+    userPlugins.push(p);
+    saveUserPlugins();
+    startUserPlugin(p);
+    setTimeout(renderPluginList, 100);
+    toast(`Plugin "${p.name}" instalado`);
+  } catch (err) {
+    toast('Não deu para importar: ' + err.message);
+  }
+}
+$('#plImport').onclick = () => $('#plFile').click();
+$('#plFile').onchange = () => importPlugin(false);
+$('#plFromUrl').onclick = () => importPlugin(true);
+
+applyLook();
+for (const p of userPlugins) if (p.on) startUserPlugin(p);
+
 // ----- conta Google (opcional): nome e foto, com selo conferido pelos amigos -----
 const ipcError = (err) => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const GOOGLE_PIC = /^https:\/\/[\w.-]+\.googleusercontent\.com\//;
@@ -3399,7 +4393,7 @@ if (window.desk?.appInfo) {
       toggleDeafen();
       toast(C.deafened ? 'Áudio desligado' : 'Áudio ligado');
     } else if (action === 'check-update') {
-      if (!$('#settingsDlg').open) $('#btnSettings').click();
+      openSettings('app');
       checkUpdateNow();
     }
   });
@@ -3462,6 +4456,7 @@ $('#setupForm').onsubmit = async (e) => {
 
 function start() {
   for (const r of store.get('recs:' + R.hash, [])) if (validRec(r)) recs.set(r.id, r);
+  loadLogger();
   for (const r of recs.values()) clock = Math.max(clock, Math.min(r.v, Date.now()));
   seed();
   connectRoom();

@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream:; connect-src 'self' wss: https:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval' https://www.youtube.com https://s.ytimg.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: mediastream:; connect-src 'self' wss: https:">
   <title>janjahaters</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -220,49 +220,240 @@
   </dialog>
 
   <dialog id="settingsDlg">
-    <h2>Configurações</h2>
-    <div>
-      <div>
-        <h3>Perfil</h3>
-        <div class="google-row" data-google hidden>
-          <button type="button" class="google-btn" id="stGoogle"><span class="g-logo"></span><span>Conectar conta Google</span></button>
-          <div class="google-acc" id="stGoogleAcc" hidden></div>
-        </div>
-        <label>Nome<input id="stName" maxlength="32"></label>
-        <label>Cor<div class="colors" id="stColors"></div></label>
-        <h3>Áudio</h3>
-        <label>Microfone<select id="stMic"></select></label>
-        <label>Saída de áudio<select id="stOut"></select></label>
-        <div class="mic-test"><span>Teste do mic</span><div class="meter"><div id="micMeter"></div></div></div>
-        <label>Supressão de ruído
-          <select id="stNoise">
-            <option value="strong">Forte (IA: tira teclado, ventilador, barulho de fundo)</option>
-            <option value="basic">Básica (do Windows/navegador)</option>
-            <option value="off">Desligada</option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" id="stEcho"> Cancelamento de eco (para quem usa caixa de som)</label>
-        <label class="check"><input type="checkbox" id="stHear"> Me ouvir no teste do mic (use fone)</label>
-        <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair</label>
-        <div data-desk hidden>
-          <h3>App</h3>
-          <label class="check"><input type="checkbox" id="stHotkeys"> Atalhos que funcionam até dentro do jogo: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> muta o mic, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> ensurdece</label>
-          <label class="check"><input type="checkbox" id="stTray"> O X esconde na bandeja (a call e a música continuam)</label>
-          <label class="check"><input type="checkbox" id="stAutostart"> Abrir junto com o Windows</label>
-        </div>
+    <div class="st-layout">
+      <nav class="st-nav" id="stNav">
+        <div class="st-nav-head">Configurações</div>
+        <button type="button" class="st-tab active" data-st="profile"><i data-icon="user"></i>Perfil</button>
+        <button type="button" class="st-tab" data-st="account"><i data-icon="badge-check"></i>Conta</button>
+        <button type="button" class="st-tab" data-st="voice"><i data-icon="mic"></i>Voz e áudio</button>
+        <button type="button" class="st-tab" data-st="look"><i data-icon="palette"></i>Aparência</button>
+        <button type="button" class="st-tab" data-st="plugins"><i data-icon="puzzle"></i>Plugins</button>
+        <button type="button" class="st-tab" data-st="themes"><i data-icon="brush"></i>Temas e CSS</button>
+        <button type="button" class="st-tab" data-st="app"><i data-icon="settings"></i>App</button>
+        <span class="grow"></span>
+        <button type="button" class="st-tab danger-text" id="btnLeaveGroup"><i data-icon="log-out"></i>Sair do grupo</button>
+        <div class="st-ver"><span class="app-version" id="appVersion"></span></div>
+      </nav>
+
+      <div class="st-body">
+        <!-- ===== Perfil ===== -->
+        <section class="st-page" data-page="profile">
+          <h2>Perfil</h2>
+          <p class="muted">Tudo aqui é de graça e os seus amigos veem do jeitinho que você montar.</p>
+          <div class="pf-editor">
+            <div class="pf-form">
+              <label>Nome<input id="stName" maxlength="32"></label>
+              <div class="pf-row">
+                <label>Pronomes<input id="pfPronouns" maxlength="40" placeholder="ele/dele, ela/dela…"></label>
+                <label>Status
+                  <span class="pf-status"><button type="button" class="icon-btn" id="pfStatusEmoji" title="Emoji do status">🙂</button><input id="pfStatus" maxlength="60" placeholder="O que você está fazendo?"></span>
+                </label>
+              </div>
+              <label>Sobre mim <small class="muted" id="pfBioCount"></small><textarea id="pfBio" maxlength="300" rows="4" placeholder="Aceita **negrito**, *itálico*, links e ||spoiler||"></textarea></label>
+
+              <h3>Avatar e banner</h3>
+              <div class="pf-media">
+                <button type="button" class="ghost sm" id="pfAvatarBtn"><i data-icon="image"></i>Trocar avatar</button>
+                <button type="button" class="ghost sm" id="pfAvatarDel" hidden>Remover avatar</button>
+                <button type="button" class="ghost sm" id="pfBannerBtn"><i data-icon="image"></i>Trocar banner</button>
+                <button type="button" class="ghost sm" id="pfBannerDel" hidden>Remover banner</button>
+                <input type="file" id="pfFile" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+              </div>
+              <small class="muted">GIF animado funciona nos dois. Até 6 MB.</small>
+              <label class="inline">Cor do banner <input type="color" id="pfBannerColor"></label>
+
+              <h3>Nome</h3>
+              <div class="pf-row">
+                <label class="inline">Cor <input type="color" id="pfNameColor"></label>
+                <label class="check"><input type="checkbox" id="pfGradOn"> Degradê</label>
+                <label class="inline" id="pfGradWrap">até <input type="color" id="pfGrad"></label>
+              </div>
+              <label>Fonte do nome
+                <select id="pfFont">
+                  <option value="">Padrão</option>
+                  <option value="serif">Clássica</option>
+                  <option value="mono">Código</option>
+                  <option value="round">Arredondada</option>
+                  <option value="hand">Manuscrita</option>
+                  <option value="display">Impacto</option>
+                  <option value="elegant">Elegante</option>
+                </select>
+              </label>
+              <label>Efeito do nome
+                <select id="pfNameFx">
+                  <option value="">Nenhum</option>
+                  <option value="glow">Brilho</option>
+                  <option value="shine">Reflexo passando</option>
+                  <option value="wave">Arco-íris animado</option>
+                </select>
+              </label>
+
+              <h3>Estilo do perfil</h3>
+              <label class="check"><input type="checkbox" id="pfThemeOn"> Cores do perfil (o cartão fica com o seu degradê)</label>
+              <div class="pf-row" id="pfThemeWrap">
+                <label class="inline">Primária <input type="color" id="pfTheme1"></label>
+                <label class="inline">Destaque <input type="color" id="pfTheme2"></label>
+              </div>
+              <label>Decoração do avatar
+                <select id="pfDeco">
+                  <option value="">Nenhuma</option>
+                  <option value="ring">Anel na sua cor</option>
+                  <option value="glow">Aura brilhante</option>
+                  <option value="rainbow">Arco-íris girando</option>
+                  <option value="fire">Fogo</option>
+                  <option value="ice">Gelo</option>
+                  <option value="gold">Ouro</option>
+                  <option value="pulse">Pulsando</option>
+                </select>
+              </label>
+              <label>Efeito do perfil
+                <select id="pfEffect">
+                  <option value="">Nenhum</option>
+                  <option value="sparkle">Brilhinhos</option>
+                  <option value="snow">Neve</option>
+                  <option value="hearts">Corações</option>
+                  <option value="stars">Estrelas</option>
+                  <option value="confetti">Confete</option>
+                </select>
+              </label>
+            </div>
+            <div class="pf-preview">
+              <div class="pf-preview-label">Prévia</div>
+              <div id="pfPreview"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== Conta ===== -->
+        <section class="st-page" data-page="account" hidden>
+          <h2>Conta</h2>
+          <p class="muted">Opcional. Com a conta Google os amigos veem um selo azul conferido pelo Google.</p>
+          <div class="google-row" data-google hidden>
+            <button type="button" class="google-btn" id="stGoogle"><span class="g-logo"></span><span>Conectar conta Google</span></button>
+            <div class="google-acc" id="stGoogleAcc" hidden></div>
+          </div>
+          <p class="muted" data-nogoogle>O login com Google não está ativo nesta versão.</p>
+          <h3>Seus dados</h3>
+          <p class="muted">Perfil, mensagens, sons e configurações ficam só neste PC (e nos PCs dos amigos do grupo).</p>
+        </section>
+
+        <!-- ===== Voz ===== -->
+        <section class="st-page" data-page="voice" hidden>
+          <h2>Voz e áudio</h2>
+          <label>Microfone<select id="stMic"></select></label>
+          <label>Saída de áudio<select id="stOut"></select></label>
+          <div class="mic-test"><span>Teste do mic</span><div class="meter"><div id="micMeter"></div></div></div>
+          <label>Supressão de ruído
+            <select id="stNoise">
+              <option value="strong">Forte (IA: tira teclado, ventilador, barulho de fundo)</option>
+              <option value="basic">Básica (do Windows/navegador)</option>
+              <option value="off">Desligada</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="stEcho"> Cancelamento de eco (para quem usa caixa de som)</label>
+          <label class="check"><input type="checkbox" id="stHear"> Me ouvir no teste do mic (use fone)</label>
+          <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair</label>
+        </section>
+
+        <!-- ===== Aparência ===== -->
+        <section class="st-page" data-page="look" hidden>
+          <h2>Aparência</h2>
+          <p class="muted">Muda na hora e fica só no seu PC.</p>
+          <h3>Tema</h3>
+          <div class="theme-grid" id="lkThemes"></div>
+          <div class="pf-row">
+            <label class="inline">Cor de destaque <input type="color" id="lkAccent"></label>
+            <button type="button" class="ghost sm" id="lkAccentReset">Usar a do tema</button>
+          </div>
+          <h3>Imagem de fundo</h3>
+          <div class="pf-media">
+            <button type="button" class="ghost sm" id="lkBgBtn"><i data-icon="image"></i>Escolher imagem ou GIF</button>
+            <button type="button" class="ghost sm" id="lkBgDel" hidden>Tirar fundo</button>
+            <input type="file" id="lkBgFile" accept="image/*" hidden>
+          </div>
+          <div id="lkBgOpts">
+            <label>Escurecer <b id="lkDimVal"></b><input type="range" id="lkDim" min="0" max="90" step="5"></label>
+            <label>Desfocar <b id="lkBlurVal"></b><input type="range" id="lkBlur" min="0" max="30"></label>
+            <label>Transparência dos painéis <b id="lkGlassVal"></b><input type="range" id="lkGlass" min="0" max="80" step="5"></label>
+          </div>
+          <h3>Texto e layout</h3>
+          <label>Tamanho da fonte <b id="lkFontVal"></b><input type="range" id="lkFont" min="80" max="130" step="5"></label>
+          <label>Fonte do app
+            <select id="lkFontFamily">
+              <option value="">Segoe UI (padrão)</option>
+              <option value="inter">Inter / sistema</option>
+              <option value="round">Arredondada</option>
+              <option value="mono">Monoespaçada</option>
+              <option value="serif">Serifada</option>
+            </select>
+          </label>
+          <label>Cantos
+            <select id="lkRadius">
+              <option value="square">Retos</option>
+              <option value="">Normais</option>
+              <option value="round">Bem arredondados</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="lkCompact"> Mensagens compactas (sem avatar, tudo numa linha)</label>
+          <label class="check"><input type="checkbox" id="lkNoAnim"> Reduzir animações</label>
+          <label class="check"><input type="checkbox" id="lkNoFx"> Esconder efeitos de perfil e decorações animadas dos outros</label>
+        </section>
+
+        <!-- ===== Plugins ===== -->
+        <section class="st-page" data-page="plugins" hidden>
+          <h2>Plugins</h2>
+          <p class="muted">Como no Vencord: liga e desliga na hora.</p>
+          <input class="search-plugins" id="plSearch" placeholder="Procurar plugin…">
+          <div class="plugin-list" id="plBuiltin"></div>
+          <h3>Seus plugins (estilo BetterDiscord)</h3>
+          <p class="muted">Arquivos <code>.plugin.js</code> feitos para o janjahaters. <b>Só instale de quem você confia</b>: um plugin roda com acesso total ao app.</p>
+          <div class="pf-media">
+            <button type="button" class="ghost sm" id="plImport"><i data-icon="upload"></i>Importar arquivo</button>
+            <button type="button" class="ghost sm" id="plFromUrl"><i data-icon="link"></i>Importar de um link</button>
+            <input type="file" id="plFile" accept=".js" hidden>
+          </div>
+          <div class="plugin-list" id="plUser"></div>
+        </section>
+
+        <!-- ===== Temas e CSS ===== -->
+        <section class="st-page" data-page="themes" hidden>
+          <h2>Temas e CSS</h2>
+          <p class="muted">Temas <code>.theme.css</code> no formato do BetterDiscord (cabeçalho com <code>@name</code>) feitos para o janjahaters.</p>
+          <div class="pf-media">
+            <button type="button" class="ghost sm" id="thImport"><i data-icon="upload"></i>Importar tema</button>
+            <button type="button" class="ghost sm" id="thFromUrl"><i data-icon="link"></i>Importar de um link</button>
+            <input type="file" id="thFile" accept=".css" hidden>
+          </div>
+          <div class="plugin-list" id="thList"></div>
+          <h3>CSS rápido (QuickCSS)</h3>
+          <p class="muted">Aplica enquanto você digita. Ex.: <code>:root { --accent: hotpink; }</code></p>
+          <textarea id="quickCss" class="code-area" spellcheck="false" rows="10" placeholder="/* seu CSS aqui */"></textarea>
+        </section>
+
+        <!-- ===== App ===== -->
+        <section class="st-page" data-page="app" hidden>
+          <h2>App</h2>
+          <div data-desk hidden>
+            <label class="check"><input type="checkbox" id="stHotkeys"> Atalhos que funcionam até dentro do jogo: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> muta o mic, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> ensurdece</label>
+            <label class="check"><input type="checkbox" id="stTray"> O X esconde na bandeja (a call e a música continuam)</label>
+            <label class="check"><input type="checkbox" id="stAutostart"> Abrir junto com o Windows</label>
+            <h3>Atualizações</h3>
+          </div>
+          <div class="update-row">
+            <span class="update-status" id="updStatus"></span>
+            <button type="button" class="ghost sm" id="btnCheckUpdate" data-desk hidden><i data-icon="refresh"></i>Procurar atualizações</button>
+          </div>
+        </section>
+
+        <menu class="st-foot">
+          <span class="muted small" id="stFootNote">Aparência, plugins e temas são salvos na hora.</span>
+          <span class="grow"></span>
+          <button class="ghost" data-close>Cancelar</button>
+          <button class="primary" id="btnSaveSettings">Salvar</button>
+        </menu>
       </div>
+      <button type="button" class="icon-btn st-close" data-close title="Fechar (Esc)"><i data-icon="x"></i></button>
     </div>
-    <div class="update-row">
-      <span class="app-version" id="appVersion"></span>
-      <span class="update-status" id="updStatus"></span>
-      <button type="button" class="ghost sm" id="btnCheckUpdate" data-desk hidden><i data-icon="refresh"></i>Procurar atualizações</button>
-    </div>
-    <menu>
-      <button class="ghost danger-text" id="btnLeaveGroup">Sair do grupo</button>
-      <span class="grow"></span>
-      <button class="ghost" data-close>Cancelar</button>
-      <button class="primary" id="btnSaveSettings">Salvar</button>
-    </menu>
   </dialog>
 
   <dialog id="trimDlg">
