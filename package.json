@@ -1,0 +1,69 @@
+{
+  "name": "janjahaters",
+  "productName": "janjahaters",
+  "version": "1.0.0",
+  "description": "Call, stream e música P2P para você e seus amigos.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "build:ui": "esbuild renderer/app.js --bundle --format=iife --target=chrome120 --outfile=renderer/bundle.js",
+    "start": "npm run build:ui && electron .",
+    "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
+    "release": "npm version patch && git push --follow-tags"
+  },
+  "build": {
+    "appId": "app.janjahaters",
+    "productName": "janjahaters",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/index.html",
+      "renderer/style.css",
+      "renderer/bundle.js",
+      "renderer/icon.png"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "janjahaters-Setup-${version}.${ext}",
+      "shortcutName": "janjahaters",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Romeu-q",
+        "repo": "janjahaters-app",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "youtubei.js": "^18.3.0"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "lucide": "^1.63.0",
+    "motion": "^14.7.1",
+    "trystero": "^0.26.0"
+  },
+  "repository": "https://github.com/Romeu-q/janjahaters-app",
+  "author": "Romeu-q"
+}
