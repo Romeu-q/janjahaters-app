@@ -243,8 +243,9 @@ function oauthConfig() {
   try {
     file = JSON.parse(fs.readFileSync(path.join(__dirname, 'oauth.json'), 'utf8'));
   } catch {}
-  const id = process.env.GOOGLE_CLIENT_ID || file.clientId;
-  const secret = process.env.GOOGLE_CLIENT_SECRET || file.clientSecret;
+  // valores colados no GitHub costumam vir com espaço ou quebra de linha no fim
+  const id = String(process.env.GOOGLE_CLIENT_ID || file.clientId || '').trim();
+  const secret = String(process.env.GOOGLE_CLIENT_SECRET || file.clientSecret || '').trim();
   return id && secret ? { id, secret } : null;
 }
 const b64url = (buf) => buf.toString('base64url');

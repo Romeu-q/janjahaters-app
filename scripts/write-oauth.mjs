@@ -2,7 +2,8 @@
 // Sem os secrets, o app sai sem o botão "Entrar com Google".
 import { writeFileSync } from 'node:fs';
 
-const { GOOGLE_CLIENT_ID: clientId, GOOGLE_CLIENT_SECRET: clientSecret } = process.env;
+const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
 if (clientId && clientSecret) {
   writeFileSync('oauth.json', JSON.stringify({ clientId, clientSecret }));
   console.log('login com Google ativado');
