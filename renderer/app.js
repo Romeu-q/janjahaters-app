@@ -1363,7 +1363,17 @@ async function captureScreen(sourceId, withAudio) {
     restrictOwnAudio: true,
   };
   const s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio });
-  for (const at of s.getAudioTracks()) at.contentHint = 'music';
+  for (const at of s.getAudioTracks()) {
+    // Nunca transmitir a call: se o Windows não separou o som do app (deviceId "loopbackWithoutChrome"),
+    // a stream vai sem o som do PC em vez de os amigos ouvirem a própria voz de volta.
+    if (isDesktop && !isMobile && at.getSettings().restrictOwnAudio !== true) {
+      at.stop();
+      s.removeTrack(at);
+      toast('Este Windows não deixa separar o som do app: a stream vai sem o som do PC para ninguém se ouvir de volta');
+      continue;
+    }
+    at.contentHint = 'music';
+  }
   const vt = s.getVideoTracks()[0];
   if (vt) {
     vt.contentHint = CONTENT_HINT[q.mode] || '';
