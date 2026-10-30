@@ -194,16 +194,32 @@ function setIcon(btn, name) {
 const EASE = [0.2, 0.8, 0.2, 1];
 const popIn = (els, opts = {}) => animate(els, { opacity: [0, 1], y: [6, 0] }, { duration: 0.22, ease: EASE, ...opts });
 const springIn = (els, opts = {}) => animate(els, { opacity: [0, 1], scale: [0.9, 1] }, { type: 'spring', stiffness: 380, damping: 26, ...opts });
+// Janelas (dialogs): uma janela que ficasse aberta e invisível (animação de fechar interrompida) bloquearia
+// os cliques e a digitação das outras. Por isso: fechar sempre de verdade e, ao abrir, limpar as travadas.
+function hardClose(dlg) {
+  if (dlg.open) dlg.close();
+  dlg.style.opacity = '';
+  dlg.style.transform = '';
+  dlg.dataset.closing = '';
+}
 function openDialog(dlg) {
+  for (const other of document.querySelectorAll('dialog[open]')) {
+    if (other !== dlg && (other.dataset.closing || Number(getComputedStyle(other).opacity) < 0.05)) hardClose(other);
+  }
+  if (dlg.open) hardClose(dlg); // reabrindo a mesma: começa limpa e fica por cima
   dlg.showModal();
   animate(dlg, { opacity: [0, 1], scale: [0.96, 1], y: [10, 0] }, { duration: 0.22, ease: EASE });
 }
 async function closeDialog(dlg) {
-  await animate(dlg, { opacity: 0, scale: 0.97 }, { duration: 0.12 });
-  dlg.close();
-  dlg.style.opacity = '';
-  dlg.style.transform = '';
+  if (!dlg.open) return;
+  dlg.dataset.closing = '1';
+  // fecha quando a animação acabar, ou em 250 ms se ela travar (janela minimizada, aba em segundo plano…)
+  await Promise.race([animate(dlg, { opacity: 0, scale: 0.97 }, { duration: 0.12 }), new Promise((r) => setTimeout(r, 250))]);
+  if (dlg.dataset.closing) hardClose(dlg);
 }
+// erro inesperado aparece na tela (ajuda a descobrir bug relatado pelos amigos)
+addEventListener('error', (e) => e.message && toast('Erro no app: ' + e.message));
+addEventListener('unhandledrejection', (e) => toast('Erro no app: ' + (e.reason?.message || e.reason)));
 
 // uid: usa o avatar escolhido no perfil (arquivo P2P) ou a foto conferida da conta Google,
 // e a decoração do perfil
