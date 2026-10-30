@@ -6,3 +6,4 @@ renderer/vendor/
 oauth.json
 www/
 android-release.jks
+renderer/ns-lab.bundle.js

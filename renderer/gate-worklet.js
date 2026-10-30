@@ -46,6 +46,14 @@ class JanjaGate extends AudioWorkletProcessor {
     if (this.open && this.below >= 400) this.open = false; // segura um pouco entre as palavras
     const target = !this.on || this.open ? 1 : 0;
 
+    // desligado: passa direto, sem o atraso de 50 ms (o DeepFilterNet3 já tem o portão dele)
+    if (!this.on && this.gain >= 0.999) {
+      if (inp) out.set(inp);
+      else out.fill(0);
+      this.report && this.reportLevel(db, thr, ms);
+      return true;
+    }
+
     const d = this.delay;
     for (let i = 0; i < n; i++) {
       const s = inp ? inp[i] : 0;
@@ -57,16 +65,18 @@ class JanjaGate extends AudioWorkletProcessor {
       out[i] = late * this.gain;
     }
 
-    if (this.report) {
-      this.peak = Math.max(this.peak, db);
-      this.sinceReport += ms;
-      if (this.sinceReport >= 50) {
-        this.port.postMessage({ level: this.peak, thr, open: this.open || !this.on });
-        this.sinceReport = 0;
-        this.peak = -100;
-      }
-    }
+    if (this.report) this.reportLevel(db, thr, ms);
     return true;
+  }
+
+  reportLevel(db, thr, ms) {
+    this.peak = Math.max(this.peak, db);
+    this.sinceReport += ms;
+    if (this.sinceReport >= 50) {
+      this.port.postMessage({ level: this.peak, thr, open: this.open || !this.on });
+      this.sinceReport = 0;
+      this.peak = -100;
+    }
   }
 }
 registerProcessor('janja-gate', JanjaGate);

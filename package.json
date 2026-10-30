@@ -6,11 +6,12 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --outfile=renderer/bundle.js",
+    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/bundle.js",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
     "release": "npm version patch && git push --follow-tags",
-    "build:mobile": "npm run build:ui && node scripts/build-mobile.mjs && npx cap sync android"
+    "build:mobile": "npm run build:ui && node scripts/build-mobile.mjs && npx cap sync android",
+    "build:lab": "node scripts/copy-vendor.mjs && esbuild renderer/ns-lab.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/ns-lab.bundle.js"
   },
   "build": {
     "appId": "app.janjahaters",
@@ -76,6 +77,7 @@
     "@capacitor/cli": "^8.6.0",
     "@capacitor/core": "^8.6.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
+    "@workadventure/noise-suppression": "^0.2.0",
     "electron": "^45.1.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",

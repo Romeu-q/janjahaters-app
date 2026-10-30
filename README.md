@@ -24,6 +24,35 @@ do celular, mas dá para assistir as streams dos amigos. Com a tela desligada a 
 O app procura versão nova sozinho (ao abrir e a cada 30 minutos), baixa em segundo plano e mostra um botão
 verde **Reiniciar** na barra de cima. Se ninguém clicar, a atualização é instalada quando o app for fechado.
 
+## Supressão de ruído do microfone
+
+Configurações → Voz e áudio → Supressão de ruído:
+
+| Modo | O que faz |
+|---|---|
+| **Máxima** (padrão no PC) | [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) (rede neural, 48 kHz). Tira teclado, batidas na mesa e ventilador, inclusive enquanto a pessoa fala. ~70 ms de atraso, ~13% de um núcleo |
+| **Forte** (padrão no celular) | RNNoise. Mais leve (~2%), mas quase não tira teclado |
+| **Básica** | só a supressão do WebRTC/Chromium |
+| Desligada | nada |
+
+O cancelamento de eco do WebRTC (AEC3) vale em todos os modos. Só um removedor de ruído trabalha por vez: na
+Máxima a supressão e o ganho automático do navegador ficam desligados. Se o DeepFilterNet3 não carregar, o app
+usa o RNNoise sozinho e avisa; se o PC não der conta, avisa para trocar para a Forte.
+
+O caminho do som está em `renderer/mic-chain.js`: corte de grave → removedor → portão de sensibilidade (o
+DeepFilterNet3 usa o portão dele, que olha 30 ms à frente para não cortar palavras) → limitador (só fora da Máxima).
+
+### Banco de testes
+
+```bash
+npm run build:lab
+```
+
+Abra `renderer/ns-lab.html` por um servidor local (por exemplo o preview do esbuild em `renderer/`). Ele mistura
+uma fala real (`renderer/lab/voz.wav`, ou um .wav seu) com teclado mecânico, batidas e ventilador, passa pelas
+opções do app e mede a fidelidade da voz, o teclado que vaza durante a fala, o ruído nas pausas, o atraso e a CPU.
+Clique numa célula para ouvir. `ns-lab.html?variantes` compara ajustes do DeepFilterNet3.
+
 ## Personalização
 
 Tudo em **Configurações** (engrenagem embaixo à esquerda):
@@ -136,6 +165,10 @@ Isso sobe a versão (1.0.0 → 1.0.1), cria a tag e envia para o GitHub. O workf
 `.github/workflows/release.yml` monta o instalador e publica a Release; os apps instalados se atualizam sozinhos.
 
 ## Créditos
+
+- Supressão de ruído: [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) (MIT/Apache-2.0) via
+  [@workadventure/noise-suppression](https://github.com/workadventure/noise-suppression) (MIT);
+  RNNoise via [@sapphi-red/web-noise-suppressor](https://github.com/sapphi-red/web-noise-suppressor) (MIT).
 
 Ícone: recorte da foto oficial do Presidente Luiz Inácio Lula da Silva, por Ricardo Stuckert/PR,
 via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Foto_oficial_do_Presidente_da_Rep%C3%BAblica_Luiz_In%C3%A1cio_Lula_da_Silva.jpg),

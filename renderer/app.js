@@ -1,6 +1,6 @@
 import { joinRoom, selfId } from 'trystero';
 import { animate, stagger } from 'motion';
-import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
+import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
 import {
   createElement,
   ArrowDown,
@@ -273,6 +273,12 @@ const settings = Object.assign(
   store.get('settings', {}),
 );
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
+// v1.10: no PC quem estava na "Forte" (RNNoise) passa para a Máxima (DeepFilterNet3); no celular continua o RNNoise (mais leve)
+if ((settings.nsVersion || 0) < 2) {
+  if (settings.noise === 'strong' && !isMobile) settings.noise = 'dfn';
+  settings.nsVersion = 2;
+  store.set('settings', settings);
+}
 // aparência (só deste PC) e plugins ligados
 const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
@@ -813,73 +819,57 @@ const C = {
   focus: null,
 };
 
+// Modos de supressão de ruído (Configurações → Voz e áudio):
+//   'dfn'    DeepFilterNet3. Supressão e ganho do navegador desligados: o modelo é o único removedor.
+//   'strong' RNNoise. Supressão do navegador desligada (não empilha dois removedores).
+//   'basic'  só o WebRTC (supressão de ruído do próprio Chromium).
+//   'off'    nada.
+// O cancelamento de eco do WebRTC (AEC3) é independente e vale em todos.
+const engineOf = (noise) => (noise === 'dfn' ? 'dfn' : noise === 'strong' ? 'rnnoise' : 'none');
 function getRawMic(deviceId = settings.mic, opts = settings) {
   return navigator.mediaDevices.getUserMedia({
     audio: {
       deviceId: deviceId ? { exact: deviceId } : undefined,
+      channelCount: 1,
       echoCancellation: opts.echo,
-      noiseSuppression: opts.noise !== 'off',
-      autoGainControl: true,
+      noiseSuppression: opts.noise === 'basic',
+      autoGainControl: opts.noise !== 'dfn', // no DeepFilterNet3 o ganho vem depois do modelo
     },
   });
 }
 
-// Supressão "forte": o áudio do mic passa pelo RNNoise (rede neural pequena, roda no PC)
-// antes de ir para os amigos. Devolve o stream tratado e uma função para desligar tudo.
+// Um AudioContext só, de 48 kHz (o RNNoise e o DeepFilterNet3 trabalham nessa taxa), para tudo do mic.
 let micCtx;
-let rnnoiseWasm;
-let rnnoiseLoaded;
-// Caminho do som: mic -> corta grave (batida na mesa/teclado) -> RNNoise -> portão (sensibilidade)
-// -> limitador (segura estouro) -> amigos.
-let gateLoaded;
-const gateParams = (opts = settings) => ({ on: opts.gate.on, auto: opts.gate.auto, thr: opts.gate.db });
+const gateParams = (opts = settings) => micGateParams(engineOf(opts.noise), opts.gate);
+let overloadWarned = false;
 async function processMic(raw, opts = settings) {
   const stopRaw = () => raw.getTracks().forEach((t) => t.stop());
-  micCtx ||= new AudioContext({ sampleRate: 48000 }); // o RNNoise trabalha em 48 kHz
+  micCtx ||= new AudioContext({ sampleRate: 48000 });
   if (micCtx.state === 'suspended') await micCtx.resume();
-  gateLoaded ||= micCtx.audioWorklet.addModule('gate-worklet.js').catch((err) => {
-    gateLoaded = null;
-    throw err;
-  });
-  const strong = opts.noise === 'strong';
-  if (strong)
-    rnnoiseLoaded ||= Promise.all([
-      loadRnnoise({ url: 'vendor/rnnoise.wasm', simdUrl: 'vendor/rnnoise_simd.wasm' }).then((w) => (rnnoiseWasm = w)),
-      micCtx.audioWorklet.addModule('vendor/rnnoiseWorklet.js'),
-    ]).catch((err) => {
-      rnnoiseLoaded = null;
-      throw err;
-    });
-  await Promise.all([gateLoaded, strong && rnnoiseLoaded]);
   const src = micCtx.createMediaStreamSource(raw);
-  // a "batida" do teclado e da mesa é quase toda grave; a voz quase não tem nada abaixo de 90 Hz
-  const lowCut = micCtx.createBiquadFilter();
-  lowCut.type = 'highpass';
-  lowCut.frequency.value = 90;
-  lowCut.Q.value = 0.7;
-  const rnn = strong ? new RnnoiseWorkletNode(micCtx, { wasmBinary: rnnoiseWasm, maxChannels: 1 }) : null;
-  const gate = new AudioWorkletNode(micCtx, 'janja-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-  gate.port.postMessage(gateParams(opts));
-  // limitador: estalo alto não chega estourado no ouvido dos amigos
-  const limiter = micCtx.createDynamicsCompressor();
-  limiter.threshold.value = -12;
-  limiter.knee.value = 4;
-  limiter.ratio.value = 20;
-  limiter.attack.value = 0.002;
-  limiter.release.value = 0.12;
+  const chain = await buildMicChain(micCtx, src, {
+    engine: engineOf(opts.noise),
+    gate: opts.gate,
+    onOverload: () => {
+      if (overloadWarned) return;
+      overloadWarned = true;
+      toast('O PC está pesado para a supressão Máxima. Se a sua voz picotar, use a Forte (RNNoise) em Configurações → Voz e áudio.');
+    },
+  });
+  if (opts.noise === 'dfn' && chain.engine !== 'dfn') toast('A supressão Máxima não carregou: usando a Forte (RNNoise)');
   const dest = micCtx.createMediaStreamDestination();
   dest.channelCount = 1;
-  let chain = src.connect(lowCut);
-  if (rnn) chain = chain.connect(rnn);
-  chain.connect(gate).connect(limiter).connect(dest);
+  chain.output.connect(dest);
   return {
     stream: dest.stream,
-    gate,
+    gate: chain.gate,
+    engine: chain.engine,
     stop() {
       stopRaw();
-      for (const node of [src, lowCut, rnn, gate, limiter]) node?.disconnect();
-      rnn?.destroy();
-      gate.port.close();
+      chain.output.disconnect();
+      chain.dispose();
+      src.disconnect();
+      dest.stream.getTracks().forEach((t) => t.stop());
     },
   };
 }
@@ -901,6 +891,7 @@ async function joinVoice(ch) {
     C.mic = m.stream;
     C.micStop = m.stop;
     C.micGate = m.gate || null;
+    C.micEngine = m.engine || null; // qual removedor de ruído está ativo (dfn, rnnoise, none)
   } catch {
     C.mic = null;
     C.micStop = null;
@@ -4154,6 +4145,7 @@ $('#btnSaveSettings').onclick = async () => {
       C.mic = next.stream;
       C.micStop = next.stop;
       C.micGate = next.gate || null;
+      C.micEngine = next.engine || null;
       applyMicEnabled();
       meter('me', next.stream);
       syncMedia();

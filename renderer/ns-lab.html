@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; connect-src 'self' blob:">
+  <title>Banco de testes · supressão de ruído</title>
+  <style>
+    body { font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: #141619; color: #e4e6ea; margin: 24px; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p { color: #8b929c; max-width: 900px; }
+    button { background: #ff7a1a; color: #1a0d02; border: 0; border-radius: 8px; padding: 9px 16px; font-weight: 700; cursor: pointer; }
+    table { border-collapse: collapse; margin-top: 18px; }
+    th, td { border: 1px solid #2a2e34; padding: 8px 10px; text-align: center; }
+    th { background: #1c1f23; font-size: 12px; }
+    td[data-e] { cursor: pointer; }
+    td[data-e]:hover { background: #23272c; }
+    td:first-child { text-align: left; font-weight: 600; }
+    small { color: #8b929c; }
+    #status { margin-left: 12px; color: #8b929c; }
+  </style>
+</head>
+<body>
+  <h1>Banco de testes da supressão de ruído</h1>
+  <p>Mistura uma fala real com teclado mecânico, batidas na mesa e ventilador, e passa por cada opção do app
+    (o mesmo código da call). Medidas no espectro (como o ouvido percebe):
+    <b>voz</b> = diferença em dB entre a voz que sai e a voz limpa, nos trechos com fala (menor = voz mais natural);
+    <b>vaza</b> = quanto de teclado/ruído sobra <i>enquanto a pessoa fala</i>, em dB em relação à voz (mais negativo = melhor);
+    <b>pausa</b> = quanto o ruído cai quando ninguém fala (maior = melhor).
+    CPU = tempo de processamento ÷ duração do áudio, em um núcleo. Clique numa célula para ouvir.</p>
+  <label>Usar outra gravação de voz (.wav, opcional): <input type="file" id="file" accept="audio/*"></label>
+  <p><button id="run">Rodar os testes</button><span id="status"></span></p>
+  <table id="table"></table>
+  <script src="ns-lab.bundle.js"></script>
+</body>
+</html>
