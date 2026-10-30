@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('desk', {
   sources: () => ipcRenderer.invoke('sources'),
   pick: (id, audio) => ipcRenderer.invoke('pick', id, audio),
+  windows: () => ipcRenderer.invoke('windows'),
   ytSearch: (q) => ipcRenderer.invoke('yt-search', q),
   ytRelated: (id) => ipcRenderer.invoke('yt-related', id),
   openExternal: (url) => ipcRenderer.send('open-external', url),

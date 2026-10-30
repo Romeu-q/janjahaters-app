@@ -319,6 +319,12 @@ ipcMain.handle('sources', async () => {
     }));
 });
 
+// lista leve (sem miniaturas) para a stream seguir o jogo: cliente do LoL <-> partida
+ipcMain.handle('windows', async () => {
+  const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+  return sources.map((s) => ({ id: s.id, name: s.name }));
+});
+
 ipcMain.handle('pick', (e, id, audio) => {
   pickedSource = { id, audio: !!audio };
 });
