@@ -409,7 +409,10 @@ function seed() {
   );
 }
 function put(rec) {
-  rec.v = tick();
+  // a minha mudança sempre vence a versão que tenho agora, mesmo que o relógio de um amigo esteja
+  // adiantado (senão renomear um canal criado por ele era descartado sem aviso)
+  rec.v = Math.max(tick(), (recs.get(rec.id)?.v || 0) + 1);
+  clock = Math.max(clock, rec.v);
   rec.by = me.id;
   merge([rec]);
   A.recs?.send([rec]);
