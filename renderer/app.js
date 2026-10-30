@@ -3886,7 +3886,10 @@ $('#chDlgSave').onclick = () => {
   }
   closeDialog($('#channelDlg'));
 };
-$('#chDlgName').onkeydown = (e) => e.key === 'Enter' && $('#chDlgSave').click();
+// corpo com chaves: um "false" devolvido por onkeydown cancela a tecla (não dava para digitar)
+$('#chDlgName').onkeydown = (e) => {
+  if (e.key === 'Enter') $('#chDlgSave').click();
+};
 $('#chDlgDelete').onclick = () => {
   const c = chDlgState.existing;
   if (c.type === 'text' && channels('text').length <= 1) return toast('O grupo precisa de pelo menos um canal de texto');
