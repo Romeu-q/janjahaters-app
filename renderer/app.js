@@ -369,6 +369,8 @@ const sfx = {
   msg: () => beep([988, 1319], 0.07, 0.2),
   mute: () => beep([440], 0.06, 0.2),
   unmute: () => beep([660], 0.06, 0.2),
+  streamOn: () => beep([392, 523, 659, 1047], 0.09), // arpejo subindo: ao vivo
+  streamOff: () => beep([1047, 659, 392], 0.09),
 };
 
 // ============================================================ dados sincronizados
@@ -646,7 +648,11 @@ function onHi(pid, d) {
     sfx.leave();
     pluginEmit('leave', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
-  if (!wasLive && isLive) toast(`${p.user.name} começou uma stream. Clique em Assistir para ver.`);
+  if (!wasLive && isLive) {
+    sfx.streamOn();
+    toast(`${p.user.name} começou uma stream. Clique nele para assistir.`);
+  }
+  if (wasLive && !isLive && isIn) sfx.streamOff();
   if (!isLive && C.watching.delete(pid)) sendHi();
   if (!isIn) dropMedia(p);
   else if (!isLive && p.media.screen) {
@@ -1436,6 +1442,7 @@ async function startStream(sourceId, withAudio) {
     return toast('Não foi possível transmitir: ' + err.message);
   }
   startFollow(allSources.find((x) => x.id === sourceId)?.name || '');
+  sfx.streamOn();
   C.focus = 'me';
   if (S.view !== C.ch) openView(C.ch);
   sendHi();
@@ -1512,6 +1519,7 @@ async function applyStreamQuality() {
 function stopStream(notify) {
   if (!C.screen) return;
   stopFollow();
+  if (notify) sfx.streamOff();
   const s = C.screen;
   C.screen = null;
   syncMedia();
@@ -3230,6 +3238,9 @@ const anchorOf = (node) => {
 function openProfile(user, anchor) {
   if (!user?.id) return;
   if (user.id === 'dj') return selectTab('music');
+  // quem está ao vivo na minha call: popup para entrar na live (como no Discord)
+  const live = [...peers.values()].find((p) => p.user?.id === user.id && p.voice?.streaming && C.ch && p.voice.ch === C.ch);
+  if (live && !C.watching.has(live.pid)) return openLivePopup(user, live, anchor);
   openPopover(anchor, profileCard(user));
 }
 // partículas do "efeito de perfil"
@@ -5579,3 +5590,25 @@ $('#stSfxVol').addEventListener('input', () => {
   sfxPreview = setTimeout(sfx.join, 150);
 });
 let sfxPreview;
+
+// popup de quem está ao vivo: entrar na live ou ver o perfil
+function openLivePopup(user, peer, anchor) {
+  const box = el('div', 'live-pop');
+  const head = el('div', 'live-pop-head');
+  head.append(avatar(user.name, user.color, '', user.id), wrapEl('div', 'live-pop-who', nameEl(user.name, user.color, user.id), el('span', 'live', 'AO VIVO')));
+  const art = el('div', 'live-pop-art');
+  art.append(icon('screen-share'), el('span', '', `${user.name} está transmitindo a tela`));
+  const go = el('button', 'primary wide');
+  go.type = 'button';
+  go.append(icon('eye', 'sm'), document.createTextNode('Assistir stream'));
+  go.onclick = () => {
+    pop.hidden = true;
+    watchStream(peer.pid);
+    if (S.view !== C.ch) openView(C.ch);
+  };
+  const prof = el('button', 'ghost sm wide', 'Ver perfil');
+  prof.type = 'button';
+  prof.onclick = () => openPopover(anchor, profileCard(user));
+  box.append(head, art, go, prof);
+  openPopover(anchor, box);
+}

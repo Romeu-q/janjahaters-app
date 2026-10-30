@@ -837,3 +837,9 @@ html.mobile .stream-grid { grid-template-columns: 1fr !important; grid-template-
 .focus .tile-vol input { width: 90px; accent-color: var(--accent); }
 .focus .tile-vol-val { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
 .strip .focus.mini .tile-vol { display: none; }
+.live-pop { width: 260px; display: flex; flex-direction: column; gap: 10px; }
+.live-pop-head { display: flex; align-items: center; gap: 10px; }
+.live-pop-who { display: flex; flex-direction: column; gap: 3px; font-weight: 700; align-items: flex-start; }
+.live-pop-art { aspect-ratio: 16/9; border-radius: 8px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 25%, #000), #000); display: grid; place-content: center; justify-items: center; gap: 6px; color: #fff; font-size: 12px; text-align: center; padding: 10px; }
+.live-pop-art svg.lucide { width: 30px; height: 30px; color: var(--accent-2); }
+.live-pop .primary { display: flex; align-items: center; justify-content: center; gap: 8px; }
