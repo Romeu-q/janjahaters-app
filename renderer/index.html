@@ -62,7 +62,9 @@
         <i id="viewIcon" data-icon="hash"></i>
         <span id="viewTitle"></span>
         <span class="grow"></span>
+        <label class="chat-search" id="chatSearch" hidden><i data-icon="search" class="sm"></i><input id="chatSearchInput" placeholder="Buscar neste canal"><span id="chatSearchCount" class="muted small"></span></label>
         <span id="viewSub" class="muted"></span>
+        <button type="button" class="icon-btn" id="btnChatSearch" title="Buscar mensagens (Ctrl+F)"><i data-icon="search"></i></button>
       </header>
 
       <section id="textView" class="view">
@@ -514,6 +516,30 @@
       <div class="sq-live" id="sqLive" hidden></div>
     </div>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="btnGoLive" disabled>Transmitir</button></menu>
+  </dialog>
+
+  <dialog id="switcherDlg" class="switcher">
+    <input id="swInput" placeholder="Para onde você quer ir?" autocomplete="off">
+    <div id="swList" class="sw-list"></div>
+    <p class="muted small">Setas para escolher, Enter para abrir. Canal de voz: entra na call.</p>
+  </dialog>
+
+  <dialog id="keysDlg">
+    <h2>Atalhos de teclado</h2>
+    <div class="keys-grid">
+      <span><kbd>Ctrl</kbd>+<kbd>K</kbd></span><span>Trocar de canal rápido</span>
+      <span><kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd></span><span>Canal anterior / próximo</span>
+      <span><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>↓</kbd></span><span>Próximo canal com mensagem nova</span>
+      <span><kbd>Ctrl</kbd>+<kbd>F</kbd></span><span>Buscar mensagens no canal</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd></span><span>Mutar / desmutar o microfone</span>
+      <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span><span>Ensurdecer</span>
+      <span><kbd>Ctrl</kbd>+<kbd>,</kbd></span><span>Configurações</span>
+      <span><kbd>↑</kbd> no campo vazio</span><span>Editar sua última mensagem</span>
+      <span><kbd>@</kbd></span><span>Mencionar alguém (Tab ou Enter completa)</span>
+      <span>Botão direito</span><span>Menu da pessoa (volume, silenciar), do canal e do DJ</span>
+      <span><kbd>Ctrl</kbd>+<kbd>/</kbd></span><span>Esta lista</span>
+    </div>
+    <menu><button class="ghost" data-close>Fechar</button></menu>
   </dialog>
 
   <div id="lightbox" hidden><img id="lightboxImg" alt=""><button class="icon-btn" id="lightboxClose" title="Fechar"><i data-icon="x"></i></button></div>

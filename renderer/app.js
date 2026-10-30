@@ -274,6 +274,9 @@ if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'stro
 const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
 settings.plugins = { ...settings.plugins };
+settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mim
+settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
+settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
 const look = settings.look;
 const plug = (id) => !!settings.plugins[id];
 const saveSettings = () => store.set('settings', settings);
@@ -353,7 +356,7 @@ const sfx = {
 //   grp  nome do grupo            ch  canal (texto/voz)       msg  mensagem
 //   q    música na fila de um canal de voz                   pb   o que está tocando num canal de voz
 //   snd  som do soundboard (o áudio em si vai pelo armazenamento de arquivos)
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx']);
 const recs = new Map();
 let clock = 0;
 const tick = () => (clock = Math.max(Date.now(), clock + 1));
@@ -439,6 +442,7 @@ function onRecsChanged(list) {
     renderSidebar();
     renderHeader();
   }
+  if (kinds.has('rx')) refreshReactions(new Set(list.filter((r) => r.k === 'rx').map((r) => r.msg)));
   if (kinds.has('msg')) {
     const fresh = list.filter((r) => r.k === 'msg');
     const boxes = chatBoxes();
@@ -455,13 +459,14 @@ function onRecsChanged(list) {
       if (m.del || m.edited || m.uid === me.id) continue;
       const isCall = channel(m.ch)?.type === 'voice';
       if (isCall && m.ch === callChatCh() && currentTab !== 'chat') S.callUnread++;
-      else if (!isCall && !shownIn.length) S.unread.add(m.ch);
+      else if (!isCall && !shownIn.length && (!settings.mutedCh[m.ch] || mentionedMe(m.text))) S.unread.add(m.ch);
     }
     for (const box of rerender) renderChat(box, boxes.find((b) => b.box === box).ch, true);
     renderCallBadge();
-    const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000);
+    const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000 && myStatus() !== 'dnd' && (!settings.mutedCh[m.ch] || mentionedMe(m.text)));
+    if (textChatCh() && document.hasFocus()) markRead(textChatCh());
     for (const m of notifyMsgs) pluginEmit('message', m);
-    if (plug('mentions') && notifyMsgs.some((m) => mentionsMe(m.text))) {
+    if (notifyMsgs.some((m) => mentionedMe(m.text) || (plug('mentions') && mentionsMe(m.text)))) {
       if (!plug('noTypingSounds')) sfx.msg();
       window.desk?.flash();
     } else if (notifyMsgs.length && (!document.hasFocus() || notifyMsgs.some((m) => !boxes.some((b) => b.ch === m.ch)) || (currentTab !== 'chat' && notifyMsgs.some((m) => m.ch === callChatCh())))) {
@@ -494,7 +499,7 @@ function ensurePeer(pid) {
 function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, watch: [...C.watching] } : null;
 }
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p }, voice: myVoice() });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus() }, voice: myVoice() });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -597,7 +602,7 @@ function onHi(pid, d) {
   const p = ensurePeer(pid);
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
-  p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color) };
+  p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online' };
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
   const v = d?.voice;
@@ -1014,8 +1019,10 @@ function dropMedia(p) {
 }
 function applyVolumes() {
   for (const p of peers.values()) {
-    for (const a of p.audios.values()) {
-      const v = clamp(settings.volumes[p.user?.id] ?? 1, 0, plug('volumeBoost') ? 3 : 1);
+    for (const [kind, a] of p.audios) {
+      const uid = p.user?.id;
+      const base = kind === 'screen' ? settings.streamVolumes[uid] ?? 1 : settings.volumes[uid] ?? 1;
+      const v = settings.localMute[uid] ? 0 : clamp(base, 0, plug('volumeBoost') ? 3 : 2);
       const off = C.deafened || !C.ch;
       // acima de 100% o som passa por um amplificador (Web Audio) e o <audio> fica mudo
       if (v > 1 && a.srcObject) {
@@ -2298,6 +2305,7 @@ function format(text) {
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
   s = s.replace(/https?:\/\/[^\s<]+[^\s<.,:;"')\]!?]/g, (u) => hold(`<a href="${u}" target="_blank">${u}</a>`));
   s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/~~(.+?)~~/g, '<s>$1</s>');
+  s = s.replace(/(^|\s)@([^\s@<&]{1,32})/g, '$1<span class="mention-tag">@$2</span>');
   s = s.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler" title="Spoiler: clique para ver">$1</span>');
   s = s.replace(/^&gt; ?(.*)(\n|$)/gm, '<span class="quote">$1</span>'); // "> citação" (o Responder usa)
   s = s.replace(/\n/g, '<br>');
@@ -2338,7 +2346,7 @@ function messageEl(m, prev) {
     d.append(gt);
   }
   if (m.ghost) d.classList.add('ghost');
-  if (plug('mentions') && m.uid !== me.id && mentionsMe(m.text)) d.classList.add('mention');
+  if (m.uid !== me.id && !m.bot && (mentionedMe(m.text) || (plug('mentions') && mentionsMe(m.text)))) d.classList.add('mention');
   if (plug('dblClick') && !m.ghost && !m.bot)
     d.ondblclick = (e) => {
       if (e.target.closest('a, button, img, video, audio, textarea')) return;
@@ -2353,6 +2361,7 @@ function messageEl(m, prev) {
     b.onclick = (e) => fn(e, b);
     actions.append(b);
   };
+  if (!m.ghost) action('face-slightly-smiling-plus', 'Reagir', (e, b) => openEmoji(b, (emoji) => toggleReaction(m, emoji)));
   if (!m.ghost) action('reply', 'Responder', () => replyTo(m, d));
   if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
   if (m.uid === me.id && !m.bot && !m.ghost) {
@@ -2374,6 +2383,7 @@ function messageEl(m, prev) {
     atts.forEach((a) => box.append(attachmentEl(a, m.uid)));
     body.append(box);
   }
+  if (!m.ghost) body.append(reactionsEl(m));
   d.append(body);
   return d;
 }
@@ -2450,7 +2460,12 @@ function chatBoxes() {
 function renderChat(box, ch, keepScroll) {
   const fromBottom = box.scrollHeight - box.scrollTop;
   const c = channel(ch);
-  const list = messagesOf(ch);
+  let list = messagesOf(ch);
+  const searching = box.id === 'messages' && S.filter;
+  if (searching) {
+    const q = plainText(S.filter);
+    list = list.filter((m) => plainText(m.text + ' ' + m.name).includes(q));
+  }
   const frag = document.createDocumentFragment();
   if (box.id === 'messages') {
     const empty = el('div', 'empty-ch');
@@ -2459,9 +2474,20 @@ function renderChat(box, ch, keepScroll) {
     empty.append(big, el('h2', '', `Bem-vindo a #${c?.name || ''}`), el('div', 'muted', 'Este é o começo do canal.'));
     frag.append(empty);
   } else if (!list.length) frag.append(el('p', 'hint', `Chat de ${c?.name || 'voz'}. Digite /ajuda para ver os comandos de música.`));
-  list.forEach((m, i) => frag.append(messageEl(m, list[i - 1])));
+  const divAt = box.id === 'messages' && S.divider?.ch === ch && !searching ? S.divider.at : null;
+  let divDone = false;
+  list.forEach((m, i) => {
+    if (divAt != null && !divDone && m.ts > divAt && m.uid !== me.id) {
+      divDone = true;
+      frag.append(el('div', 'new-divider', 'Novas mensagens'));
+    }
+    frag.append(messageEl(m, divDone && list[i - 1]?.ts <= divAt ? null : list[i - 1]));
+  });
+  if (searching) $('#chatSearchCount').textContent = list.length ? `${list.length} ${list.length === 1 ? 'resultado' : 'resultados'}` : 'Nada encontrado';
   box.replaceChildren(frag);
-  box.scrollTop = keepScroll ? box.scrollHeight - fromBottom : box.scrollHeight;
+  const divEl = !keepScroll && box.querySelector(':scope > .new-divider');
+  if (divEl) box.scrollTop = Math.max(0, divEl.offsetTop - 80);
+  else box.scrollTop = keepScroll ? box.scrollHeight - fromBottom : box.scrollHeight;
 }
 function renderMessages(keepScroll) {
   if (textChatCh()) renderChat($('#messages'), S.view, keepScroll);
@@ -2988,10 +3014,22 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
       applyVolumes();
     };
     show();
-    label.append(wrapEl('span', 'pc-vol-head', document.createTextNode('Volume'), val), range);
+    label.append(wrapEl('span', 'pc-vol-head', document.createTextNode('Volume do usuário'), val), range);
     body.append(label);
   }
   if (!opts.preview && user.id === me.id) {
+    const sts = el('div', 'pc-status-pick');
+    for (const [st, label] of STATUSES) {
+      const b = el('button', 'st-btn st-' + st + (myStatus() === st ? ' active' : ''));
+      b.type = 'button';
+      b.append(el('span', 'st-dot'), el('span', '', label));
+      b.onclick = () => {
+        setStatus(st);
+        openProfile(me, anchorOf(card));
+      };
+      sts.append(b);
+    }
+    body.append(el('div', 'pc-sec', 'Status'), sts);
     const edit = el('button', 'primary sm wide', 'Editar perfil');
     edit.onclick = () => {
       pop.hidden = true;
@@ -3002,6 +3040,10 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
   card.append(body);
   return card;
 }
+const anchorOf = (node) => {
+  const r = node.getBoundingClientRect();
+  return { getBoundingClientRect: () => ({ left: r.left - 10, right: r.left - 10, top: r.top + 20, bottom: r.top + 20 }) };
+};
 function openProfile(user, anchor) {
   if (!user?.id) return;
   if (user.id === 'dj') return selectTab('music');
@@ -3081,7 +3123,7 @@ function checkDj() {
 setInterval(() => {
   const on = !!C.ch && djPlaying(C.ch) && !settings.musicMuted;
   on ? C.speaking.add('dj') : C.speaking.delete('dj');
-  $('[data-speak="dj"]').forEach((e) => e.classList.toggle('speaking', on));
+  $$('[data-speak="dj"]').forEach((e) => e.classList.toggle('speaking', on));
 }, 500);
 function flagsEl(voice, key) {
   const f = el('span', 'flags');
@@ -3111,7 +3153,8 @@ function renderSidebar() {
   textList.replaceChildren(
     ...channels('text').map((c) => {
       const li = el('li');
-      const row = el('div', 'ch' + (S.view === c.id ? ' active' : '') + (S.unread.has(c.id) && S.view !== c.id ? ' unread' : ''));
+      const row = el('div', 'ch' + (S.view === c.id ? ' active' : '') + (S.unread.has(c.id) && S.view !== c.id ? ' unread' : '') + (settings.mutedCh[c.id] ? ' muted-ch' : ''));
+      row.dataset.chid = c.id;
       row.append(icon('hash'), el('span', 'label', c.name));
       if (S.unread.has(c.id) && S.view !== c.id) row.append(el('span', 'unread-dot'));
       row.append(editBtn(c));
@@ -3127,6 +3170,7 @@ function renderSidebar() {
       const li = el('li');
       const members = voiceMembers(c.id);
       const row = el('div', 'ch' + (S.view === c.id ? ' active' : ''));
+      row.dataset.chid = c.id;
       row.append(icon(C.ch === c.id ? 'audio-lines' : 'volume-2'), el('span', 'label', c.name));
       if (members.length) row.append(el('span', 'count', String(members.length)));
       row.append(editBtn(c));
@@ -3140,6 +3184,7 @@ function renderSidebar() {
         for (const m of members) {
           const u = el('li' + '');
           u.dataset.speak = m.key;
+          u.dataset.uid = m.user.id;
           u.classList.toggle('speaking', C.speaking.has(m.key));
           u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name));
           if (m.dj) u.append(el('span', 'bot-tag', 'BOT'));
@@ -3186,8 +3231,9 @@ function renderPeopleList() {
   const prev = new Set([...list.children].map((li) => li.dataset.uid));
   list.replaceChildren(
     ...everyone.map((m) => {
-      const li = el('li');
+      const li = el('li', 'st-' + statusOf(m.user.id));
       li.dataset.uid = m.user.id;
+      if (settings.localMute[m.user.id]) li.classList.add('lmuted');
       const who = el('div', 'who');
       const pname = el('div', 'pname');
       pname.append(nameEl(m.user.name, m.user.color, m.user.id));
@@ -3223,6 +3269,8 @@ function renderPeopleList() {
 function renderMeCard() {
   $('#meAvatar').replaceWith(Object.assign(avatar(me.name, me.color, '', me.id), { id: 'meAvatar' }));
   $('#meName').replaceChildren(nameEl(me.name, me.color, me.id));
+  $('#meAvatar').dataset.uid = me.id;
+  $('.me-card').dataset.st = myStatus();
   $('#meAvatar').onclick = $('#meName').onclick = () => openProfile(me, $('#meAvatar'));
   $('#meSub').textContent = C.ch ? (C.screen ? 'Ao vivo' : 'Na call') : `${me.p.statusEmoji || ''} ${me.p.status || ''}`.trim() || 'Online';
   const off = C.muted || C.deafened || (C.ch && !C.mic);
@@ -3305,6 +3353,7 @@ function renderStage() {
       const isLive = m.key !== 'me' && m.voice?.streaming;
       const card = el('div', 'pcard' + (C.speaking.has(m.key) ? ' speaking' : '') + (isLive ? ' live-card' : ''));
       card.dataset.speak = m.key;
+      card.dataset.uid = m.user.id;
       card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
       if (m.dj) {
@@ -3438,6 +3487,14 @@ function openView(id) {
   const c = channel(id) || channels('text')[0];
   if (!c) return;
   const changed = S.view !== c.id;
+  if (changed) {
+    S.divider = S.unread.has(c.id) ? { ch: c.id, at: readAt[c.id] || 0 } : null;
+    if (S.filter) {
+      S.filter = '';
+      $('#chatSearchInput').value = '';
+    }
+    $('#chatSearch').hidden = true;
+  }
   S.view = c.id;
   store.set('view:' + R.hash, c.id);
   S.unread.delete(c.id);
@@ -3455,8 +3512,13 @@ function openView(id) {
   renderNowPlaying();
   if (!C.ch) renderCallChat(); // sem call, a aba Chat mostra o canal de voz que estou vendo
   if (changed) popIn(text ? $('#textView') : $('#voiceView'), { duration: 0.2 });
-  if (text) input.focus();
+  if (text) {
+    input.focus();
+    markRead(c.id);
+  }
+  $('#btnChatSearch').hidden = !text;
 }
+addEventListener('focus', () => textChatCh() && markRead(textChatCh()));
 
 // ============================================================ canais
 let chDlgState = null;
@@ -4523,6 +4585,430 @@ if (window.desk?.appInfo) {
     }
   });
 }
+
+// ============================================================ qualidade de vida
+// ----- menu do botão direito (pessoas, DJ, canais e mensagens) -----
+function menuItem(label, iconName, fn, cls = '') {
+  const b = el('button', 'ctx-item ' + cls);
+  b.type = 'button';
+  if (iconName) b.append(icon(iconName, 'sm'));
+  b.append(el('span', '', label));
+  b.onclick = () => {
+    pop.hidden = true;
+    fn();
+  };
+  return b;
+}
+function menuSlider(label, value, max, onInput) {
+  const wrap = el('label', 'ctx-slider');
+  const val = el('b', '', Math.round(value * 100) + '%');
+  const r = el('input');
+  r.type = 'range';
+  r.min = 0;
+  r.max = max;
+  r.value = Math.min(max, Math.round(value * 100));
+  r.oninput = () => {
+    val.textContent = r.value + '%';
+    onInput(r.value / 100);
+  };
+  wrap.append(wrapEl('span', 'ctx-slider-head', document.createTextNode(label), val), r);
+  return wrap;
+}
+function openMenu(e, items) {
+  e.preventDefault();
+  const box = el('div', 'ctx-menu');
+  box.append(...items.filter(Boolean));
+  // abre onde o mouse está
+  const anchor = { getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY }) };
+  openPopover(anchor, box);
+  const r = pop.getBoundingClientRect();
+  pop.style.top = clamp(e.clientY, 8, innerHeight - r.height - 8) + 'px';
+}
+function userFromUid(uid) {
+  if (uid === me.id) return me;
+  if (uid === 'dj') return DJ_USER;
+  const p = [...peers.values()].find((x) => x.user?.id === uid);
+  if (p) return p.user;
+  const m = all('msg')
+    .filter((x) => x.uid === uid && !x.bot)
+    .pop();
+  return m ? { id: uid, name: m.name, color: m.color } : null;
+}
+function userMenu(e, user) {
+  const uid = user.id;
+  const peer = [...peers.values()].find((p) => p.user?.id === uid);
+  const head = el('div', 'ctx-head');
+  head.append(avatar(user.name, user.color, 'xs', uid), nameEl(user.name, user.color, uid));
+  if (uid === 'dj') {
+    const { pb, item } = pbOf(C.ch);
+    return openMenu(e, [
+      head,
+      menuItem('Abrir a música', 'list-music', () => selectTab('music')),
+      item && menuItem(pb?.pausedAt != null ? 'Continuar' : 'Pausar', pb?.pausedAt != null ? 'play' : 'pause', () => $('#plPlay').click()),
+      item && menuItem('Pular', 'skip-forward', () => $('#plSkip').click()),
+      menuItem('Embaralhar a fila', 'shuffle', () => $('#plShuffle').click()),
+      menuItem(recs.get('pb:' + C.ch)?.auto === false ? 'Ligar autoplay' : 'Desligar autoplay', 'infinity', () => $('#plAuto').click()),
+    ]);
+  }
+  if (uid === me.id) {
+    return openMenu(e, [
+      head,
+      ...STATUSES.map(([st, label]) => menuItem(label + (myStatus() === st ? '  ✓' : ''), null, () => setStatus(st), 'st-' + st)),
+      el('div', 'ctx-sep'),
+      menuItem('Ver perfil', 'user', () => openProfile(me, e.target)),
+      menuItem('Editar perfil', 'pencil', () => openSettings('profile')),
+    ]);
+  }
+  const muted = !!settings.localMute[uid];
+  const streaming = peer?.voice?.streaming && C.ch && peer.voice.ch === C.ch;
+  const max = plug('volumeBoost') ? 300 : 200;
+  openMenu(e, [
+    head,
+    menuItem('Ver perfil', 'user', () => openProfile(user, e.target)),
+    menuItem('Mencionar', 'message-square', () => mention(user.name)),
+    el('div', 'ctx-sep'),
+    menuSlider('Volume do usuário', settings.volumes[uid] ?? 1, max, (v) => {
+      settings.volumes[uid] = v;
+      saveSettings();
+      applyVolumes();
+    }),
+    streaming &&
+      menuSlider('Volume da stream', settings.streamVolumes[uid] ?? 1, max, (v) => {
+        settings.streamVolumes[uid] = v;
+        saveSettings();
+        applyVolumes();
+      }),
+    menuItem(muted ? 'Voltar a ouvir' : 'Silenciar para mim', muted ? 'volume-2' : 'volume-x', () => {
+      settings.localMute[uid] = !muted;
+      if (muted) delete settings.localMute[uid];
+      saveSettings();
+      applyVolumes();
+      renderPresence();
+    }, muted ? '' : 'danger'),
+    streaming && (C.watching.has(peer.pid) ? menuItem('Parar de assistir', 'eye-off', () => unwatchStream(peer.pid)) : menuItem('Assistir a stream', 'eye', () => watchStream(peer.pid))),
+    el('div', 'ctx-sep'),
+    menuItem('Copiar nome', 'copy', () => navigator.clipboard.writeText(user.name).catch(() => {})),
+  ]);
+}
+function channelMenu(e, c) {
+  const muted = !!settings.mutedCh[c.id];
+  openMenu(e, [
+    el('div', 'ctx-head', (c.type === 'text' ? '# ' : '') + c.name),
+    c.type === 'voice' && menuItem(C.ch === c.id ? 'Sair da call' : 'Entrar na call', C.ch === c.id ? 'phone-off' : 'phone', () => (C.ch === c.id ? leaveVoice() : (openView(c.id), joinVoice(c.id)))),
+    c.type === 'text' &&
+      menuItem('Marcar como lido', 'check', () => {
+        S.unread.delete(c.id);
+        markRead(c.id);
+        renderSidebar();
+      }),
+    menuItem(muted ? 'Voltar a notificar' : 'Silenciar canal', muted ? 'volume-2' : 'volume-x', () => {
+      settings.mutedCh[c.id] = !muted;
+      if (muted) delete settings.mutedCh[c.id];
+      saveSettings();
+      renderSidebar();
+    }),
+    menuItem('Editar canal', 'pencil', () => openChannelDialog(c.type, c)),
+  ]);
+}
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('input, textarea, a, .text')) return; // deixa copiar/colar e selecionar texto
+  const ch = e.target.closest('[data-chid]');
+  if (ch) return channel(ch.dataset.chid) && channelMenu(e, channel(ch.dataset.chid));
+  const u = e.target.closest('[data-uid]');
+  if (!u) return;
+  const user = userFromUid(u.dataset.uid);
+  if (user) userMenu(e, user);
+});
+
+// ----- status: Online / Ausente / Não perturbe -----
+const STATUSES = [
+  ['online', 'Online'],
+  ['idle', 'Ausente'],
+  ['dnd', 'Não perturbe'],
+];
+let autoIdle = false;
+const myStatus = () => (autoIdle && me.status !== 'dnd' ? 'idle' : me.status || 'online');
+function setStatus(st) {
+  me.status = st;
+  autoIdle = false;
+  store.set('profile', me);
+  sendHi();
+  renderPresence();
+  toast(st === 'dnd' ? 'Não perturbe: sem sons nem piscar de mensagens' : `Status: ${STATUSES.find((x) => x[0] === st)[1]}`);
+}
+const statusOf = (uid) => (uid === me.id ? myStatus() : [...peers.values()].find((p) => p.user?.id === uid)?.user?.st || 'online');
+// ausente sozinho depois de 10 min sem mexer no PC
+let lastActive = Date.now();
+for (const ev of ['mousemove', 'keydown', 'mousedown', 'wheel']) addEventListener(ev, () => {
+  lastActive = Date.now();
+  if (autoIdle) {
+    autoIdle = false;
+    sendHi();
+    renderPresence();
+  }
+}, { passive: true });
+setInterval(() => {
+  if (!autoIdle && (me.status || 'online') === 'online' && !C.ch && Date.now() - lastActive > 10 * 60_000) {
+    autoIdle = true;
+    sendHi();
+    renderPresence();
+  }
+}, 30_000);
+
+// ----- reações -----
+const emojiKey = (e) => [...e].map((c) => c.codePointAt(0).toString(16)).join('-');
+const reactionsOf = (msgId) => all('rx').filter((r) => r.msg === msgId);
+function toggleReaction(m, emoji) {
+  if (!R || !emoji) return;
+  const id = `rx:${m.id}:${me.id.slice(0, 16)}:${emojiKey(emoji)}`.slice(0, 80);
+  const cur = recs.get(id);
+  if (cur && !cur.del) put({ ...cur, del: true });
+  else put({ k: 'rx', id, msg: m.id, ch: m.ch, emoji: String(emoji).slice(0, 16), uid: me.id, name: me.name, at: Date.now() });
+}
+function reactionsEl(m) {
+  const box = el('div', 'reactions');
+  box.dataset.rx = m.id;
+  const groups = new Map();
+  for (const r of reactionsOf(m.id).sort((a, b) => a.at - b.at)) {
+    if (!groups.has(r.emoji)) groups.set(r.emoji, []);
+    groups.get(r.emoji).push(r);
+  }
+  for (const [emoji, list] of groups) {
+    const mine = list.some((r) => r.uid === me.id);
+    const b = el('button', 'rx' + (mine ? ' mine' : ''));
+    b.type = 'button';
+    b.title = list.map((r) => r.name).join(', ');
+    b.append(el('span', 'rx-e', emoji), el('span', 'rx-n', String(list.length)));
+    b.onclick = () => toggleReaction(m, emoji);
+    box.append(b);
+  }
+  if (groups.size) {
+    const add = el('button', 'rx rx-add');
+    add.type = 'button';
+    add.title = 'Reagir';
+    add.append(icon('face-slightly-smiling-plus', 'sm'));
+    add.onclick = (e) => openEmoji(e.currentTarget, (emoji) => toggleReaction(m, emoji));
+    box.append(add);
+  }
+  return box;
+}
+function refreshReactions(msgIds) {
+  for (const id of msgIds) {
+    const m = recs.get(id);
+    for (const node of $$(`.reactions[data-rx="${id}"]`)) if (m) node.replaceWith(reactionsEl(m));
+  }
+}
+
+// ----- @menções: completar o nome enquanto digita -----
+function knownNames() {
+  const names = new Map();
+  for (const p of peers.values()) if (p.user) names.set(p.user.id, p.user);
+  for (const m of all('msg')) if (!m.bot && !names.has(m.uid)) names.set(m.uid, { id: m.uid, name: m.name, color: m.color });
+  names.delete(me.id);
+  return [...names.values()];
+}
+function mention(name) {
+  const field = channel(S.view)?.type === 'text' ? input : callInput;
+  field.value = (field.value && !field.value.endsWith(' ') ? field.value + ' ' : field.value) + '@' + name + ' ';
+  field.dispatchEvent(new Event('input'));
+  field.focus();
+}
+const mentionBox = el('div', 'mention-box');
+mentionBox.hidden = true;
+document.body.append(mentionBox);
+let mentionState = null;
+function updateMentions(field) {
+  const before = field.value.slice(0, field.selectionStart);
+  const m = before.match(/(^|\s)@([^\s@]{0,32})$/);
+  if (!m) return hideMentions();
+  const q = plainText(m[2]);
+  const list = knownNames()
+    .filter((u) => plainText(u.name).includes(q))
+    .slice(0, 6);
+  if (!list.length) return hideMentions();
+  mentionState = { field, start: before.length - m[2].length - 1, list, sel: 0 };
+  renderMentions();
+}
+const plainText = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+function renderMentions() {
+  const { field, list, sel } = mentionState;
+  mentionBox.replaceChildren(
+    el('div', 'mention-head', 'Pessoas'),
+    ...list.map((u, i) => {
+      const b = el('button', 'mention-item' + (i === sel ? ' sel' : ''));
+      b.type = 'button';
+      b.append(avatar(u.name, u.color, 'xs', u.id), nameEl(u.name, u.color, u.id));
+      b.onmousedown = (e) => {
+        e.preventDefault();
+        pickMention(i);
+      };
+      return b;
+    }),
+  );
+  mentionBox.hidden = false;
+  const r = field.closest('form').getBoundingClientRect();
+  mentionBox.style.left = r.left + 'px';
+  mentionBox.style.width = Math.min(360, r.width) + 'px';
+  mentionBox.style.top = r.top - mentionBox.offsetHeight - 6 + 'px';
+}
+function hideMentions() {
+  mentionState = null;
+  mentionBox.hidden = true;
+}
+function pickMention(i) {
+  const { field, start } = mentionState;
+  const u = mentionState.list[i];
+  const end = field.selectionStart;
+  field.value = field.value.slice(0, start) + '@' + u.name + ' ' + field.value.slice(end);
+  const pos = start + u.name.length + 2;
+  field.setSelectionRange(pos, pos);
+  hideMentions();
+  field.dispatchEvent(new Event('input'));
+  field.focus();
+}
+for (const field of [input, callInput]) {
+  field.addEventListener('input', () => updateMentions(field));
+  field.addEventListener('blur', () => setTimeout(hideMentions, 100));
+  // pega antes do Enter de enviar
+  field.addEventListener(
+    'keydown',
+    (e) => {
+      if (!mentionState || mentionState.field !== field) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const n = mentionState.list.length;
+        mentionState.sel = (mentionState.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+        renderMentions();
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        pickMention(mentionState.sel);
+      } else if (e.key === 'Escape') hideMentions();
+    },
+    true,
+  );
+}
+const mentionedMe = (text) => {
+  const n = me.name?.trim();
+  return !!n && String(text || '').toLowerCase().includes('@' + n.toLowerCase());
+};
+
+// ----- "novas mensagens": onde você parou de ler -----
+const readAt = store.get('readAt', {}); // canal -> horário da última mensagem vista
+function markRead(ch) {
+  const last = messagesOf(ch).pop();
+  readAt[ch] = Math.max(readAt[ch] || 0, last?.ts || Date.now());
+  store.set('readAt', readAt);
+}
+
+// ----- buscar no canal (Ctrl+F) -----
+function toggleChatSearch(open = $('#chatSearch').hidden) {
+  if (channel(S.view)?.type !== 'text') return;
+  $('#chatSearch').hidden = !open;
+  if (open) {
+    $('#chatSearchInput').focus();
+    $('#chatSearchInput').select();
+  } else {
+    $('#chatSearchInput').value = '';
+    S.filter = '';
+    renderMessages();
+  }
+}
+$('#btnChatSearch').onclick = () => toggleChatSearch();
+$('#chatSearchInput').addEventListener('input', () => {
+  S.filter = $('#chatSearchInput').value.trim();
+  renderMessages();
+});
+$('#chatSearchInput').addEventListener('keydown', (e) => e.key === 'Escape' && toggleChatSearch(false));
+
+// ----- trocar de canal rápido (Ctrl+K) e atalhos -----
+function openSwitcher() {
+  const dlg = $('#switcherDlg');
+  const inp = $('#swInput');
+  inp.value = '';
+  let sel = 0;
+  const items = () => {
+    const q = plainText(inp.value.trim());
+    return [...channels('text'), ...channels('voice')].filter((c) => plainText(c.name).includes(q));
+  };
+  const render = () => {
+    const list = items();
+    sel = clamp(sel, 0, Math.max(0, list.length - 1));
+    $('#swList').replaceChildren(
+      ...list.map((c, i) => {
+        const b = el('button', 'sw-item' + (i === sel ? ' sel' : ''));
+        b.type = 'button';
+        b.append(icon(c.type === 'text' ? 'hash' : 'volume-2', 'sm'), el('span', '', c.name));
+        if (S.unread.has(c.id)) b.append(el('span', 'unread-dot'));
+        if (c.type === 'voice') b.append(el('span', 'sw-hint', C.ch === c.id ? 'na call' : `${voiceMembers(c.id).length} na call`));
+        b.onclick = () => go(c);
+        return b;
+      }),
+    );
+    if (!list.length) $('#swList').append(el('p', 'muted small', 'Nenhum canal com esse nome.'));
+  };
+  const go = (c) => {
+    dlg.close();
+    openView(c.id);
+    if (c.type === 'voice' && C.ch !== c.id) joinVoice(c.id);
+  };
+  inp.oninput = () => {
+    sel = 0;
+    render();
+  };
+  inp.onkeydown = (e) => {
+    const list = items();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % Math.max(1, list.length);
+      render();
+    } else if (e.key === 'Enter' && list[sel]) go(list[sel]);
+  };
+  render();
+  openDialog(dlg);
+  inp.focus();
+}
+function moveChannel(dir) {
+  const list = [...channels('text'), ...channels('voice')];
+  const i = list.findIndex((c) => c.id === S.view);
+  const next = list[(i + dir + list.length) % list.length];
+  if (next) openView(next.id);
+}
+function nextUnread() {
+  const c = channels('text').find((x) => S.unread.has(x.id));
+  c ? openView(c.id) : toast('Nenhum canal com mensagem nova');
+}
+document.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && k === 'k') {
+    e.preventDefault();
+    if (R) openSwitcher();
+  } else if (ctrl && k === 'f' && channel(S.view)?.type === 'text') {
+    e.preventDefault();
+    toggleChatSearch(true);
+  } else if (ctrl && (k === '/' || k === ';')) {
+    e.preventDefault();
+    openDialog($('#keysDlg'));
+  } else if (ctrl && e.shiftKey && k === 'm' && !window.desk) {
+    e.preventDefault();
+    toggleMute(); // no app os atalhos globais já fazem isso
+  } else if (ctrl && e.shiftKey && k === 'd' && !window.desk) {
+    e.preventDefault();
+    toggleDeafen();
+  } else if (e.altKey && (k === 'arrowup' || k === 'arrowdown')) {
+    e.preventDefault();
+    e.shiftKey ? nextUnread() : moveChannel(k === 'arrowup' ? -1 : 1);
+  } else if (ctrl && k === ',') {
+    e.preventDefault();
+    openSettings();
+  } else if (e.key === 'Escape' && !$('#chatSearch').hidden && document.activeElement !== $('#chatSearchInput')) toggleChatSearch(false);
+});
 
 // ============================================================ entrada
 function parseCode(s) {
