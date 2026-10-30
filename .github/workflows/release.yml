@@ -1,21 +1,41 @@
 # Publica uma versão nova quando chega uma tag "v*" (o `npm run release` cria e envia a tag).
-# O app instalado nos PCs dos amigos vê a Release nova e se atualiza sozinho.
+# Monta o instalador do Windows e o APK do Android; os apps instalados veem a Release nova sozinhos.
 name: Release
 
 on:
   push:
     tags: ['v*']
+  # rodar à mão (aba Actions) só monta o APK para testar, sem publicar nada
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  # A Release é criada antes dos builds: se o electron-builder criar, ele cria duas ao mesmo tempo
+  # (uma só com o .blockmap). As notas são os commits desde a versão anterior.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # precisa das tags anteriores para montar as notas
+      - name: Criar a Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          git log ${prev:+$prev..}"$TAG" --no-merges --pretty='- %s' | grep -vE '^- [0-9]+\.[0-9]+\.[0-9]+$' > notes.md || true
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "janjahaters $TAG" --notes-file notes.md
+
+  windows:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,17 +48,63 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: node scripts/write-oauth.mjs
-      # A Release é criada antes do build: se o electron-builder criar, ele cria duas ao mesmo tempo
-      # (uma só com o .blockmap). As notas são os commits desde a versão anterior.
-      - name: Criar a Release
-        shell: bash
+      - run: npx electron-builder --win nsis --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # App Android (Capacitor). A chave de assinatura fica nos secrets ANDROID_KEYSTORE_B64 e
+  # ANDROID_KEYSTORE_PASSWORD: tem que ser sempre a mesma para a atualização instalar por cima.
+  android:
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Montar a interface do celular
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+        run: npm run build:mobile
+      - name: Chave de assinatura
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::warning::Sem a chave de assinatura: o APK de teste sai sem assinatura"
+          else
+            echo "::error::Faltam os secrets ANDROID_KEYSTORE_B64 e ANDROID_KEYSTORE_PASSWORD (veja o README)"
+            exit 1
+          fi
+      - name: Montar o APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+      - name: Guardar o APK de teste
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: android/app/build/outputs/apk/release/*.apk
+      - name: Publicar o APK na Release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-          git log ${prev:+$prev..}"$TAG" --no-merges --pretty='- %s' | grep -vE '^- [0-9]+\.[0-9]+\.[0-9]+$' > notes.md || true
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "janjahaters $TAG" --notes-file notes.md
-      - run: npx electron-builder --win nsis --x64 --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          apk="janjahaters-${TAG#v}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          gh release upload "$TAG" "$apk" --clobber

@@ -101,6 +101,7 @@ const randId = (n = 8) => [...crypto.getRandomValues(new Uint8Array(n))].map((b)
 const COLORS = ['#ff7a1a', '#4fd18b', '#3aa8f0', '#b07cff', '#f05454', '#f2c94c', '#ff6fb5', '#2ec4b6'];
 const EMOJIS = ['😂', '🤣', '😭', '😎', '🤔', '😡', '🥲', '😏', '👍', '👎', '❤️', '🔥', '💀', '🎉', '👀', '🙏', '💯', '🤡', '🫡', '👏', '🍕', '🎮', '🎧', '🎵'];
 const isDesktop = !!window.desk;
+const isMobile = window.desk?.platform === 'android'; // app Android (mobile/bridge.js)
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const cleanName = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 32);
 const cleanColor = (c) => (/^#[0-9a-f]{6}$/i.test(c) ? c : COLORS[0]);
@@ -855,6 +856,7 @@ async function joinVoice(ch) {
   }
   C.ch = ch;
   C.joinedAt = Date.now();
+  window.desk?.callActive?.(true, channel(ch)?.name);
   djHere = voiceMembers(ch).some((m) => m.key === 'dj'); // já estava lá: sem som
   applyMicEnabled();
   if (C.mic) meter('me', C.mic);
@@ -870,6 +872,7 @@ async function joinVoice(ch) {
 
 function leaveVoice(switching) {
   if (!C.ch) return;
+  if (!switching) window.desk?.callActive?.(false);
   stopStream(false);
   C.ch = null;
   C.watching.clear();
@@ -3069,6 +3072,7 @@ function effectLayer(kind) {
 // ============================================================ abas da direita
 let currentTab = 'people';
 function selectTab(tab) {
+  setPane('right');
   if (tab === currentTab) return;
   currentTab = tab;
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
@@ -3148,6 +3152,7 @@ function flagsEl(voice, key) {
 
 let seenRows = new Set();
 function renderSidebar() {
+  renderMobileNav();
   const rows = [];
   const textList = $('#textList');
   textList.replaceChildren(
@@ -3486,6 +3491,7 @@ function renderPresence() {
 function openView(id) {
   const c = channel(id) || channels('text')[0];
   if (!c) return;
+  setPane('center');
   const changed = S.view !== c.id;
   if (changed) {
     S.divider = S.unread.has(c.id) ? { ch: c.id, at: readAt[c.id] || 0 } : null;
@@ -4521,15 +4527,16 @@ if (isDesktop) {
 // atualização automática: o app baixa sozinho; aqui só oferece reiniciar
 function showUpdate(version) {
   const b = $('#tbUpdate');
-  $('#tbUpdateText').textContent = `Versão ${version} pronta. Reiniciar`;
+  $('#tbUpdateText').textContent = isMobile ? `Versão ${version}: baixar` : `Versão ${version} pronta. Reiniciar`;
   if (b.hidden) {
     b.hidden = false;
     springIn(b);
-    toast(`Nova versão ${version} baixada. Clique no botão verde para atualizar.`);
+    toast(isMobile ? `Saiu a versão ${version}. Toque no botão verde para baixar.` : `Nova versão ${version} baixada. Clique no botão verde para atualizar.`);
   }
 }
 $('#tbUpdate').onclick = () => {
-  if (C.ch && !confirm('Reiniciar agora vai te tirar da call. Atualizar mesmo assim?')) return;
+  if (!isMobile && C.ch && !confirm('Reiniciar agora vai te tirar da call. Atualizar mesmo assim?')) return;
+  if (isMobile) toast('Baixando… quando terminar, abra o arquivo para instalar por cima');
   window.desk?.installUpdate();
 };
 // o app só procura sozinho ao abrir; este botão procura na hora
@@ -5009,6 +5016,43 @@ document.addEventListener('keydown', (e) => {
     openSettings();
   } else if (e.key === 'Escape' && !$('#chatSearch').hidden && document.activeElement !== $('#chatSearchInput')) toggleChatSearch(false);
 });
+
+// ============================================================ celular (app Android)
+// Uma tela por vez: Canais | Conversa | Painel (pessoas, chat da call, música, sons)
+function setPane(p) {
+  if (!isMobile) return;
+  $('#app').dataset.pane = p;
+  $$('#mobileNav button').forEach((b) => b.classList.toggle('active', b.dataset.pane === p));
+}
+if (isMobile) {
+  setPane('center');
+  $$('#mobileNav button').forEach((b) => (b.onclick = () => setPane(b.dataset.pane)));
+  // sem stream de tela, janela, login com Google e opções do PC
+  for (const sel of ['#ctlStream', '#vbStream', '#winButtons', '#ctlStreamCfg']) $(sel).hidden = true;
+  $$('[data-pc]').forEach((e) => e.remove());
+  // toque na mensagem mostra os botões (no PC aparecem ao passar o mouse)
+  document.addEventListener('click', (e) => {
+    const m = e.target.closest('.msg');
+    if (e.target.closest('.msg-actions, a, button, img, video, audio, textarea')) return;
+    $$('.msg.tapped').forEach((x) => x !== m && x.classList.remove('tapped'));
+    m?.classList.toggle('tapped');
+  });
+  // botão voltar do Android: fecha o que estiver aberto, depois volta para a conversa, depois minimiza
+  window.desk.backButton(() => {
+    const dlg = $$('dialog').find((d) => d.open);
+    if (!pop.hidden) pop.hidden = true;
+    else if (!$('#lightbox').hidden) $('#lightbox').click();
+    else if (dlg) closeDialog(dlg);
+    else if ($('#app').dataset.pane !== 'center') setPane('center');
+    else window.desk.minimize();
+  });
+}
+function renderMobileNav() {
+  if (!isMobile) return;
+  const unread = channels('text').some((c) => S.unread.has(c.id) && c.id !== S.view);
+  $('#mnUnread').hidden = !unread;
+  $('#mnCall').hidden = !C.ch;
+}
 
 // ============================================================ entrada
 function parseCode(s) {

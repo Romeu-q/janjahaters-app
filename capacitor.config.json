@@ -1,0 +1,13 @@
+{
+  "appId": "app.janjahaters",
+  "appName": "janjahaters",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true
+  },
+  "server": {
+    "androidScheme": "https",
+    "hostname": "localhost"
+  }
+}

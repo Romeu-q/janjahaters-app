@@ -9,7 +9,8 @@
     "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --outfile=renderer/bundle.js",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
-    "release": "npm version patch && git push --follow-tags"
+    "release": "npm version patch && git push --follow-tags",
+    "build:mobile": "npm run build:ui && node scripts/build-mobile.mjs && npx cap sync android"
   },
   "build": {
     "appId": "app.janjahaters",
@@ -17,6 +18,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "yt.js",
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",
@@ -67,6 +69,11 @@
     "youtubei.js": "^18.3.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "electron": "^45.1.0",
     "electron-builder": "^26.18.0",
