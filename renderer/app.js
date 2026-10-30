@@ -12,6 +12,7 @@ import {
   BadgeCheck,
   Brush,
   Image as ImageIcon,
+  Pin,
   Shuffle,
   Infinity as InfinityIcon,
   Palette,
@@ -150,6 +151,7 @@ const ICONS = {
   'badge-check': BadgeCheck,
   brush: Brush,
   image: ImageIcon,
+  pin: Pin,
   shuffle: Shuffle,
   infinity: InfinityIcon,
   palette: Palette,
@@ -277,6 +279,7 @@ settings.look = { ...LOOK_DEFAULTS, ...settings.look };
 settings.plugins = { ...settings.plugins };
 settings.gate = { on: true, auto: true, db: -50, ...settings.gate }; // sensibilidade do mic
 settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mim
+settings.streamMute = { ...settings.streamMute }; // uid -> som da stream dele mutado só para mim
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
 settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
 const look = settings.look;
@@ -1094,7 +1097,8 @@ function applyVolumes() {
     for (const [kind, a] of p.audios) {
       const uid = p.user?.id;
       const base = kind === 'screen' ? settings.streamVolumes[uid] ?? 1 : settings.volumes[uid] ?? 1;
-      const v = settings.localMute[uid] ? 0 : clamp(base, 0, plug('volumeBoost') ? 3 : 2);
+      const silenced = settings.localMute[uid] || (kind === 'screen' && settings.streamMute[uid]);
+      const v = silenced ? 0 : clamp(base, 0, plug('volumeBoost') ? 3 : 2);
       const off = C.deafened || !C.ch;
       // acima de 100% o som passa por um amplificador (Web Audio) e o <audio> fica mudo
       if (v > 1 && a.srcObject) {
@@ -3471,7 +3475,105 @@ function videoFor(stream) {
 }
 
 let stageKeys = new Set();
-let focusBox = null;
+// Cada stream tem um quadro fixo (o mesmo elemento entre redesenhos), para a tela cheia não fechar sozinha
+const streamTiles = new Map(); // chave (peerId ou 'me') -> elemento
+const uidOfKey = (key) => (key === 'me' ? me.id : peers.get(key)?.user?.id);
+function toggleStreamMute(uid) {
+  if (!uid) return;
+  settings.streamMute[uid] = !settings.streamMute[uid];
+  if (!settings.streamMute[uid]) delete settings.streamMute[uid];
+  saveSettings();
+  applyVolumes();
+  renderStage();
+}
+function fillStreamTile(s, total) {
+  let t = streamTiles.get(s.key);
+  if (!t) {
+    t = el('div', 'focus');
+    streamTiles.set(s.key, t);
+  }
+  t.className = 'focus';
+  t.onclick = null;
+  t.replaceChildren();
+  const uid = uidOfKey(s.key);
+  const tag = el('div', 'tag');
+  if (s.key !== 'me') tag.append(el('span', 'live', 'AO VIVO'));
+  tag.append(el('span', '', s.name));
+  const tools = el('div', 'tile-tools');
+  const btn = (iconName, title, fn, cls = '') => {
+    const b = el('button', 'fs ' + cls);
+    b.type = 'button';
+    b.title = title;
+    b.append(icon(iconName, 'sm'));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      fn();
+    };
+    tools.append(b);
+    return b;
+  };
+  if (s.stream) {
+    const video = videoFor(s.stream);
+    t.append(video);
+    // som da stream: mutar só para mim (o meu próprio preview já é sempre mudo)
+    if (s.key !== 'me' && s.stream.getAudioTracks().length) {
+      const muted = !!settings.streamMute[uid];
+      // volume da stream (só para você): barrinha ao lado do botão de mutar
+      const vol = el('label', 'tile-vol');
+      const range = el('input');
+      range.type = 'range';
+      range.min = 0;
+      range.max = plug('volumeBoost') ? 300 : 200;
+      range.value = Math.round((settings.streamVolumes[uid] ?? 1) * 100);
+      const val = el('span', 'tile-vol-val', range.value + '%');
+      range.title = 'Volume da stream (só para você)';
+      range.onclick = (e) => e.stopPropagation();
+      range.oninput = () => {
+        settings.streamVolumes[uid] = range.value / 100;
+        val.textContent = range.value + '%';
+        if (settings.streamMute[uid] && range.value > 0) {
+          delete settings.streamMute[uid];
+          muteBtn.classList.remove('off');
+          setIcon(muteBtn, 'volume-2');
+        }
+        saveSettings();
+        applyVolumes();
+      };
+      vol.append(range, val);
+      tools.append(vol);
+      const muteBtn = btn(muted ? 'volume-x' : 'volume-2', muted ? 'Desmutar a stream' : 'Mutar a stream (só para você)', () => toggleStreamMute(uid), muted ? 'off' : '');
+    }
+    if (document.pictureInPictureEnabled && s.stream.getVideoTracks().length)
+      btn('pip', 'Janela flutuante (fica por cima dos outros programas)', () =>
+        (document.pictureInPictureElement === video ? document.exitPictureInPicture() : video.requestPictureInPicture()).catch((err) => toast('Não deu para abrir a janela flutuante: ' + err.message)),
+      );
+  } else {
+    const wait = el('div', 'connecting');
+    wait.append(icon('loader', 'spin'), el('span', '', `Conectando à stream de ${s.name}…`));
+    t.append(wait);
+  }
+  if (total > 1 && settings.streamLayout !== 'focus')
+    btn('pin', 'Destacar esta stream', () => {
+      C.focus = s.key;
+      settings.streamLayout = 'focus';
+      saveSettings();
+      renderStage();
+    });
+  const fs = btn('maximize', 'Tela cheia', () => (document.fullscreenElement ? document.exitFullscreen() : t.requestFullscreen()));
+  t.append(tag, tools);
+  if (s.key !== 'me') {
+    const stop = el('button', 'stop-watch');
+    stop.type = 'button';
+    stop.append(icon('eye-off', 'sm'), document.createTextNode('Parar de assistir'));
+    stop.onclick = (e) => {
+      e.stopPropagation();
+      unwatchStream(s.key);
+    };
+    t.append(stop);
+  }
+  t.ondblclick = () => fs.click();
+  return t;
+}
 function renderStage() {
   const stage = $('#stage');
   const c = channel(S.view);
@@ -3550,54 +3652,53 @@ function renderStage() {
     stage.replaceChildren(grid);
     if (fresh.length) springIn(fresh, { delay: stagger(0.05) });
   } else {
+    // Em tela cheia, só atualiza o quadro que está em tela cheia: mexer na página tiraria da tela cheia
+    const fsTile = document.fullscreenElement && [...streamTiles.values()].find((t) => t === document.fullscreenElement);
+    if (fsTile) {
+      const s = shown.find((x) => streamTiles.get(x.key) === fsTile);
+      if (s) fillStreamTile(s, shown.length);
+      stageKeys = keysNow;
+      renderControls();
+      return;
+    }
+    for (const key of [...streamTiles.keys()]) if (!shown.some((s) => s.key === key)) streamTiles.delete(key);
+    const grid = shown.length > 1 && settings.streamLayout !== 'focus';
     const focus = shown.find((s) => s.key === C.focus) || shown[0];
-    // o mesmo quadro é reaproveitado: se ele saísse da página, a tela cheia fecharia sozinha
-    const big = (focusBox ||= el('div', 'focus'));
-    big.replaceChildren();
-    const tag = el('div', 'tag');
-    if (focus.key !== 'me') tag.append(el('span', 'live', 'AO VIVO'));
-    tag.append(el('span', '', focus.name));
-    const fs = el('button', 'fs');
-    fs.title = 'Tela cheia';
-    fs.append(icon('maximize', 'sm'));
-    fs.onclick = () => (document.fullscreenElement ? document.exitFullscreen() : big.requestFullscreen());
-    if (focus.stream) {
-      const video = videoFor(focus.stream);
-      big.append(video);
-      // janelinha flutuante: continua vendo a stream com o app minimizado ou em outro programa
-      if (document.pictureInPictureEnabled && focus.stream.getVideoTracks().length) {
-        const pip = el('button', 'fs pip');
-        pip.title = 'Janela flutuante (fica por cima dos outros programas)';
-        pip.append(icon('pip', 'sm'));
-        pip.onclick = () => (document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture()).catch((err) => toast('Não deu para abrir a janela flutuante: ' + err.message));
-        big.append(pip);
-      }
-    } else {
-      const wait = el('div', 'connecting');
-      wait.append(icon('loader', 'spin'), el('span', '', `Conectando à stream de ${focus.name}…`));
-      big.append(wait);
-    }
-    big.append(tag, fs);
-    if (focus.key !== 'me') {
-      const stop = el('button', 'stop-watch');
-      stop.append(icon('eye-off', 'sm'), document.createTextNode('Parar de assistir'));
-      stop.onclick = () => unwatchStream(focus.key);
-      big.append(stop);
-    }
-    big.ondblclick = () => fs.click();
+    const main = el('div', grid ? 'stream-grid n' + Math.min(shown.length, 4) : 'stream-focus');
+    if (shown.length > 1) {
+      // alternar entre todas lado a lado e uma em destaque
+      const bar = el('div', 'stream-bar');
+      const mk = (mode, iconName, label) => {
+        const b = el('button', 'ghost sm' + ((settings.streamLayout || 'grid') === mode ? ' on' : ''));
+        b.type = 'button';
+        b.append(icon(iconName, 'sm'), document.createTextNode(label));
+        b.onclick = () => {
+          settings.streamLayout = mode;
+          saveSettings();
+          renderStage();
+        };
+        return b;
+      };
+      bar.append(el('span', 'muted small', `${shown.length} streams`), mk('grid', 'users', 'Lado a lado'), mk('focus', 'maximize', 'Destaque'));
+      stage.replaceChildren(bar);
+    } else stage.replaceChildren();
     const strip = el('div', 'strip');
     for (const s of shown) {
-      if (s === focus) continue;
-      const t = el('div', 'thumb');
-      const tg = el('div', 'tag');
-      tg.append(el('span', 'live', 'AO VIVO'), el('span', '', s.name));
-      if (s.stream) t.append(videoFor(s.stream));
-      t.append(tg);
-      t.onclick = () => {
-        C.focus = s.key;
-        renderStage();
-      };
-      strip.append(t);
+      const t = fillStreamTile(s, shown.length);
+      if (grid || s === focus) main.append(t);
+      else {
+        // modo destaque: as outras streams ficam pequenas embaixo; clicar traz para o centro
+        t.classList.add('mini');
+        t.onclick = (e) => {
+          if (e.target.closest('button')) return;
+          C.focus = s.key;
+          renderStage();
+        };
+        strip.append(t);
+      }
+      const k = 'stream:' + s.key + ':' + (s.stream?.id || 'wait');
+      keysNow.add(k);
+      if (!stageKeys.has(k)) springIn(t);
     }
     for (const m of unwatched) {
       const t = el('div', 'watch-tile');
@@ -3608,16 +3709,11 @@ function renderStage() {
     for (const m of members) {
       const t = el('div', 'thumb' + (C.speaking.has(m.key) ? ' speaking' : ''));
       t.dataset.speak = m.key;
+      t.dataset.uid = m.user.id;
       t.append(avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
       strip.append(t);
     }
-    if (big.parentElement === stage) {
-      for (const child of [...stage.children]) if (child !== big) child.remove();
-      stage.append(strip);
-    } else stage.replaceChildren(big, strip);
-    const k = 'focus:' + focus.key + ':' + (focus.stream?.id || 'wait');
-    keysNow.add(k);
-    if (!stageKeys.has(k)) springIn(big);
+    stage.append(main, strip);
     for (const vid of stage.querySelectorAll('video')) vid.play().catch(() => {});
   }
   stageKeys = keysNow;
@@ -4986,6 +5082,7 @@ function userMenu(e, user) {
       renderPresence();
     }, muted ? '' : 'danger'),
     streaming && (C.watching.has(peer.pid) ? menuItem('Parar de assistir', 'eye-off', () => unwatchStream(peer.pid)) : menuItem('Assistir a stream', 'eye', () => watchStream(peer.pid))),
+    streaming && C.watching.has(peer.pid) && menuItem(settings.streamMute[uid] ? 'Desmutar a stream' : 'Mutar a stream', settings.streamMute[uid] ? 'volume-2' : 'volume-x', () => toggleStreamMute(uid)),
     el('div', 'ctx-sep'),
     menuItem('Copiar nome', 'copy', () => navigator.clipboard.writeText(user.name).catch(() => {})),
   ]);
