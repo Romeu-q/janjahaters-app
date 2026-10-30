@@ -4,6 +4,8 @@ import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
 import {
   createElement,
   ArrowDown,
+  Video,
+  VideoOff,
   AudioLines,
   Check,
   PictureInPicture2,
@@ -115,6 +117,8 @@ function fmtTime(ms) {
 // ----- ícones (lucide) -----
 const ICONS = {
   'arrow-down': ArrowDown,
+  video: Video,
+  'video-off': VideoOff,
   'audio-lines': AudioLines,
   check: Check,
   pip: PictureInPicture2,
@@ -525,7 +529,7 @@ function ensurePeer(pid) {
   return peers.get(pid);
 }
 function myVoice() {
-  return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, watch: [...C.watching] } : null;
+  return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus() }, voice: myVoice() });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
@@ -641,6 +645,7 @@ function onHi(pid, d) {
           muted: !!v.muted,
           deafened: !!v.deafened,
           streaming: !!v.streaming,
+          cam: !!v.cam,
           watch: Array.isArray(v.watch) ? v.watch.filter((x) => typeof x === 'string').slice(0, 12) : [],
         }
       : null;
@@ -917,6 +922,7 @@ function leaveVoice(switching) {
   if (!C.ch) return;
   if (!switching) window.desk?.callActive?.(false);
   stopStream(false);
+  stopCam(false);
   C.ch = null;
   C.watching.clear();
   syncMedia();
@@ -948,10 +954,11 @@ function syncMedia() {
   for (const p of peers.values()) {
     const both = !!C.ch && p.voice?.ch === C.ch;
     // a tela só vai para quem clicou em "Assistir"
-    const out = both ? { mic: C.mic, screen: p.voice.watch?.includes(selfId) ? C.screen : null } : {};
+    // a câmera vai para todo mundo da call (como no Discord); a tela só para quem clicou em Assistir
+    const out = both ? { mic: C.mic, cam: C.cam, screen: p.voice.watch?.includes(selfId) ? C.screen : null } : {};
     if (!C.sent.has(p.pid)) C.sent.set(p.pid, new Map());
     const sent = C.sent.get(p.pid);
-    for (const kind of ['mic', 'screen']) {
+    for (const kind of ['mic', 'cam', 'screen']) {
       const want = out[kind] || null;
       const has = sent.get(kind);
       if (has && has !== want) {
@@ -989,6 +996,9 @@ function tuneSenders() {
         params.encodings[0].maxFramerate = q.fps;
         params.encodings[0].scaleResolutionDownBy = 1;
         params.degradationPreference = { motion: 'maintain-framerate', detail: 'maintain-resolution', balanced: 'balanced' }[q.mode];
+      } else if (C.cam?.getVideoTracks().includes(t)) {
+        params.encodings[0].maxBitrate = 1_500_000; // câmera 720p
+        params.encodings[0].maxFramerate = 30;
       } else if (C.screen?.getAudioTracks().includes(t)) {
         params.encodings[0].maxBitrate = (settings.stream.audioRate || 192) * 1000; // som do PC na stream
         params.encodings[0].priority = params.encodings[0].networkPriority = 'high';
@@ -1060,7 +1070,7 @@ RTCPeerConnection.prototype.setLocalDescription = async function (desc) {
 
 function onPeerStream(stream, pid, meta) {
   const p = ensurePeer(pid);
-  const kind = meta?.kind === 'screen' ? 'screen' : 'mic';
+  const kind = meta?.kind === 'screen' || meta?.kind === 'cam' ? meta.kind : 'mic';
   if (kind === 'screen' && !C.watching.has(pid)) return;
   p.media[kind] = stream;
   if (stream.getAudioTracks().length) attachAudio(p, kind, stream);
@@ -3650,7 +3660,9 @@ function renderStage() {
       const card = el('div', 'pcard' + (C.speaking.has(m.key) ? ' speaking' : '') + (isLive ? ' live-card' : ''));
       card.dataset.speak = m.key;
       card.dataset.uid = m.user.id;
-      card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
+      const cs = camOf(m);
+      card.append(flagsEl(m.voice), cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
+      if (cs) card.classList.add('cam');
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
       if (m.dj) {
         card.classList.add('dj-card');
@@ -3727,7 +3739,9 @@ function renderStage() {
       const t = el('div', 'thumb' + (C.speaking.has(m.key) ? ' speaking' : ''));
       t.dataset.speak = m.key;
       t.dataset.uid = m.user.id;
-      t.append(avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
+      const cs = camOf(m);
+      t.append(cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
+      if (cs) t.classList.add('cam');
       strip.append(t);
     }
     stage.append(main, strip);
@@ -3750,6 +3764,10 @@ function renderControls() {
   const deaf = $('#ctlDeafen');
   deaf.classList.toggle('off', C.deafened);
   setIcon(deaf, C.deafened ? 'headphone-off' : 'headphones');
+  const cam = $('#ctlCam');
+  cam.classList.toggle('on', !!C.cam);
+  setIcon(cam, C.cam ? 'video' : 'video-off');
+  cam.querySelector('span').textContent = C.cam ? 'Desligar' : 'Câmera';
   const st = $('#ctlStream');
   st.classList.toggle('on', !!C.screen);
   setIcon(st, C.screen ? 'screen-share-off' : 'screen-share');
@@ -4005,6 +4023,7 @@ async function fillDevices() {
   };
   fill($('#stMic'), 'audioinput', settings.mic);
   fill($('#stOut'), 'audiooutput', settings.out);
+  fill($('#stCam'), 'videoinput', settings.cam || '');
 }
 // teste do mic com as opções escolhidas na tela (antes de salvar), para ouvir a diferença
 let testAudio = null;
@@ -4123,6 +4142,7 @@ $('#btnSaveSettings').onclick = async () => {
   const micChanged = settings.mic !== $('#stMic').value || settings.noise !== $('#stNoise').value || settings.echo !== $('#stEcho').checked;
   settings.mic = $('#stMic').value;
   settings.out = $('#stOut').value;
+  settings.cam = $('#stCam').value;
   settings.noise = $('#stNoise').value;
   settings.echo = $('#stEcho').checked;
   settings.sounds = $('#stSounds').checked;
@@ -5604,3 +5624,44 @@ function openLivePopup(user, peer, anchor) {
   box.append(head, art, go, prof);
   openPopover(anchor, box);
 }
+
+// ============================================================ câmera
+// Vai para todo mundo da call (como no Discord) e aparece no lugar do avatar.
+const camOf = (m) => (m.key === 'me' ? C.cam : m.peer?.voice?.cam && m.peer?.media.cam) || null;
+function camVideo(stream, mirror) {
+  const v = videoFor(stream);
+  v.classList.add('cam-video');
+  v.classList.toggle('mirror', !!mirror); // a sua própria imagem aparece espelhada, como num espelho
+  v.play().catch(() => {});
+  return v;
+}
+async function toggleCam() {
+  if (C.cam) return stopCam(true);
+  if (!C.ch) return toast('Entre em um canal de voz para ligar a câmera');
+  try {
+    C.cam = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: settings.cam ? { exact: settings.cam } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    });
+  } catch (err) {
+    C.cam = null;
+    return toast('Não consegui abrir a câmera: ' + err.message);
+  }
+  const t = C.cam.getVideoTracks()[0];
+  t.contentHint = 'motion';
+  t.addEventListener('ended', () => stopCam(true)); // câmera desconectada
+  syncMedia();
+  sendHi();
+  renderPresence();
+}
+function stopCam(notify) {
+  if (!C.cam) return;
+  const s = C.cam;
+  C.cam = null;
+  syncMedia();
+  s.getTracks().forEach((t) => t.stop());
+  if (notify) {
+    sendHi();
+    renderPresence();
+  }
+}
+$('#ctlCam').onclick = toggleCam;
