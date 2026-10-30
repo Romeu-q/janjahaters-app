@@ -648,3 +648,15 @@ body.light .profile-card.themed .pc-body { background: rgba(255,255,255,.6); }
   .st-tab { font-size: 0; justify-content: center; }
   .st-nav-head, .st-ver { display: none; }
 }
+
+#plAuto.on { color: var(--accent); background: var(--accent-soft); }
+
+/* ===== v1.5: DJ na call ===== */
+.avatar.dj-avatar { background: linear-gradient(135deg, var(--accent), var(--accent-2)) !important; color: var(--on-accent); }
+.avatar.dj-avatar svg.lucide { width: 60%; height: 60%; }
+.speaking .avatar.dj-avatar svg.lucide, .avatar.dj-avatar.speaking svg.lucide { animation: spin 2.4s linear infinite; }
+.pcard.dj-card { position: relative; overflow: hidden; }
+.pcard.dj-card::before { content: ""; position: absolute; inset: 0; background: var(--dj-art) center / cover; opacity: .18; filter: blur(8px); transform: scale(1.2); pointer-events: none; }
+.pcard.dj-card > * { position: relative; }
+.pcard .pc-sub { font-size: 12px; color: var(--muted); max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.voice-users .bot-tag { margin-left: 4px; }

@@ -12,6 +12,8 @@ import {
   BadgeCheck,
   Brush,
   Image as ImageIcon,
+  Shuffle,
+  Infinity as InfinityIcon,
   Palette,
   Puzzle,
   User,
@@ -147,6 +149,8 @@ const ICONS = {
   'badge-check': BadgeCheck,
   brush: Brush,
   image: ImageIcon,
+  shuffle: Shuffle,
+  infinity: InfinityIcon,
   palette: Palette,
   puzzle: Puzzle,
   user: User,
@@ -201,6 +205,12 @@ function avatar(name, color, cls = '', uid) {
   const a = el('span', 'avatar ' + cls, (name || '?').trim()[0] || '?');
   a.style.background = color;
   if (!uid) return a;
+  if (uid === 'dj') {
+    a.textContent = '';
+    a.classList.add('dj-avatar');
+    a.append(icon('disc-3'));
+    return a;
+  }
   const prof = profileOf(uid);
   const addImg = (src) => {
     const img = el('img');
@@ -461,6 +471,8 @@ function onRecsChanged(list) {
     renderSidebar();
   }
   if (kinds.has('q') || kinds.has('pb')) {
+    checkDj();
+    renderPresence();
     syncMusic();
     renderMusic();
     renderNowPlaying();
@@ -838,6 +850,7 @@ async function joinVoice(ch) {
   }
   C.ch = ch;
   C.joinedAt = Date.now();
+  djHere = voiceMembers(ch).some((m) => m.key === 'dj'); // já estava lá: sem som
   applyMicEnabled();
   if (C.mic) meter('me', C.mic);
   sfx.join();
@@ -1496,7 +1509,62 @@ function advance(fromId) {
   const cur = recs.get(fromId);
   if (cur && !cur.del) put({ ...cur, del: true });
   const next = queueOf(ch).find((q) => q.id !== fromId);
-  put({ k: 'pb', id: 'pb:' + ch, ch, item: next?.id || null, startedAt: Date.now(), pausedAt: null });
+  const hist = [...(pb.hist || []), cur?.ref].filter(Boolean).slice(-40);
+  // fila acabou: o DJ continua com músicas parecidas (só um PC da call busca, para não repetir)
+  if (!next && pb.auto !== false && cur?.ref && window.desk?.ytRelated) {
+    if (isDjLeader(ch)) autoplayNext(ch, cur, hist);
+    return;
+  }
+  writePb(ch, { item: next?.id || null, hist });
+}
+// estado do player do canal, sem perder o autoplay e o histórico
+function writePb(ch, fields) {
+  const old = recs.get('pb:' + ch);
+  put({ k: 'pb', id: 'pb:' + ch, ch, item: null, startedAt: Date.now(), pausedAt: null, auto: old?.auto, hist: old?.hist || [], ...fields });
+}
+// quem da call busca a próxima do autoplay: o de menor id (todos chegam à mesma conta)
+function isDjLeader(ch) {
+  const ids = [selfId, ...[...peers.values()].filter((p) => p.voice?.ch === ch).map((p) => p.pid)];
+  return ids.sort()[0] === selfId;
+}
+async function autoplayNext(ch, cur, hist) {
+  let list = [];
+  try {
+    list = await window.desk.ytRelated(cur.ref);
+  } catch (err) {
+    console.warn('autoplay', err);
+  }
+  const pb = recs.get('pb:' + ch);
+  if (pb?.item !== cur.id || queueOf(ch).length) return; // alguém já pôs outra coisa
+  const recent = new Set([...hist, cur.ref]);
+  const pick = list.find((r) => !recent.has(r.id));
+  if (!pick) return writePb(ch, { item: null, hist });
+  const item = { k: 'q', id: 'q:' + randId(), ch, ref: pick.id, title: pick.title || PLACEHOLDER, artist: pick.artist, dur: pick.dur || 0, thumb: pick.thumb, addedBy: 'Autoplay', auto: true, at: Date.now() };
+  put(item);
+  writePb(ch, { item: item.id, hist });
+  botSay(ch, `Autoplay: tocando **${item.title}**${item.artist ? ' · ' + item.artist : ''}`);
+}
+// embaralha a fila para todo mundo: só troca a ordem (o "at" de cada música)
+function shuffleQueue(ch = C.ch) {
+  const q = ch ? queueOf(ch) : [];
+  if (q.length < 2) return q.length;
+  const order = q.map((x) => x.at).sort((a, b) => a - b);
+  const mixed = [...q];
+  for (let i = mixed.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [mixed[i], mixed[j]] = [mixed[j], mixed[i]];
+  }
+  mixed.forEach((x, i) => put({ ...x, at: order[i] }));
+  return q.length;
+}
+function toggleAutoplay(ch = C.ch) {
+  if (!ch) return null;
+  const old = recs.get('pb:' + ch);
+  const on = old?.auto === false;
+  if (old) put({ ...old, auto: on });
+  else writePb(ch, { auto: on });
+  renderMusic();
+  return on;
 }
 
 function parseYouTube(text) {
@@ -1515,7 +1583,7 @@ function enqueue(fields) {
   const item = { k: 'q', id: 'q:' + randId(), ch: C.ch, title: PLACEHOLDER, artist: '', dur: 0, thumb: '', addedBy: me.name, at: Date.now(), ...fields };
   put(item);
   const { item: playing } = pbOf(C.ch);
-  if (!playing) put({ k: 'pb', id: 'pb:' + C.ch, ch: C.ch, item: item.id, startedAt: Date.now(), pausedAt: null });
+  if (!playing) writePb(C.ch, { item: item.id });
   else toast(`"${item.title}" entrou na fila`);
   return item;
 }
@@ -1641,12 +1709,22 @@ function setPb(change) {
   if (!pb?.item) return;
   put({ ...pb, ...change });
 }
+$('#plShuffle').onclick = () => {
+  const n = shuffleQueue();
+  if (n < 2) return toast('Precisa de pelo menos 2 músicas na fila para embaralhar');
+  botSay(C.ch, `**${me.name}** embaralhou a fila (${n} músicas)`);
+  animate($('#plShuffle'), { rotate: [0, 360] }, { duration: 0.4 });
+};
+$('#plAuto').onclick = () => {
+  const on = toggleAutoplay();
+  if (on != null) toast(on ? 'Autoplay ligado: quando a fila acabar, toco músicas parecidas' : 'Autoplay desligado');
+};
 $('#plPlay').onclick = () => {
   if (!C.ch) return;
   const { pb, item } = pbOf(C.ch);
   if (!item) {
     const first = queueOf(C.ch)[0];
-    if (first) put({ k: 'pb', id: 'pb:' + C.ch, ch: C.ch, item: first.id, startedAt: Date.now(), pausedAt: null });
+    if (first) writePb(C.ch, { item: first.id });
     return;
   }
   if (pb.pausedAt != null) setPb({ startedAt: Date.now() - pb.pausedAt, pausedAt: null });
@@ -1702,6 +1780,8 @@ function renderMusic() {
   $('#musicOn').hidden = !C.ch;
   if (!C.ch) return;
   const { pb, item } = pbOf(C.ch);
+  $('#plAuto').classList.toggle('on', pb?.auto !== false);
+  $('#plAuto').title = pb?.auto !== false ? 'Autoplay ligado: quando a fila acabar, toca músicas parecidas (clique para desligar)' : 'Autoplay desligado (clique para ligar)';
   $('#mediaEmpty').hidden = !!item;
   $('#ytBox').style.visibility = item ? 'visible' : 'hidden';
   $('#plTitle').textContent = item ? item.title : 'Nada tocando';
@@ -2581,6 +2661,8 @@ const DJ_CMDS = new Map(
     remove: ['remove', 'rm', 'tirar'],
     volume: ['volume', 'vol', 'v'],
     help: ['help', 'ajuda', 'h', 'comandos'],
+    autoplay: ['autoplay', 'auto', 'ap'],
+    shuffle: ['shuffle', 'embaralhar', 'aleatorio'],
   }).flatMap(([cmd, aliases]) => aliases.map((a) => [a, cmd])),
 );
 const isCommand = (text) => {
@@ -2607,6 +2689,8 @@ const HELP = [
   '/remove <nº>  tira uma música da fila',
   '/clear  limpa a fila  ·  /stop  para tudo',
   '/volume <0-100>  volume da música só para você',
+  '/autoplay  liga/desliga músicas parecidas quando a fila acaba',
+  '/shuffle  embaralha a fila',
 ].join('\n');
 async function runCommand(text, ch, box) {
   const [, name, rawArg] = text.match(CMD);
@@ -2659,6 +2743,15 @@ async function runCommand(text, ch, box) {
       if (added) botSay(ch, `${who} colocou **${added.title}**${added.artist ? ' · ' + added.artist : ''} na fila`);
       return;
     }
+    case 'shuffle': {
+      const n = shuffleQueue(C.ch);
+      if (n < 2) return note(box, 'Precisa de pelo menos 2 músicas na fila para embaralhar.');
+      return botSay(ch, `${who} embaralhou a fila (${n} músicas)`);
+    }
+    case 'autoplay': {
+      const on = toggleAutoplay(C.ch);
+      return botSay(ch, `${who} ${on ? 'ligou' : 'desligou'} o autoplay${on ? ': quando a fila acabar, toco músicas parecidas' : ''}`);
+    }
     case 'skip':
       if (!item) return note(box, 'Nada tocando agora.');
       advance(item.id);
@@ -2680,7 +2773,7 @@ async function runCommand(text, ch, box) {
     case 'stop':
       queueOf(C.ch).forEach((x) => put({ ...x, del: true }));
       if (item) put({ ...item, del: true });
-      put({ k: 'pb', id: 'pb:' + C.ch, ch: C.ch, item: null, startedAt: Date.now(), pausedAt: null });
+      writePb(C.ch, { item: null });
       return botSay(ch, `${who} parou a música e limpou a fila`);
     case 'remove': {
       const q = queueOf(C.ch);
@@ -2911,6 +3004,7 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
 }
 function openProfile(user, anchor) {
   if (!user?.id) return;
+  if (user.id === 'dj') return selectTab('music');
   openPopover(anchor, profileCard(user));
 }
 // partículas do "efeito de perfil"
@@ -2966,8 +3060,29 @@ function uniquePeers(filter) {
 function voiceMembers(ch) {
   const list = uniquePeers((p) => p.voice?.ch === ch).map((p) => ({ key: p.pid, user: p.user, voice: p.voice, peer: p }));
   if (C.ch === ch) list.unshift({ key: 'me', user: me, voice: myVoice() });
+  // o DJ "entra na call" enquanto tem música tocando ou na fila, como os bots do Discord
+  const { pb, item } = pbOf(ch);
+  if (item || queueOf(ch).length) list.push({ key: 'dj', user: DJ_USER, voice: { ch, muted: !item || pb?.pausedAt != null }, dj: { item, paused: pb?.pausedAt != null } });
   return list;
 }
+const DJ_USER = { id: 'dj', name: 'DJ', color: '#ff7a1a' };
+const djPlaying = (ch) => {
+  const { pb, item } = pbOf(ch);
+  return !!item && pb?.pausedAt == null;
+};
+// som de entrar/sair quando o DJ chega ou vai embora da minha call
+let djHere = false;
+function checkDj() {
+  const here = !!C.ch && voiceMembers(C.ch).some((m) => m.key === 'dj');
+  if (here === djHere) return;
+  djHere = here;
+  here ? sfx.join() : sfx.leave();
+}
+setInterval(() => {
+  const on = !!C.ch && djPlaying(C.ch) && !settings.musicMuted;
+  on ? C.speaking.add('dj') : C.speaking.delete('dj');
+  $('[data-speak="dj"]').forEach((e) => e.classList.toggle('speaking', on));
+}, 500);
 function flagsEl(voice, key) {
   const f = el('span', 'flags');
   if (voice?.streaming) {
@@ -3026,7 +3141,9 @@ function renderSidebar() {
           const u = el('li' + '');
           u.dataset.speak = m.key;
           u.classList.toggle('speaking', C.speaking.has(m.key));
-          u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name), flagsEl(m.voice, m.key));
+          u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name));
+          if (m.dj) u.append(el('span', 'bot-tag', 'BOT'));
+          u.append(flagsEl(m.voice, m.key));
           u.onclick = (e) => (e.stopPropagation(), openProfile(m.user, u));
           ul.append(u);
           rows.push([c.id + ':' + m.user.id, u]);
@@ -3190,6 +3307,14 @@ function renderStage() {
       card.dataset.speak = m.key;
       card.append(flagsEl(m.voice), avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
+      if (m.dj) {
+        card.classList.add('dj-card');
+        card.classList.toggle('speaking', djPlaying(c.id));
+        if (m.dj.item) {
+          card.style.setProperty('--dj-art', `url("${thumbOf(m.dj.item)}")`);
+          card.append(el('div', 'pc-sub', (m.dj.paused ? 'Pausado · ' : '') + m.dj.item.title));
+        } else card.append(el('div', 'pc-sub', 'Esperando a próxima…'));
+      }
       card.onclick = (e) => !e.target.closest('button') && openProfile(m.user, card);
       grid.append(card);
       const k = 'card:' + m.key + (isLive ? ':live' : '');
@@ -3364,7 +3489,7 @@ $('#chDlgName').onkeydown = (e) => e.key === 'Enter' && $('#chDlgSave').click();
 $('#chDlgDelete').onclick = () => {
   const c = chDlgState.existing;
   if (c.type === 'text' && channels('text').length <= 1) return toast('O grupo precisa de pelo menos um canal de texto');
-  if (c.type === 'voice' && voiceMembers(c.id).length) return toast('Tem gente nesse canal de voz');
+  if (c.type === 'voice' && voiceMembers(c.id).some((m) => m.key !== 'dj')) return toast('Tem gente nesse canal de voz');
   if (!confirm(`Apagar "${c.name}"?`)) return;
   put({ ...c, del: true });
   closeDialog($('#channelDlg'));
@@ -4472,7 +4597,7 @@ window.addEventListener('beforeunload', () => {
   room?.leave();
 });
 
-window.__toca = { peers, C, recs, Y }; // para depurar pelo DevTools (Ctrl+Shift+I)
+window.__toca = { peers, C, recs, Y, advance, pbOf, queueOf }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
 // ----- convite por link (janjahaters://join/CODIGO) -----
