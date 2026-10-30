@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('desk', {
   sources: () => ipcRenderer.invoke('sources'),
   pick: (id, audio) => ipcRenderer.invoke('pick', id, audio),
   ytSearch: (q) => ipcRenderer.invoke('yt-search', q),
+  ytRelated: (id) => ipcRenderer.invoke('yt-related', id),
   openExternal: (url) => ipcRenderer.send('open-external', url),
   win: (cmd) => ipcRenderer.send('win', cmd),
   flash: () => ipcRenderer.send('flash'),
