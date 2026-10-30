@@ -58,10 +58,42 @@ async function startUiServer() {
 let win;
 let pickedSource = null; // { id, audio } escolhido no seletor de tela do app
 
+// a janela abre do tamanho e no lugar em que foi fechada
+const BOUNDS_FILE = path.join(app.getPath('userData'), 'window.json');
+function savedBounds() {
+  try {
+    const b = JSON.parse(fs.readFileSync(BOUNDS_FILE, 'utf8'));
+    const { screen } = require('electron');
+    // só usa se ainda couber em algum monitor (o monitor pode ter sido desligado)
+    const visible = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return b.x < a.x + a.width - 100 && b.x + b.width > a.x + 100 && b.y >= a.y - 10 && b.y < a.y + a.height - 100;
+    });
+    return visible ? b : null;
+  } catch {
+    return null;
+  }
+}
+function keepBounds() {
+  let t;
+  const save = () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      if (!win || win.isDestroyed() || win.isMinimized()) return;
+      try {
+        fs.writeFileSync(BOUNDS_FILE, JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() }));
+      } catch {}
+    }, 400);
+  };
+  for (const ev of ['resize', 'move', 'maximize', 'unmaximize']) win.on(ev, save);
+}
+
 function createWindow() {
+  const saved = savedBounds();
   win = new BrowserWindow({
-    width: 1320,
-    height: 820,
+    width: saved?.width || 1320,
+    height: saved?.height || 820,
+    ...(saved ? { x: saved.x, y: saved.y } : {}),
     minWidth: 1000,
     minHeight: 620,
     frame: false,
@@ -77,6 +109,8 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
+  if (saved?.maximized) win.maximize();
+  keepBounds();
   win.loadURL(`http://localhost:${UI_PORT}/`);
   // aberto pelo "iniciar com o Windows": fica só na bandeja
   win.once('ready-to-show', () => !(process.argv.includes('--hidden') && prefs().tray) && win.show());
