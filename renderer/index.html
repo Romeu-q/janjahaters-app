@@ -30,11 +30,13 @@
     <!-- ===== esquerda: grupo e canais ===== -->
     <aside id="side">
       <div class="group-card">
-        <div class="group-avatar" id="groupAvatar">T</div>
+        <div class="group-avatar" id="groupAvatar" title="Perfil do servidor">T</div>
         <div class="group-info">
-          <div class="group-name" id="groupName" title="Clique para renomear">Grupo</div>
+          <div class="group-name" id="groupName" title="Perfil do servidor">Grupo</div>
           <div class="group-sub" id="groupSub">1 online</div>
+          <div class="group-desc" id="groupDesc" hidden></div>
         </div>
+        <button class="icon-btn" id="btnServer" title="Perfil do servidor"><i data-icon="settings"></i></button>
         <button class="icon-btn" id="btnInvite" title="Convidar amigos"><i data-icon="user-plus"></i></button>
       </div>
 
@@ -67,7 +69,8 @@
     <main id="center">
       <header id="viewHead">
         <i id="viewIcon" data-icon="hash"></i>
-        <span id="viewTitle"></span>
+        <span id="viewTitle" title="Renomear canal"></span>
+        <button type="button" class="icon-btn sm" id="btnRenameCh" title="Renomear canal"><i data-icon="pencil" class="sm"></i></button>
         <span class="grow"></span>
         <label class="chat-search" id="chatSearch" hidden><i data-icon="search" class="sm"></i><input id="chatSearchInput" placeholder="Buscar neste canal"><span id="chatSearchCount" class="muted small"></span></label>
         <span id="viewSub" class="muted"></span>
@@ -101,6 +104,7 @@
           <button class="ctl" id="ctlMute" title="Microfone"><i data-icon="mic"></i><span>Mic</span></button>
           <button class="ctl" id="ctlDeafen" title="Áudio"><i data-icon="headphones"></i><span>Áudio</span></button>
           <button class="ctl" id="ctlStream" title="Transmitir tela"><i data-icon="screen-share"></i><span>Stream</span></button>
+          <button class="ctl" id="ctlStreamSwap" title="Trocar a janela ou tela transmitida" hidden><i data-icon="refresh"></i><span>Trocar</span></button>
           <button class="ctl" id="ctlStreamCfg" title="Qualidade da stream" hidden><i data-icon="sliders"></i><span>Qualidade</span></button>
           <button class="ctl" id="ctlMusic" title="Música"><i data-icon="list-music"></i><span>Música</span></button>
           <button class="ctl" id="ctlSounds" title="Soundboard"><i data-icon="drum"></i><span>Sons</span></button>
@@ -217,6 +221,24 @@
     <label>Link de convite<span class="code-box"><input id="inviteLink" readonly><button class="primary" id="btnCopyLink"><i data-icon="link"></i>Copiar link</button></span></label>
     <label>Ou o código<span class="code-box"><input id="inviteCode" readonly><button class="ghost" id="btnCopyCode"><i data-icon="copy"></i>Copiar</button></span></label>
     <menu><button class="ghost" data-close>Fechar</button></menu>
+  </dialog>
+
+  <dialog id="serverDlg">
+    <h2>Perfil do servidor</h2>
+    <p class="muted">Todo mundo do grupo vê as mudanças.</p>
+    <div class="srv-preview" id="srvPreview"></div>
+    <label>Nome<input id="srvName" maxlength="32"></label>
+    <label>Descrição <small class="muted" id="srvDescCount"></small><textarea id="srvDesc" maxlength="200" rows="3" placeholder="Sobre o que é o grupo?"></textarea></label>
+    <div class="pf-media">
+      <button type="button" class="ghost sm" id="srvIconBtn"><i data-icon="image"></i>Trocar ícone</button>
+      <button type="button" class="ghost sm" id="srvIconDel" hidden>Remover ícone</button>
+      <button type="button" class="ghost sm" id="srvBannerBtn"><i data-icon="image"></i>Trocar banner</button>
+      <button type="button" class="ghost sm" id="srvBannerDel" hidden>Remover banner</button>
+      <input type="file" id="srvFile" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+    </div>
+    <small class="muted">GIF animado funciona. Até 6 MB.</small>
+    <label class="inline">Cor do ícone <input type="color" id="srvColor"></label>
+    <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="srvSave">Salvar</button></menu>
   </dialog>
 
   <dialog id="channelDlg">
@@ -531,7 +553,8 @@
         <input type="range" id="sqRate" min="0" max="50" step="0.5">
         <small class="muted">No 0 fica automático pela resolução e fps. Mais alto = mais nítido, mas precisa de upload bom (cada amigo assistindo usa essa taxa).</small>
       </label>
-      <label class="check"><input type="checkbox" id="streamAudio"> Transmitir o áudio do PC <small class="muted">(só o jogo e os outros programas: a call e a música do janjahaters nunca vão junto)</small></label>
+      <input type="checkbox" id="streamAudio" checked hidden>
+      <p class="stream-audio-note"><i data-icon="volume-2" class="sm"></i>O som do PC sempre vai junto: o jogo e os outros programas. A call e a música do janjahaters nunca vão.</p>
       <label>Qualidade do som da stream
         <select id="sqAudioRate">
           <option value="96">Leve · 96 kbps</option>

@@ -1231,7 +1231,7 @@ function readQualityForm() {
     rate: Number($('#sqRate').value),
     codec: $('#sqCodec').value,
     mode: $('#sqMode').value,
-    audio: $('#streamAudio').checked,
+    audio: true, // o som do PC sempre vai junto na stream
     audioRate: Number($('#sqAudioRate').value),
   };
 }
@@ -1275,30 +1275,52 @@ let allSources = [];
 let srcType = 'screen';
 let sqAdjust = false;
 
-function openStreamDlg(adjust) {
-  sqAdjust = adjust;
-  $('#streamDlgTitle').textContent = adjust ? 'Qualidade da stream' : 'Transmitir';
-  $('#srcPick').hidden = adjust || !isDesktop;
-  $('#btnGoLive').textContent = adjust ? 'Aplicar' : 'Transmitir';
-  $('#btnGoLive').disabled = !adjust && isDesktop;
-  $('#streamDlg [data-close]').textContent = adjust ? 'Fechar' : 'Cancelar';
+// modo do diálogo: 'new' (começar), 'adjust' (qualidade ao vivo) ou 'swap' (trocar janela/tela ao vivo)
+let sqMode = 'new';
+function openStreamDlg(mode) {
+  sqMode = mode;
+  sqAdjust = mode === 'adjust';
+  const swap = mode === 'swap';
+  $('#streamDlgTitle').textContent = sqAdjust ? 'Qualidade da stream' : swap ? 'Trocar o que está sendo transmitido' : 'Transmitir';
+  $('#srcPick').hidden = sqAdjust || !isDesktop;
+  $('#streamDlg .sq').hidden = swap;
+  $('#btnGoLive').textContent = sqAdjust ? 'Aplicar' : swap ? 'Trocar' : 'Transmitir';
+  $('#btnGoLive').disabled = !sqAdjust && isDesktop;
+  $('#streamDlg [data-close]').textContent = sqAdjust ? 'Fechar' : 'Cancelar';
   fillQualityForm(settings.stream);
-  $('#sqLive').hidden = !adjust;
+  $('#sqLive').hidden = !sqAdjust;
   openDialog($('#streamDlg'));
-  if (adjust) startLiveStats();
+  if (sqAdjust) startLiveStats();
 }
-async function openStreamPicker() {
-  if (C.screen) return stopStream(true);
-  if (!C.ch) return toast('Entre em um canal de voz para transmitir');
+async function loadSources() {
   pickedSource = null;
-  openStreamDlg(false);
   if (!isDesktop) return; // modo navegador (testes): o navegador pergunta a tela
   $('#sources').replaceChildren(el('p', 'muted', 'Carregando…'));
   allSources = await window.desk.sources();
   renderSources(true);
 }
+async function openStreamPicker() {
+  if (C.screen) return stopStream(true);
+  if (!C.ch) return toast('Entre em um canal de voz para transmitir');
+  openStreamDlg('new');
+  loadSources();
+}
 $('#ctlStream').onclick = $('#vbStream').onclick = openStreamPicker;
-$('#ctlStreamCfg').onclick = () => C.screen && openStreamDlg(true);
+$('#ctlStreamCfg').onclick = () => C.screen && openStreamDlg('adjust');
+$('#ctlStreamSwap').onclick = () => {
+  if (!C.screen) return;
+  openStreamDlg('swap');
+  loadSources();
+};
+// troca a janela/tela sem parar a stream: quem assiste continua assistindo
+async function swapSource(id) {
+  if (!C.screen) return;
+  streamSource = id;
+  await restartStream();
+  const name = allSources.find((x) => x.id === id)?.name;
+  startFollow(name || '');
+  if (name) toast('Agora transmitindo: ' + name);
+}
 $$('.src-tab').forEach(
   (b) =>
     (b.onclick = () => {
@@ -1334,16 +1356,20 @@ function renderSources(animateIn) {
   else if (animateIn) popIn([...box.children], { delay: stagger(0.025) });
 }
 $('#btnGoLive').onclick = async () => {
+  if (sqMode === 'swap') {
+    closeDialog($('#streamDlg'));
+    return swapSource(pickedSource);
+  }
   const prev = settings.stream;
   settings.stream = readQualityForm();
   saveSettings();
   if (!sqAdjust) {
     closeDialog($('#streamDlg'));
-    return startStream(pickedSource, settings.stream.audio);
+    return startStream(pickedSource, true); // o som do PC sempre vai junto
   }
   if (!C.screen) return closeDialog($('#streamDlg'));
-  // codec e áudio só mudam reiniciando a captura; o resto muda na hora
-  if (prev.codec !== settings.stream.codec || !!prev.audio !== settings.stream.audio) await restartStream();
+  // o codec só muda reiniciando a captura; o resto muda na hora
+  if (prev.codec !== settings.stream.codec) await restartStream();
   else await applyStreamQuality();
   toast('Qualidade da stream atualizada');
 };
@@ -1442,7 +1468,7 @@ async function restartStream() {
   const old = C.screen;
   let next;
   try {
-    next = await captureScreen(streamSource, settings.stream.audio);
+    next = await captureScreen(streamSource, true);
   } catch (err) {
     return toast('Não consegui reiniciar a stream: ' + err.message);
   }
@@ -3350,8 +3376,18 @@ function renderSidebar() {
   setIcon($('#vbStream'), C.screen ? 'screen-share-off' : 'screen-share');
   $('#vbStream').classList.toggle('on', !!C.screen);
   const gname = groupName();
+  const g = grpRec();
   $('#groupName').textContent = gname;
-  $('#groupAvatar').textContent = gname[0] || 'T';
+  // só repinta ícone/banner quando mudam (evita piscar a cada atualização da barra lateral)
+  const gLook = [g.icon, g.banner, g.color, gname].join('|');
+  if ($('#groupAvatar').dataset.look !== gLook) {
+    $('#groupAvatar').dataset.look = gLook;
+    paintGroupAvatar($('#groupAvatar'), g);
+    paintGroupBanner($('.group-card'), g);
+  }
+  $('#groupDesc').hidden = !g.desc;
+  $('#groupDesc').textContent = g.desc || '';
+  $('.group-card').title = g.desc || '';
   $('#tbGroup').textContent = gname;
 }
 function editBtn(c) {
@@ -3606,6 +3642,7 @@ function renderControls() {
   setIcon(st, C.screen ? 'screen-share-off' : 'screen-share');
   st.querySelector('span').textContent = C.screen ? 'Parar' : 'Stream';
   $('#ctlStreamCfg').hidden = !C.screen;
+  $('#ctlStreamSwap').hidden = !C.screen || isMobile;
 }
 
 function renderHeader() {
@@ -3680,6 +3717,11 @@ function openChannelDialog(type, existing) {
   $('#chDlgName').focus();
 }
 $$('[data-add]').forEach((b) => (b.onclick = () => openChannelDialog(b.dataset.add)));
+// renomear o canal aberto: clicando no nome lá em cima ou no lápis
+$('#viewTitle').onclick = $('#btnRenameCh').onclick = () => {
+  const c = channel(S.view);
+  if (c) openChannelDialog(c.type, c);
+};
 const fixName = (type, name) => (type === 'text' ? name.toLowerCase().replace(/\s+/g, '-') : name).slice(0, 40);
 $('#chDlgSave').onclick = () => {
   const name = cleanName($('#chDlgName').value.slice(0, 40));
@@ -3705,28 +3747,103 @@ $('#chDlgDelete').onclick = () => {
 };
 
 // ============================================================ grupo, convite, configurações
-$('#groupName').onclick = () => {
-  const name = $('#groupName');
-  if (name.querySelector('input')) return;
-  const inp = el('input');
-  inp.value = groupName();
-  inp.maxLength = 32;
-  name.replaceChildren(inp);
-  inp.focus();
-  inp.select();
-  let done = false;
-  const finish = (save) => {
-    if (done) return;
-    done = true;
-    if (save && cleanName(inp.value) && cleanName(inp.value) !== groupName()) put({ k: 'grp', id: 'grp', name: cleanName(inp.value) });
-    renderSidebar();
+// ----- perfil do servidor: nome, descrição, ícone, banner e cor (sincroniza com todo mundo) -----
+const grpRec = () => recs.get('grp') || { k: 'grp', id: 'grp', name: 'Grupo' };
+const GRP_FILE = /^f:[0-9a-f]{24}$/;
+// ícone do servidor (imagem ou a inicial na cor escolhida); o arquivo vem P2P de quem trocou
+function paintGroupAvatar(node, g, urls = {}) {
+  node.textContent = (g.name || 'G')[0];
+  node.style.background = cleanHex(g.color) || '';
+  node.classList.remove('has-img');
+  if (!GRP_FILE.test(g.icon || '')) return;
+  const set = (url) => {
+    if (!url) return;
+    node.textContent = '';
+    node.classList.add('has-img');
+    node.replaceChildren(Object.assign(el('img'), { src: url, alt: '' }));
   };
-  inp.onkeydown = (e) => {
-    if (e.key === 'Enter') finish(true);
-    if (e.key === 'Escape') finish(false);
+  urls[g.icon] ? set(urls[g.icon]) : fileUrl(g.icon, g.by).then(set);
+}
+function paintGroupBanner(node, g, urls = {}) {
+  node.style.backgroundImage = '';
+  node.classList.remove('has-banner');
+  if (!GRP_FILE.test(g.banner || '')) return;
+  const set = (url) => {
+    if (!url) return;
+    node.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.65)), url("${url}")`;
+    node.classList.add('has-banner');
   };
-  inp.onblur = () => finish(true);
+  urls[g.banner] ? set(urls[g.banner]) : fileUrl(g.banner, g.by).then(set);
+}
+let srvDraft = null;
+const srvUrls = {};
+function openServerDialog() {
+  if (!R) return;
+  const g = grpRec();
+  srvDraft = { name: g.name || 'Grupo', desc: g.desc || '', icon: g.icon || '', banner: g.banner || '', color: cleanHex(g.color) || '#ff7a1a' };
+  $('#srvName').value = srvDraft.name;
+  $('#srvDesc').value = srvDraft.desc;
+  $('#srvColor').value = srvDraft.color;
+  renderServerPreview();
+  openDialog($('#serverDlg'));
+}
+function renderServerPreview() {
+  srvDraft.name = cleanName($('#srvName').value) || 'Grupo';
+  srvDraft.desc = $('#srvDesc').value.slice(0, 200);
+  srvDraft.color = $('#srvColor').value;
+  $('#srvDescCount').textContent = `${srvDraft.desc.length}/200`;
+  $('#srvIconDel').hidden = !srvDraft.icon;
+  $('#srvBannerDel').hidden = !srvDraft.banner;
+  const card = el('div', 'group-card');
+  const av = el('div', 'group-avatar');
+  const info = el('div', 'group-info');
+  info.append(el('div', 'group-name', srvDraft.name), el('div', 'group-sub', 'prévia'));
+  if (srvDraft.desc) info.append(el('div', 'group-desc', srvDraft.desc));
+  card.append(av, info);
+  const g = { ...srvDraft, by: me.id };
+  paintGroupAvatar(av, g, srvUrls);
+  paintGroupBanner(card, g, srvUrls);
+  $('#srvPreview').replaceChildren(card);
+}
+for (const id of ['#srvName', '#srvDesc', '#srvColor']) $(id).addEventListener('input', renderServerPreview);
+let srvFileTarget = 'icon';
+$('#srvIconBtn').onclick = () => {
+  srvFileTarget = 'icon';
+  $('#srvFile').click();
 };
+$('#srvBannerBtn').onclick = () => {
+  srvFileTarget = 'banner';
+  $('#srvFile').click();
+};
+$('#srvIconDel').onclick = () => {
+  srvDraft.icon = '';
+  renderServerPreview();
+};
+$('#srvBannerDel').onclick = () => {
+  srvDraft.banner = '';
+  renderServerPreview();
+};
+$('#srvFile').onchange = async () => {
+  const file = $('#srvFile').files[0];
+  $('#srvFile').value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) return toast('Escolha uma imagem (PNG, JPG, GIF ou WebP)');
+  if (file.size > 6 * 1024 * 1024) return toast('A imagem passa de 6 MB');
+  const id = 'f:' + randId(12);
+  await blobPut(id, file);
+  srvUrls[id] = URL.createObjectURL(file);
+  blobUrls.set(id, srvUrls[id]);
+  srvDraft[srvFileTarget] = id;
+  renderServerPreview();
+};
+$('#srvSave').onclick = () => {
+  renderServerPreview();
+  const g = grpRec();
+  put({ ...g, k: 'grp', id: 'grp', name: srvDraft.name, desc: srvDraft.desc, icon: srvDraft.icon, banner: srvDraft.banner, color: srvDraft.color });
+  closeDialog($('#serverDlg'));
+  toast('Perfil do servidor salvo');
+};
+$('#groupName').onclick = $('#groupAvatar').onclick = $('#btnServer').onclick = openServerDialog;
 
 const inviteCode = () => 'JANJA-' + R.key.match(/.{1,4}/g).join('-');
 // o código vai depois do #: a página do convite nunca o envia a nenhum servidor
