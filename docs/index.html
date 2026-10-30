@@ -27,10 +27,24 @@
     <h1 id="title">Você foi convidado para o janjahaters</h1>
     <p id="sub">Abrindo o app…</p>
     <a class="btn primary" id="open" href="#">Abrir no janjahaters</a>
-    <a class="btn ghost" href="https://github.com/Romeu-q/janjahaters-app/releases/latest">Ainda não tenho o app (baixar)</a>
-    <small>Depois de instalar, volte aqui e clique em "Abrir no janjahaters".</small>
+    <a class="btn ghost" id="dlWin" href="https://github.com/Romeu-q/janjahaters-app/releases/latest">Baixar para Windows</a>
+    <a class="btn ghost" id="dlAndroid" href="https://github.com/Romeu-q/janjahaters-app/releases/latest">Baixar para Android</a>
+    <small>Depois de instalar, volte aqui e toque em "Abrir no janjahaters".<br>No Android, permita instalar apps do navegador quando ele pedir.</small>
   </main>
   <script>
+    // links diretos para o instalador de cada sistema (e o do celular primeiro no celular)
+    fetch('https://api.github.com/repos/Romeu-q/janjahaters-app/releases/latest')
+      .then((r) => r.json())
+      .then((rel) => {
+        const find = (re) => (rel.assets || []).find((a) => re.test(a.name))?.browser_download_url;
+        const win = find(/\.exe$/i);
+        const apk = find(/\.apk$/i);
+        if (win) document.getElementById('dlWin').href = win;
+        if (apk) document.getElementById('dlAndroid').href = apk;
+        else document.getElementById('dlAndroid').remove();
+      })
+      .catch(() => {});
+    if (/android/i.test(navigator.userAgent)) document.getElementById('dlWin').before(document.getElementById('dlAndroid'));
     // o código vem depois do # e não é enviado a nenhum servidor
     const code = decodeURIComponent(location.hash.slice(1)).replace(/[^A-Za-z0-9-]/g, '');
     if (code.replace(/-/g, '').length < 16) {

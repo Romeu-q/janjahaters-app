@@ -11,6 +11,14 @@ O Windows pode avisar "O Windows protegeu o computador" porque o app não tem as
 
 Na primeira vez, um cria o grupo e manda o código `JANJA-…` para os outros, que escolhem **Entrar com convite**.
 
+### Android
+
+Baixe o `janjahaters-x.y.z.apk` da [última Release](https://github.com/Romeu-q/janjahaters-app/releases/latest) no
+celular e abra. O Android pede para permitir instalar apps do navegador: permita só para essa instalação.
+É o mesmo app do PC (call, chat, música, DJ, soundboard, perfil), com telas de celular. Não dá para transmitir a tela
+do celular, mas dá para assistir as streams dos amigos. Com a tela desligada a call continua (aparece a notificação
+"Na call"). Quando sai versão nova, aparece um botão verde para baixar; é só instalar por cima.
+
 ## Atualizações
 
 O app procura versão nova sozinho (ao abrir e a cada 30 minutos), baixa em segundo plano e mostra um botão
@@ -103,6 +111,20 @@ npm start
 ```
 
 Para testar dois "amigos" no mesmo PC, abra um segundo terminal com `$env:JANJA_PROFILE='2'; npx electron .`.
+
+### App Android
+
+O app Android usa a mesma interface (`renderer/`) dentro do Capacitor. `mobile/bridge.js` faz no celular o papel do
+`main.js`/`preload.js` (busca no YouTube, atualização, convite por link, serviço "Na call"). O APK é montado pelo
+GitHub Actions junto com o instalador do Windows. Para montar localmente precisa do Android Studio:
+
+```bash
+npm run build:mobile
+npx cap open android
+```
+
+A assinatura usa a chave dos secrets `ANDROID_KEYSTORE_B64` e `ANDROID_KEYSTORE_PASSWORD`. Ela tem que ser sempre a
+mesma; se trocar, quem já tem o app precisa desinstalar e instalar de novo.
 
 ### Publicar uma versão nova
 

@@ -778,3 +778,4 @@ html.mobile .pf-preview { position: static; }
 html.mobile .st-foot { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)) !important; }
 html.mobile .profile-card { width: min(300px, calc(100vw - 32px)); }
 html.mobile .mention-box { left: 8px !important; width: calc(100vw - 16px) !important; }
+html.mobile #toast { bottom: calc(150px + env(safe-area-inset-bottom)); max-width: calc(100vw - 32px); }
