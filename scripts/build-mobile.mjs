@@ -9,7 +9,7 @@ if (!googleId && existsSync('oauth.json')) googleId = JSON.parse(readFileSync('o
 
 rmSync('www', { recursive: true, force: true });
 mkdirSync('www');
-for (const f of ['style.css', 'bundle.js', 'icon.png', 'vendor']) cpSync(`renderer/${f}`, `www/${f}`, { recursive: true });
+for (const f of ['style.css', 'bundle.js', 'gate-worklet.js', 'icon.png', 'vendor']) cpSync(`renderer/${f}`, `www/${f}`, { recursive: true });
 
 await build({
   entryPoints: ['mobile/bridge.js'],

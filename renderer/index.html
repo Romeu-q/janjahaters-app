@@ -353,7 +353,17 @@
           <h2>Voz e áudio</h2>
           <label>Microfone<select id="stMic"></select></label>
           <label>Saída de áudio<select id="stOut"></select></label>
-          <div class="mic-test"><span>Teste do mic</span><div class="meter"><div id="micMeter"></div></div></div>
+          <div class="sens" id="sensBox">
+            <div class="sens-head"><span>Sensibilidade do microfone</span><b id="stGateVal"></b></div>
+            <div class="sens-bar">
+              <div class="sens-level" id="sensLevel"></div>
+              <div class="sens-thr" id="sensThr"></div>
+              <input type="range" id="stGateDb" min="-80" max="-10" step="1" aria-label="Sensibilidade do microfone">
+            </div>
+            <small class="muted">Fale normalmente: a barra fica verde quando o seu som passa para os amigos. Se o teclado ou o barulho de fundo deixar a barra verde, arraste o limite para a direita.</small>
+            <label class="check"><input type="checkbox" id="stGateAuto"> Ajustar a sensibilidade sozinho (pelo barulho de fundo)</label>
+            <label class="check"><input type="checkbox" id="stGateOn"> Usar sensibilidade (desligado: o mic fica sempre aberto)</label>
+          </div>
           <label>Supressão de ruído
             <select id="stNoise">
               <option value="strong">Forte (IA: tira teclado, ventilador, barulho de fundo)</option>

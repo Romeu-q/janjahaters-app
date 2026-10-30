@@ -779,3 +779,16 @@ html.mobile .st-foot { padding: 10px 14px calc(10px + env(safe-area-inset-bottom
 html.mobile .profile-card { width: min(300px, calc(100vw - 32px)); }
 html.mobile .mention-box { left: 8px !important; width: calc(100vw - 16px) !important; }
 html.mobile #toast { bottom: calc(150px + env(safe-area-inset-bottom)); max-width: calc(100vw - 32px); }
+
+/* ===== sensibilidade do mic ===== */
+.sens { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; }
+.sens-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--muted); }
+.sens-head b { color: var(--text); font-weight: 600; }
+.sens-bar { position: relative; height: 22px; border-radius: 6px; background: var(--input); border: 1px solid var(--line); overflow: hidden; }
+.sens-level { position: absolute; inset: 0 auto 0 0; width: 0; background: #e8b84a; transition: width .06s linear, background .1s; }
+.sens-level.pass { background: var(--green); }
+.sens-thr { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); box-shadow: 0 0 0 1px rgba(0,0,0,.4); pointer-events: none; }
+.sens-bar input[type=range] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; }
+.sens-bar input[type=range]:disabled { cursor: default; }
+.sens.off .sens-bar { opacity: .5; }
+.sens small { font-size: 11.5px; line-height: 1.4; }

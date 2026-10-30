@@ -275,6 +275,7 @@ if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'stro
 const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
 settings.plugins = { ...settings.plugins };
+settings.gate = { on: true, auto: true, db: -50, ...settings.gate }; // sensibilidade do mic
 settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mim
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
 settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
@@ -804,31 +805,57 @@ function getRawMic(deviceId = settings.mic, opts = settings) {
 let micCtx;
 let rnnoiseWasm;
 let rnnoiseLoaded;
+// Caminho do som: mic -> corta grave (batida na mesa/teclado) -> RNNoise -> portão (sensibilidade)
+// -> limitador (segura estouro) -> amigos.
+let gateLoaded;
+const gateParams = (opts = settings) => ({ on: opts.gate.on, auto: opts.gate.auto, thr: opts.gate.db });
 async function processMic(raw, opts = settings) {
   const stopRaw = () => raw.getTracks().forEach((t) => t.stop());
-  if (opts.noise !== 'strong') return { stream: raw, stop: stopRaw };
   micCtx ||= new AudioContext({ sampleRate: 48000 }); // o RNNoise trabalha em 48 kHz
   if (micCtx.state === 'suspended') await micCtx.resume();
-  rnnoiseLoaded ||= Promise.all([
-    loadRnnoise({ url: 'vendor/rnnoise.wasm', simdUrl: 'vendor/rnnoise_simd.wasm' }).then((w) => (rnnoiseWasm = w)),
-    micCtx.audioWorklet.addModule('vendor/rnnoiseWorklet.js'),
-  ]).catch((err) => {
-    rnnoiseLoaded = null;
+  gateLoaded ||= micCtx.audioWorklet.addModule('gate-worklet.js').catch((err) => {
+    gateLoaded = null;
     throw err;
   });
-  await rnnoiseLoaded;
+  const strong = opts.noise === 'strong';
+  if (strong)
+    rnnoiseLoaded ||= Promise.all([
+      loadRnnoise({ url: 'vendor/rnnoise.wasm', simdUrl: 'vendor/rnnoise_simd.wasm' }).then((w) => (rnnoiseWasm = w)),
+      micCtx.audioWorklet.addModule('vendor/rnnoiseWorklet.js'),
+    ]).catch((err) => {
+      rnnoiseLoaded = null;
+      throw err;
+    });
+  await Promise.all([gateLoaded, strong && rnnoiseLoaded]);
   const src = micCtx.createMediaStreamSource(raw);
-  const node = new RnnoiseWorkletNode(micCtx, { wasmBinary: rnnoiseWasm, maxChannels: 1 });
+  // a "batida" do teclado e da mesa é quase toda grave; a voz quase não tem nada abaixo de 90 Hz
+  const lowCut = micCtx.createBiquadFilter();
+  lowCut.type = 'highpass';
+  lowCut.frequency.value = 90;
+  lowCut.Q.value = 0.7;
+  const rnn = strong ? new RnnoiseWorkletNode(micCtx, { wasmBinary: rnnoiseWasm, maxChannels: 1 }) : null;
+  const gate = new AudioWorkletNode(micCtx, 'janja-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+  gate.port.postMessage(gateParams(opts));
+  // limitador: estalo alto não chega estourado no ouvido dos amigos
+  const limiter = micCtx.createDynamicsCompressor();
+  limiter.threshold.value = -12;
+  limiter.knee.value = 4;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.12;
   const dest = micCtx.createMediaStreamDestination();
   dest.channelCount = 1;
-  src.connect(node).connect(dest);
+  let chain = src.connect(lowCut);
+  if (rnn) chain = chain.connect(rnn);
+  chain.connect(gate).connect(limiter).connect(dest);
   return {
     stream: dest.stream,
+    gate,
     stop() {
       stopRaw();
-      src.disconnect();
-      node.disconnect();
-      node.destroy();
+      for (const node of [src, lowCut, rnn, gate, limiter]) node?.disconnect();
+      rnn?.destroy();
+      gate.port.close();
     },
   };
 }
@@ -849,6 +876,7 @@ async function joinVoice(ch) {
     const m = await getMic();
     C.mic = m.stream;
     C.micStop = m.stop;
+    C.micGate = m.gate || null;
   } catch {
     C.mic = null;
     C.micStop = null;
@@ -880,6 +908,7 @@ function leaveVoice(switching) {
   C.micStop?.();
   C.mic = null;
   C.micStop = null;
+  C.micGate = null;
   C.meters.clear();
   C.speaking.clear();
   for (const p of peers.values()) dropMedia(p);
@@ -1285,7 +1314,8 @@ async function captureScreen(sourceId, withAudio) {
   const vt = s.getVideoTracks()[0];
   if (vt) {
     vt.contentHint = CONTENT_HINT[q.mode] || '';
-    vt.addEventListener('ended', () => C.screen === s && stopStream(true));
+    // a janela fechou: no LoL é a partida acabando, então troca para o cliente em vez de parar
+    vt.addEventListener('ended', () => C.screen === s && (follow ? followEnded(s) : stopStream(true)));
   }
   return s;
 }
@@ -1297,12 +1327,53 @@ async function startStream(sourceId, withAudio) {
     C.screen = null;
     return toast('Não foi possível transmitir: ' + err.message);
   }
+  startFollow(allSources.find((x) => x.id === sourceId)?.name || '');
   C.focus = 'me';
   if (S.view !== C.ch) openView(C.ch);
   sendHi();
   syncMedia();
   renderPresence();
 }
+// ----- League of Legends: a stream acompanha o cliente e a partida sozinha -----
+// O jogo e o cliente são janelas diferentes; quando a partida começa a janela do jogo aparece,
+// e quando acaba ela fecha. A cada 3 s a stream vai para a janela certa (quem assiste continua assistindo).
+const LOL_GAME = /^League of Legends \(TM\) Client$/i;
+const LOL_CLIENT = /^League of Legends$/i;
+let follow = null;
+function startFollow(name) {
+  stopFollow();
+  if (!window.desk?.windows || !(LOL_GAME.test(name) || LOL_CLIENT.test(name))) return;
+  follow = { timer: setInterval(followTick, 3000), busy: false };
+  toast('Stream do LoL: troca sozinha entre o cliente e a partida');
+}
+function stopFollow() {
+  clearInterval(follow?.timer);
+  follow = null;
+}
+async function followTick() {
+  if (!C.screen || !follow || follow.busy) return false;
+  const wins = await window.desk.windows().catch(() => []);
+  const target = wins.find((w) => LOL_GAME.test(w.name)) || wins.find((w) => LOL_CLIENT.test(w.name));
+  if (!target || target.id === streamSource) return false;
+  follow.busy = true;
+  streamSource = target.id;
+  try {
+    await restartStream();
+    toast(LOL_GAME.test(target.name) ? 'A partida começou: transmitindo o jogo' : 'A partida acabou: transmitindo o cliente');
+  } finally {
+    if (follow) follow.busy = false;
+  }
+  return true;
+}
+// a janela transmitida fechou: espera o cliente/jogo aparecer por até ~15 s antes de parar a stream
+async function followEnded(s) {
+  for (let i = 0; i < 8 && C.screen === s && follow; i++) {
+    if (await followTick()) return;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (C.screen === s) stopStream(true);
+}
+
 // troca a captura sem avisar "parou": quem está assistindo continua assistindo
 async function restartStream() {
   const old = C.screen;
@@ -1332,6 +1403,7 @@ async function applyStreamQuality() {
 }
 function stopStream(notify) {
   if (!C.screen) return;
+  stopFollow();
   const s = C.screen;
   C.screen = null;
   syncMedia();
@@ -3300,6 +3372,7 @@ function videoFor(stream) {
 }
 
 let stageKeys = new Set();
+let focusBox = null;
 function renderStage() {
   const stage = $('#stage');
   const c = channel(S.view);
@@ -3379,7 +3452,9 @@ function renderStage() {
     if (fresh.length) springIn(fresh, { delay: stagger(0.05) });
   } else {
     const focus = shown.find((s) => s.key === C.focus) || shown[0];
-    const big = el('div', 'focus');
+    // o mesmo quadro é reaproveitado: se ele saísse da página, a tela cheia fecharia sozinha
+    const big = (focusBox ||= el('div', 'focus'));
+    big.replaceChildren();
     const tag = el('div', 'tag');
     if (focus.key !== 'me') tag.append(el('span', 'live', 'AO VIVO'));
     tag.append(el('span', '', focus.name));
@@ -3437,7 +3512,10 @@ function renderStage() {
       t.append(avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
       strip.append(t);
     }
-    stage.replaceChildren(big, strip);
+    if (big.parentElement === stage) {
+      for (const child of [...stage.children]) if (child !== big) child.remove();
+      stage.append(strip);
+    } else stage.replaceChildren(big, strip);
     const k = 'focus:' + focus.key + ':' + (focus.stream?.id || 'wait');
     keysNow.add(k);
     if (!stageKeys.has(k)) springIn(big);
@@ -3637,18 +3715,52 @@ async function fillDevices() {
 }
 // teste do mic com as opções escolhidas na tela (antes de salvar), para ouvir a diferença
 let testAudio = null;
-const testOpts = () => ({ noise: $('#stNoise').value, echo: $('#stEcho').checked });
+const testOpts = () => ({ noise: $('#stNoise').value, echo: $('#stEcho').checked, gate: settings.gate });
+// medidor da sensibilidade: -80 dB (esquerda) a -10 dB (direita)
+const dbToPct = (db) => clamp(((db + 80) / 70) * 100, 0, 100);
+function renderGateUi(level, thr, open) {
+  const g = settings.gate;
+  $('#stGateOn').checked = g.on;
+  $('#stGateAuto').checked = g.auto;
+  $('#stGateDb').value = g.db;
+  $('#stGateDb').disabled = !g.on || g.auto;
+  $('#sensBox').classList.toggle('off', !g.on);
+  const t = g.auto && thr != null ? thr : g.db;
+  $('#sensThr').style.left = dbToPct(t) + '%';
+  $('#stGateVal').textContent = !g.on ? 'desligada (mic sempre aberto)' : g.auto ? `automática (${Math.round(t)} dB)` : `${g.db} dB`;
+  if (level != null) {
+    $('#sensLevel').style.width = dbToPct(level) + '%';
+    $('#sensLevel').classList.toggle('pass', !!open);
+  }
+}
+// muda na hora: no teste e na call
+function applyGate() {
+  saveSettings();
+  for (const node of [testStream?.gate, C.micGate]) node?.port.postMessage(gateParams());
+  renderGateUi();
+}
+$('#stGateOn').onchange = () => {
+  settings.gate.on = $('#stGateOn').checked;
+  applyGate();
+};
+$('#stGateAuto').onchange = () => {
+  settings.gate.auto = $('#stGateAuto').checked;
+  applyGate();
+};
+$('#stGateDb').oninput = () => {
+  settings.gate.db = Number($('#stGateDb').value);
+  applyGate();
+};
 async function startMicTest() {
   stopMicTest();
+  renderGateUi(-100);
   try {
     const m = await getMic($('#stMic').value, testOpts());
     testStream = m;
-    const ctx = audioCtx();
-    const an = ctx.createAnalyser();
-    an.fftSize = 512;
-    ctx.createMediaStreamSource(m.stream).connect(an);
-    const meterData = { an, buf: new Uint8Array(512) };
-    testTimer = setInterval(() => ($('#micMeter').style.width = Math.min(100, level(meterData) * 4) + '%'), 80);
+    if (m.gate) {
+      m.gate.port.onmessage = (e) => renderGateUi(e.data.level, e.data.thr, e.data.open);
+      m.gate.port.postMessage({ report: true });
+    }
     if ($('#stHear').checked) {
       testAudio = new Audio();
       testAudio.srcObject = m.stream;
@@ -3666,7 +3778,7 @@ function stopMicTest() {
   }
   testStream?.stop();
   testStream = null;
-  $('#micMeter').style.width = '0';
+  $('#sensLevel').style.width = '0';
 }
 // ============================================================ configurações (em abas, como no Discord)
 let stPage = 'profile';
@@ -3737,6 +3849,7 @@ $('#btnSaveSettings').onclick = async () => {
       C.micStop?.();
       C.mic = next.stream;
       C.micStop = next.stop;
+      C.micGate = next.gate || null;
       applyMicEnabled();
       meter('me', next.stream);
       syncMedia();

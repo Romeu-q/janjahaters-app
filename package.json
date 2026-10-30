@@ -22,6 +22,7 @@
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",
+      "renderer/gate-worklet.js",
       "renderer/icon.png",
       "renderer/vendor/**",
       "oauth.json"
