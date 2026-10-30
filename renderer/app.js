@@ -267,7 +267,7 @@ function toast(msg) {
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
   { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
-    stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false } },
+    stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
@@ -974,6 +974,9 @@ function tuneSenders() {
         params.encodings[0].maxFramerate = q.fps;
         params.encodings[0].scaleResolutionDownBy = 1;
         params.degradationPreference = { motion: 'maintain-framerate', detail: 'maintain-resolution', balanced: 'balanced' }[q.mode];
+      } else if (C.screen?.getAudioTracks().includes(t)) {
+        params.encodings[0].maxBitrate = (settings.stream.audioRate || 192) * 1000; // som do PC na stream
+        params.encodings[0].priority = params.encodings[0].networkPriority = 'high';
       } else if (C.mic?.getAudioTracks().includes(t)) params.encodings[0].maxBitrate = 64_000;
       else continue;
       sender.setParameters(params).catch(() => {
@@ -1001,6 +1004,43 @@ RTCPeerConnection.prototype.addTrack = function (track, ...streams) {
     }
   }
   return sender;
+};
+
+// Áudio em alta: o padrão do WebRTC é pensado para voz (Opus mono, ~32 kbps). Aqui a conexão
+// já combina estéreo e até 256 kbps; quanto cada som usa de fato é o tuneSenders que decide
+// (mic 64 kbps, som da stream 192 kbps por padrão).
+function hifiOpus(sdp) {
+  for (const [, pt] of sdp.matchAll(/a=rtpmap:(\d+) opus\/48000\/2/gi)) {
+    sdp = sdp.replace(new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`), (line, params) => {
+      const kv = new Map(
+        params
+          .split(';')
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .map((x) => x.split('=')),
+      );
+      for (const [k, v] of [
+        ['stereo', '1'],
+        ['sprop-stereo', '1'],
+        ['maxaveragebitrate', '256000'],
+        ['maxplaybackrate', '48000'],
+        ['useinbandfec', '1'],
+      ])
+        kv.set(k, v);
+      return `a=fmtp:${pt} ` + [...kv].map(([k, v]) => `${k}=${v}`).join(';');
+    });
+  }
+  return sdp;
+}
+const nativeSetLocal = RTCPeerConnection.prototype.setLocalDescription;
+RTCPeerConnection.prototype.setLocalDescription = async function (desc) {
+  // a biblioteca de P2P chama sem argumento; aqui a oferta/resposta é gerada para poder ser ajustada
+  if (!desc) {
+    if (this.signalingState === 'have-remote-offer' || this.signalingState === 'have-local-pranswer') desc = await this.createAnswer();
+    else if (this.signalingState === 'stable' || this.signalingState === 'have-local-offer') desc = await this.createOffer();
+  }
+  if (desc?.sdp && (desc.type === 'offer' || desc.type === 'answer')) desc = { type: desc.type, sdp: hifiOpus(desc.sdp) };
+  return nativeSetLocal.call(this, desc);
 };
 
 function onPeerStream(stream, pid, meta) {
@@ -1192,6 +1232,7 @@ function readQualityForm() {
     codec: $('#sqCodec').value,
     mode: $('#sqMode').value,
     audio: $('#streamAudio').checked,
+    audioRate: Number($('#sqAudioRate').value),
   };
 }
 function fillQualityForm(q) {
@@ -1206,6 +1247,7 @@ function fillQualityForm(q) {
   $('#sqMode').value = q.mode;
   $('#sqRate').value = q.rate;
   $('#streamAudio').checked = !!q.audio;
+  $('#sqAudioRate').value = String(q.audioRate || 192);
   renderRateLabel();
 }
 function renderRateLabel() {
@@ -1310,7 +1352,18 @@ $('#streamDlg').addEventListener('close', stopLiveStats);
 async function captureScreen(sourceId, withAudio) {
   const q = settings.stream;
   if (isDesktop) await window.desk.pick(sourceId, withAudio);
-  const s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio: withAudio });
+  // som do PC sem os filtros de voz (eles estragam música/jogo) e, quando o Windows deixa,
+  // sem o som do próprio app (senão quem assiste ouve a call e a própria voz de volta)
+  const audio = withAudio && {
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+    channelCount: 2,
+    sampleRate: 48000,
+    restrictOwnAudio: true,
+  };
+  const s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio });
+  for (const at of s.getAudioTracks()) at.contentHint = 'music';
   const vt = s.getVideoTracks()[0];
   if (vt) {
     vt.contentHint = CONTENT_HINT[q.mode] || '';

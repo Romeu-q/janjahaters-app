@@ -531,7 +531,15 @@
         <input type="range" id="sqRate" min="0" max="50" step="0.5">
         <small class="muted">No 0 fica automático pela resolução e fps. Mais alto = mais nítido, mas precisa de upload bom (cada amigo assistindo usa essa taxa).</small>
       </label>
-      <label class="check"><input type="checkbox" id="streamAudio"> Transmitir o áudio do PC <small class="muted">(use fone, senão o pessoal ouve o próprio eco)</small></label>
+      <label class="check"><input type="checkbox" id="streamAudio"> Transmitir o áudio do PC <small class="muted">(a voz da call não vai junto; se ainda ouvirem eco, use fone)</small></label>
+      <label>Qualidade do som da stream
+        <select id="sqAudioRate">
+          <option value="96">Leve · 96 kbps</option>
+          <option value="128">Boa · 128 kbps</option>
+          <option value="192">Alta · 192 kbps (estéreo, recomendado)</option>
+          <option value="256">Máxima · 256 kbps</option>
+        </select>
+      </label>
       <div class="sq-live" id="sqLive" hidden></div>
     </div>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="btnGoLive" disabled>Transmitir</button></menu>
