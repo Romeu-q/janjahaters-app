@@ -79,8 +79,7 @@ jobs:
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             # tira espaços e quebras de linha que podem vir junto ao colar o secret
-            printf '%s' "$KEYSTORE_B64" | tr -d ' 
-' | base64 -d > "$RUNNER_TEMP/release.jks"
+            printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
           elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             echo "::warning::Sem a chave de assinatura: o APK de teste sai sem assinatura"
@@ -93,8 +92,7 @@ jobs:
         env:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          export ANDROID_KEYSTORE_PASSWORD="$(printf '%s' "$KEY_PASSWORD" | tr -d ' 
-')"
+          export ANDROID_KEYSTORE_PASSWORD="$(printf '%s' "$KEY_PASSWORD" | tr -d ' \r\n')"
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
       - name: Guardar o APK de teste
