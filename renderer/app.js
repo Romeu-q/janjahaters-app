@@ -330,30 +330,45 @@ function audioCtx() {
   if (actx.state === 'suspended') actx.resume();
   return actx;
 }
-function beep(freqs, dur = 0.09, vol = 0.1) {
+// Toques do app (entrar/sair da call, mensagem…): notas com "sino" (dois osciladores e eco curto),
+// altos o bastante para ouvir por cima do jogo/música. Volume em Configurações → Voz e áudio.
+function beep(freqs, dur = 0.12, vol = 0.22) {
   if (!settings.sounds) return;
   try {
     const ctx = audioCtx();
+    const master = ctx.createGain();
+    master.gain.value = vol * (settings.sfxVol ?? 0.8);
+    master.connect(ctx.destination);
+    const start = ctx.currentTime + 0.03; // logo depois de o áudio acordar
     freqs.forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      const t = ctx.currentTime + i * dur;
-      o.frequency.value = f;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      o.connect(g).connect(ctx.destination);
-      o.start(t);
-      o.stop(t + dur + 0.02);
+      const t = start + i * dur;
+      for (const [type, mult, amp] of [
+        ['triangle', 1, 1],
+        ['sine', 2, 0.25],
+      ]) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = type;
+        o.frequency.value = f * mult;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(amp, t + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur * 2.2);
+        o.connect(g).connect(master);
+        o.start(t);
+        o.stop(t + dur * 2.3);
+      }
     });
-  } catch {}
+    setTimeout(() => master.disconnect(), (freqs.length * dur * 2.5 + 0.3) * 1000);
+  } catch (err) {
+    console.warn('som', err);
+  }
 }
 const sfx = {
-  join: () => beep([523, 784]),
-  leave: () => beep([784, 523]),
-  msg: () => beep([988], 0.06, 0.06),
-  mute: () => beep([440], 0.05),
-  unmute: () => beep([660], 0.05),
+  join: () => beep([523, 659, 784]), // sobe: entrou
+  leave: () => beep([784, 659, 523]), // desce: saiu
+  msg: () => beep([988, 1319], 0.07, 0.2),
+  mute: () => beep([440], 0.06, 0.2),
+  unmute: () => beep([660], 0.06, 0.2),
 };
 
 // ============================================================ dados sincronizados
@@ -4084,6 +4099,8 @@ async function openSettings(page = 'profile') {
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
+  $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
+  $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
   $('#stHotkeys').checked = desktopPrefs.hotkeys;
   $('#stTray').checked = desktopPrefs.tray;
   $('#stAutostart').checked = desktopPrefs.autostart;
@@ -5552,3 +5569,13 @@ async function onInvite(code) {
     if (code) onInvite(code);
   } else showSetup();
 })();
+
+// volume dos toques do app: muda na hora e toca um exemplo
+$('#stSfxVol').addEventListener('input', () => {
+  settings.sfxVol = $('#stSfxVol').value / 100;
+  $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
+  saveSettings();
+  clearTimeout(sfxPreview);
+  sfxPreview = setTimeout(sfx.join, 150);
+});
+let sfxPreview;
