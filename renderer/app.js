@@ -316,7 +316,8 @@ settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mi
 settings.streamMute = { ...settings.streamMute }; // uid -> som da stream dele mutado só para mim
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
 settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
-settings.ptt = { vk: 0, label: '', ...settings.ptt }; // aperte para falar: tecla virtual do Windows (0 = desligado)
+settings.ptt = { vk: 0, label: '', ...settings.ptt };
+settings.sfxFiles = { join: '', leave: '', ...settings.sfxFiles }; // nome do arquivo escolhido para entrar/sair ('' = padrão) // aperte para falar: tecla virtual do Windows (0 = desligado)
 const look = settings.look;
 const plug = (id) => !!settings.plugins[id];
 const saveSettings = () => store.set('settings', settings);
@@ -398,9 +399,69 @@ function beep(freqs, dur = 0.12, vol = 0.22) {
     console.warn('som', err);
   }
 }
+// Entrar/sair: som de marimba macio, no estilo dos toques do Skype (fundamental + parcial 4x que some
+// rápido, ataque curto). Se a pessoa escolheu um arquivo em Voz e áudio, toca o arquivo no lugar.
+const sfxBuf = { join: null, leave: null };
+async function loadSfxFile(kind) {
+  sfxBuf[kind] = null;
+  if (!settings.sfxFiles[kind]) return;
+  const blob = await blobGet('sfx:' + kind); // fica só neste PC (os amigos só pedem ids "f:...")
+  if (!blob) return;
+  try {
+    sfxBuf[kind] = await audioCtx().decodeAudioData(await blob.arrayBuffer());
+  } catch {
+    sfxBuf[kind] = null;
+  }
+}
+function marimba(freqs) {
+  if (!settings.sounds) return;
+  try {
+    const ctx = audioCtx();
+    const master = ctx.createGain();
+    master.gain.value = 0.3 * (settings.sfxVol ?? 0.8);
+    master.connect(ctx.destination);
+    const start = ctx.currentTime + 0.03;
+    freqs.forEach((f, n) => {
+      const t = start + n * 0.11;
+      for (const [mult, amp, dec] of [
+        [1, 1, 0.42],
+        [3.93, 0.35, 0.09],
+        [10.1, 0.08, 0.035],
+      ]) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(f * mult * 1.012, t);
+        o.frequency.exponentialRampToValueAtTime(f * mult, t + 0.04);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(amp, t + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+        o.connect(g).connect(master);
+        o.start(t);
+        o.stop(t + dec + 0.02);
+      }
+    });
+    setTimeout(() => master.disconnect(), 1200);
+  } catch (err) {
+    console.warn('som', err);
+  }
+}
+function joinLeaveSound(kind) {
+  if (!settings.sounds) return;
+  const buf = sfxBuf[kind];
+  if (!buf) return marimba(kind === 'join' ? [659, 988] : [880, 587]);
+  const ctx = audioCtx();
+  const src = ctx.createBufferSource();
+  const g = ctx.createGain();
+  g.gain.value = settings.sfxVol ?? 0.8;
+  src.buffer = buf;
+  src.connect(g).connect(ctx.destination);
+  src.start();
+  src.stop(ctx.currentTime + 4); // toque, não música
+}
 const sfx = {
-  join: () => beep([523, 659, 784]), // sobe: entrou
-  leave: () => beep([784, 659, 523]), // desce: saiu
+  join: () => joinLeaveSound('join'), // sobe: entrou
+  leave: () => joinLeaveSound('leave'), // desce: saiu
   msg: () => beep([988, 1319], 0.07, 0.2),
   mute: () => beep([440], 0.06, 0.2),
   unmute: () => beep([660], 0.06, 0.2),
@@ -560,7 +621,8 @@ function ensurePeer(pid) {
 function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus() }, voice: myVoice() });
+let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus() }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -665,6 +727,7 @@ function connectRoom() {
 
 function onHi(pid, d) {
   const p = ensurePeer(pid);
+  checkFriendVersion(d?.ver);
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online' };
@@ -2170,14 +2233,6 @@ $('#npMute').onclick = toggleMusicMute;
 const MAX_SOUND_INPUT = 40 * 1024 * 1024; // o arquivo original pode ser uma música inteira: o recorte é que vira o som
 const MAX_SOUND_SECONDS = 15;
 const SOUND_RATE = 24000; // o recorte é salvo como WAV mono 24 kHz (15 s ≈ 700 KB)
-const BUILTIN = [
-  { id: 'b:buzina', name: 'Buzina', color: '#ff7a1a' },
-  { id: 'b:badumtss', name: 'Ba dum tss', color: '#3aa8f0' },
-  { id: 'b:vitoria', name: 'Vitória', color: '#4fd18b' },
-  { id: 'b:fail', name: 'Fail', color: '#f05454' },
-  { id: 'b:grilos', name: 'Grilos', color: '#b07cff' },
-  { id: 'b:rufar', name: 'Rufar', color: '#f2c94c' },
-];
 const sndBuffers = new Map(); // fileId -> AudioBuffer
 const lastSoundFrom = new Map();
 let sndGain;
@@ -2190,94 +2245,9 @@ function sndOut() {
   sndGain.gain.value = C.deafened ? 0 : settings.sndVol;
   return { ctx, out: sndGain };
 }
-function noiseBuffer(ctx, seconds) {
-  const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * seconds), ctx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  return buf;
-}
-function tone(ctx, out, { type = 'sine', f, f2, t, dur, vol = 0.3, attack = 0.01, filter }) {
-  const o = ctx.createOscillator();
-  const g = ctx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(f, t);
-  if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(vol, t + attack);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  let node = o.connect(g);
-  if (filter) {
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = filter;
-    node = g.connect(lp);
-  }
-  node.connect(out);
-  o.start(t);
-  o.stop(t + dur + 0.05);
-  return o;
-}
-function noise(ctx, out, { t, dur, vol = 0.3, type = 'highpass', freq = 6000 }) {
-  const src = ctx.createBufferSource();
-  src.buffer = noiseBuffer(ctx, dur);
-  const f = ctx.createBiquadFilter();
-  f.type = type;
-  f.frequency.value = freq;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(vol, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  src.connect(f).connect(g).connect(out);
-  src.start(t);
-}
-const SYNTH = {
-  'b:buzina'(ctx, out, t) {
-    [0, 0.22, 0.44].forEach((s, i) => {
-      const dur = i === 2 ? 0.9 : 0.16;
-      for (const f of [466, 470, 587]) tone(ctx, out, { type: 'sawtooth', f, t: t + s, dur, vol: 0.12, attack: 0.02, filter: 2400 });
-    });
-  },
-  'b:badumtss'(ctx, out, t) {
-    tone(ctx, out, { f: 160, f2: 45, t, dur: 0.3, vol: 0.9 });
-    noise(ctx, out, { t: t + 0.22, dur: 0.18, vol: 0.5, type: 'bandpass', freq: 1800 });
-    tone(ctx, out, { type: 'triangle', f: 190, f2: 120, t: t + 0.22, dur: 0.12, vol: 0.3 });
-    tone(ctx, out, { f: 150, f2: 45, t: t + 0.5, dur: 0.3, vol: 0.8 });
-    noise(ctx, out, { t: t + 0.5, dur: 1.4, vol: 0.35, type: 'highpass', freq: 7000 });
-  },
-  'b:vitoria'(ctx, out, t) {
-    const notes = [523, 659, 784, 1047];
-    notes.forEach((f, i) => tone(ctx, out, { type: 'square', f, t: t + i * 0.12, dur: 0.14, vol: 0.12, filter: 3500 }));
-    for (const f of [523, 659, 784, 1047]) tone(ctx, out, { type: 'square', f, t: t + 0.5, dur: 0.9, vol: 0.08, filter: 3000 });
-  },
-  'b:fail'(ctx, out, t) {
-    const notes = [392, 370, 349];
-    notes.forEach((f, i) => tone(ctx, out, { type: 'sawtooth', f, t: t + i * 0.42, dur: 0.38, vol: 0.18, attack: 0.04, filter: 1200 }));
-    const o = tone(ctx, out, { type: 'sawtooth', f: 330, t: t + 1.26, dur: 1.2, vol: 0.18, attack: 0.04, filter: 1200 });
-    const lfo = ctx.createOscillator();
-    const depth = ctx.createGain();
-    lfo.frequency.value = 6;
-    depth.gain.value = 10;
-    lfo.connect(depth).connect(o.frequency);
-    lfo.start(t + 1.26);
-    lfo.stop(t + 2.5);
-  },
-  'b:grilos'(ctx, out, t) {
-    for (let c = 0; c < 4; c++)
-      for (let i = 0; i < 3; i++) tone(ctx, out, { f: 4300, t: t + c * 0.55 + i * 0.05, dur: 0.035, vol: 0.12, attack: 0.005 });
-  },
-  'b:rufar'(ctx, out, t) {
-    let at = t;
-    for (let i = 0; i < 22; i++) {
-      noise(ctx, out, { t: at, dur: 0.07, vol: 0.12 + i * 0.012, type: 'bandpass', freq: 2000 });
-      at += Math.max(0.035, 0.09 - i * 0.003);
-    }
-    tone(ctx, out, { f: 150, f2: 50, t: at, dur: 0.35, vol: 0.8 });
-    noise(ctx, out, { t: at, dur: 1.6, vol: 0.4, type: 'highpass', freq: 6000 });
-  },
-};
-
 const customSounds = () => all('snd').sort((a, b) => a.at - b.at);
 function soundName(id) {
-  return BUILTIN.find((b) => b.id === id)?.name || recs.get(id)?.name || 'som';
+  return recs.get(id)?.name || 'som';
 }
 async function soundBuffer(rec) {
   if (sndBuffers.has(rec.file)) return sndBuffers.get(rec.file);
@@ -2293,7 +2263,6 @@ async function soundBuffer(rec) {
 }
 async function playSound(id) {
   const { ctx, out } = sndOut();
-  if (SYNTH[id]) return SYNTH[id](ctx, out, ctx.currentTime + 0.02);
   const rec = recs.get(id);
   if (rec?.k !== 'snd' || rec.del) return;
   const buf = await soundBuffer(rec);
@@ -2331,7 +2300,7 @@ function triggerSound(id, btn) {
 function onRemoteSound(d, pid) {
   const p = peers.get(pid);
   const id = String(d?.id || '');
-  if (!C.ch || p?.voice?.ch !== C.ch || !(SYNTH[id] || recs.get(id)?.k === 'snd')) return;
+  if (!C.ch || p?.voice?.ch !== C.ch || recs.get(id)?.k !== 'snd') return;
   const now = Date.now();
   if (now - (lastSoundFrom.get(pid) || 0) < 250) return;
   lastSoundFrom.set(pid, now);
@@ -2364,10 +2333,14 @@ function renderSounds() {
     b.onclick = () => triggerSound(id, b);
     return b;
   };
-  grid.replaceChildren(...BUILTIN.map((s) => btn(s.id, s.name, s.color)), ...customSounds().map((r) => btn(r.id, r.name, cleanColor(r.color), r)));
+  grid.replaceChildren(...customSounds().map((r) => btn(r.id, r.name, cleanColor(r.color), r)));
   const fresh = [...grid.children].filter((b) => !prev.has(b.dataset.id));
   if (fresh.length && fresh.length < grid.children.length) springIn(fresh);
-  $('#soundsHint').textContent = C.ch ? 'Clique num som para tocar para todo mundo na call.' : 'Entre em um canal de voz para tocar os sons para a galera.';
+  $('#soundsHint').textContent = !customSounds().length
+    ? 'Nenhum som ainda. Clique em "Adicionar som" e escolha um áudio ou vídeo do PC.'
+    : C.ch
+      ? 'Clique num som para tocar para todo mundo na call.'
+      : 'Entre em um canal de voz para tocar os sons para a galera.';
 }
 $('#sndVol').value = settings.sndVol * 100;
 $('#sndVol').oninput = (e) => {
@@ -4298,6 +4271,7 @@ async function openSettings(page = 'profile') {
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
   renderPttKey();
+  renderSfxFiles();
   $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
   $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
   $('#stHotkeys').checked = desktopPrefs.hotkeys;
@@ -5132,14 +5106,57 @@ if (isDesktop) {
 } else $('#winButtons').hidden = true;
 
 // atualização automática: o app baixa sozinho; aqui só oferece reiniciar
-function showUpdate(version) {
-  const b = $('#tbUpdate');
-  $('#tbUpdateText').textContent = isMobile ? `Versão ${version}: baixar` : `Versão ${version} pronta. Reiniciar`;
-  if (b.hidden) {
-    b.hidden = false;
-    springIn(b);
-    toast(isMobile ? `Saiu a versão ${version}. Toque no botão verde para baixar.` : `Nova versão ${version} baixada. Clique no botão verde para atualizar.`);
+// ----- atualização obrigatória -----
+// Saiu versão nova: o app trava numa tela que só sai atualizando. No PC baixa e reinicia sozinho;
+// no celular o Android exige que a pessoa toque para instalar o .apk.
+const verNewer = (a, b) => {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
+// um amigo apareceu numa versão mais nova: procura na hora (uma vez por versão)
+const askedFor = new Set();
+function checkFriendVersion(ver) {
+  if (typeof ver !== 'string' || !/^\d+\.\d+\.\d+$/.test(ver) || !appVersion || !verNewer(ver, appVersion) || askedFor.has(ver)) return;
+  askedFor.add(ver);
+  window.desk?.checkUpdate?.().catch(() => {});
+}
+function forceUpdate(version, state, detail) {
+  const box = $('#forceUpdate');
+  if (box.hidden) {
+    box.hidden = false;
+    $$('dialog[open]').forEach(hardClose);
+    if (!isMobile && C.ch) leaveVoice();
   }
+  $('#fuTitle').textContent = `Atualizando para a versão ${version}`;
+  const bar = $('#fuBar');
+  bar.classList.toggle('indeterminate', state === 'start');
+  bar.style.width = state === 'progress' ? detail + '%' : state === 'ready' ? '100%' : '';
+  const btn = $('#fuBtn');
+  btn.hidden = true;
+  if (isMobile) {
+    bar.style.width = '100%';
+    $('#fuStatus').textContent = 'Baixe e abra o arquivo para instalar por cima. Seus grupos e mensagens continuam.';
+    btn.hidden = false;
+    btn.textContent = 'Baixar atualização';
+    btn.onclick = () => window.desk?.installUpdate();
+  } else if (state === 'ready') $('#fuStatus').textContent = 'Pronto. Instalando e abrindo de novo…';
+  else if (state === 'progress') $('#fuStatus').textContent = `Baixando… ${detail}%`;
+  else if (state === 'error') {
+    $('#fuStatus').textContent = 'Não consegui baixar: ' + detail;
+    btn.hidden = false;
+    btn.textContent = 'Tentar de novo';
+    btn.onclick = () => {
+      forceUpdate(version, 'start');
+      window.desk.checkUpdate().catch((err) => forceUpdate(version, 'error', ipcError(err)));
+    };
+  } else $('#fuStatus').textContent = 'Baixando…';
+}
+let updVersion = '';
+function showUpdate(version) {
+  updVersion = version;
+  forceUpdate(version, 'ready');
 }
 $('#tbUpdate').onclick = () => {
   if (!isMobile && C.ch && !confirm('Reiniciar agora vai te tirar da call. Atualizar mesmo assim?')) return;
@@ -5174,12 +5191,18 @@ $('#btnCheckUpdate').onclick = checkUpdateNow;
 let desktopPrefs = { tray: true, hotkeys: true, autostart: false };
 if (window.desk?.appInfo) {
   $$('[data-desk]').forEach((e) => (e.hidden = false));
-  window.desk.onUpdateReady((v) => {
-    showUpdate(v);
-    setUpdStatus(`Versão ${v} pronta: clique em Reiniciar lá em cima`);
+  window.desk.onUpdateReady((v) => showUpdate(v));
+  window.desk.onUpdateAvailable?.((v) => {
+    updVersion = v;
+    forceUpdate(v, 'start');
   });
-  window.desk.onUpdateProgress((pct) => setUpdStatus(`Baixando atualização… ${pct}%`));
+  window.desk.onUpdateProgress((pct) => {
+    setUpdStatus(`Baixando atualização… ${pct}%`);
+    if (updVersion) forceUpdate(updVersion, 'progress', pct);
+  });
+  window.desk.onUpdateError?.((msg) => updVersion && forceUpdate(updVersion, 'error', msg));
   window.desk.appInfo().then(({ version, updateReady, google, prefs }) => {
+    appVersion = version;
     $('#appVersion').textContent = `janjahaters v${version}`;
     $('#sbVersion').textContent = `v${version}`;
     $$('[data-google]').forEach((e) => (e.hidden = !google));
@@ -5784,6 +5807,43 @@ $('#stSfxVol').addEventListener('input', () => {
   sfxPreview = setTimeout(sfx.join, 150);
 });
 let sfxPreview;
+
+// ----- som de entrar/sair escolhido pela pessoa (ex.: os do Skype que ela tiver no PC) -----
+function renderSfxFiles() {
+  for (const kind of ['join', 'leave']) {
+    $(`#stSfx-${kind} .sfx-file`).textContent = settings.sfxFiles[kind] || 'Padrão';
+    $(`#stSfx-${kind} [data-reset]`).hidden = !settings.sfxFiles[kind];
+  }
+}
+for (const kind of ['join', 'leave']) {
+  const row = $(`#stSfx-${kind}`);
+  row.querySelector('input[type=file]').onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    if (f.size > 3e6) return toast('Arquivo grande demais para um toque (máximo 3 MB)');
+    try {
+      await audioCtx().decodeAudioData(await f.arrayBuffer());
+    } catch {
+      return toast('Não consegui abrir esse áudio');
+    }
+    await blobPut('sfx:' + kind, f);
+    settings.sfxFiles[kind] = f.name.slice(0, 60);
+    saveSettings();
+    await loadSfxFile(kind);
+    renderSfxFiles();
+    sfx[kind]();
+  };
+  row.querySelector('[data-play]').onclick = () => sfx[kind]();
+  row.querySelector('[data-reset]').onclick = () => {
+    settings.sfxFiles[kind] = '';
+    saveSettings();
+    sfxBuf[kind] = null;
+    renderSfxFiles();
+    sfx[kind]();
+  };
+  loadSfxFile(kind);
+}
 
 // ----- aperte para falar: escolher a tecla (vale na hora, sem precisar salvar) -----
 const MOUSE_VK = { 1: [4, 'Botão do meio'], 3: [5, 'Mouse 4'], 4: [6, 'Mouse 5'] };

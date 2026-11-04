@@ -191,7 +191,8 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit());
 
 // ----- atualização pelas Releases do GitHub (só no app instalado) -----
-// Procura uma vez ao abrir o app; depois, só quando a pessoa clica em "Procurar atualizações".
+// Procura ao abrir o app, quando um amigo aparece numa versão mais nova e quando a pessoa clica em
+// "Procurar atualizações". A atualização é obrigatória: a tela trava, baixa e o app reinicia sozinho.
 let updateReady = null;
 let updater = null;
 let checking = null;
@@ -201,12 +202,21 @@ function setupAutoUpdate() {
   updater = autoUpdater;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true; // se não reiniciar agora, instala ao fechar
+  autoUpdater.on('update-available', (info) => win?.webContents.send('update-available', info.version));
   autoUpdater.on('download-progress', (p) => win?.webContents.send('update-progress', Math.round(p.percent)));
   autoUpdater.on('update-downloaded', (info) => {
     updateReady = info.version;
     win?.webContents.send('update-ready', info.version);
+    // obrigatória: instala e abre de novo sozinho (dá 2 s para a tela avisar e sair da call)
+    setTimeout(() => {
+      quitting = true;
+      autoUpdater.quitAndInstall(true, true);
+    }, 2000);
   });
-  autoUpdater.on('error', (err) => console.warn('atualização:', err?.message));
+  autoUpdater.on('error', (err) => {
+    console.warn('atualização:', err?.message);
+    win?.webContents.send('update-error', String(err?.message || err));
+  });
   checkForUpdates().catch(() => {});
 }
 // resposta: { status: 'dev' | 'latest' | 'downloading' | 'ready', version }

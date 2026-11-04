@@ -208,6 +208,18 @@
     <span class="sb-item" id="sbVersion"></span>
   </footer>
 
+  <!-- ===== atualização obrigatória: trava o app até atualizar ===== -->
+  <div id="forceUpdate" class="overlay" hidden>
+    <div class="card fu-card">
+      <img class="setup-logo" src="icon.png" alt="">
+      <h1 id="fuTitle">Atualizando</h1>
+      <p class="muted" id="fuText">Saiu uma versão nova. Todo mundo precisa estar na mesma versão para a call funcionar.</p>
+      <div class="fu-bar"><div id="fuBar"></div></div>
+      <p class="small muted" id="fuStatus"></p>
+      <button type="button" class="primary" id="fuBtn" hidden></button>
+    </div>
+  </div>
+
   <!-- ===== tela de entrada ===== -->
   <div id="setup" class="overlay" hidden>
     <form class="card" id="setupForm">
@@ -422,6 +434,19 @@
             <button type="button" class="ghost" id="stPttOff">Desligar</button>
           </div>
           <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair da call e de mensagem</label>
+          <div class="sfx-row" id="stSfx-join">
+            <span>Som de quando alguém entra <small class="muted sfx-file"></small></span>
+            <button type="button" class="icon-btn" data-play title="Ouvir"><i data-icon="play"></i></button>
+            <label class="ghost sfx-pick">Escolher arquivo<input type="file" accept="audio/*" hidden></label>
+            <button type="button" class="ghost" data-reset>Padrão</button>
+          </div>
+          <div class="sfx-row" id="stSfx-leave">
+            <span>Som de quando alguém sai <small class="muted sfx-file"></small></span>
+            <button type="button" class="icon-btn" data-play title="Ouvir"><i data-icon="play"></i></button>
+            <label class="ghost sfx-pick">Escolher arquivo<input type="file" accept="audio/*" hidden></label>
+            <button type="button" class="ghost" data-reset>Padrão</button>
+          </div>
+
           <label>Volume desses sons <b id="stSfxVal"></b><input type="range" id="stSfxVol" min="0" max="150" step="5"></label>
         </section>
 

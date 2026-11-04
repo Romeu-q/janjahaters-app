@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('desk', {
   installUpdate: () => ipcRenderer.send('install-update'),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   onUpdateProgress: (fn) => ipcRenderer.on('update-progress', (e, pct) => fn(pct)),
+  onUpdateAvailable: (fn) => ipcRenderer.on('update-available', (e, v) => fn(v)),
+  onUpdateError: (fn) => ipcRenderer.on('update-error', (e, msg) => fn(msg)),
   setPrefs: (p) => ipcRenderer.invoke('set-prefs', p),
   onHotkey: (fn) => ipcRenderer.on('hotkey', (e, action) => fn(action)),
   googleLogin: (uid) => ipcRenderer.invoke('google-login', uid),
