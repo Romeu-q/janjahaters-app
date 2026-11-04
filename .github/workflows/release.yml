@@ -42,6 +42,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:ui
+      # som da stream separado por programa (native/sysaudio.cpp)
+      - run: npm run build:sysaudio
       # login com Google: o cliente OAuth fica nos secrets GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET do repositório
       - name: Configurar login com Google
         env:

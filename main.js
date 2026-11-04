@@ -329,6 +329,62 @@ ipcMain.handle('pick', (e, id, audio) => {
   pickedSource = { id, audio: !!audio };
 });
 
+// ----- som da stream separado por programa (bin/janja-sysaudio.exe, fonte em native/sysaudio.cpp) -----
+// Janela: só o som do programa dela. Tela inteira: tudo menos o app e os programas de chamada (Discord...),
+// senão quem assiste ouve a própria voz de volta. Manda float32 estéreo 48 kHz para a página.
+const sysAudio = new Map(); // token -> processo
+let sysAudioSeq = 0;
+const SYSAUDIO_EXE = app.isPackaged
+  ? path.join(process.resourcesPath, 'bin', 'janja-sysaudio.exe')
+  : path.join(__dirname, 'bin', 'janja-sysaudio.exe');
+ipcMain.handle('sysaudio-start', (e, sourceId) => {
+  if (process.platform !== 'win32' || !fs.existsSync(SYSAUDIO_EXE)) return null;
+  const m = /^(window|screen):(\d+)/.exec(String(sourceId));
+  if (!m) return null;
+  const token = ++sysAudioSeq;
+  const wc = e.sender;
+  const child = require('child_process').spawn(SYSAUDIO_EXE, [m[1], m[1] === 'window' ? m[2] : '0', String(process.pid)], {
+    windowsHide: true,
+  });
+  sysAudio.set(token, child);
+  let rest = Buffer.alloc(0);
+  child.stdout.on('data', (b) => {
+    if (rest.length) b = Buffer.concat([rest, b]);
+    const whole = b.length - (b.length % 8); // quadros inteiros (2 canais x 4 bytes)
+    rest = b.subarray(whole);
+    if (whole && !wc.isDestroyed()) wc.send('sysaudio', token, b.subarray(0, whole));
+  });
+  return new Promise((resolve) => {
+    let log = '';
+    const done = (ok) => {
+      resolve(ok ? token : null);
+      if (!ok) stopSysAudio(token);
+    };
+    child.stderr.on('data', (d) => {
+      log += d;
+      if (/^ok$/m.test(log)) done(true);
+    });
+    child.on('error', () => done(false));
+    child.on('exit', (code) => {
+      sysAudio.delete(token);
+      if (!/^ok$/m.test(log)) {
+        console.warn('sysaudio:', code, log.trim());
+        done(false);
+      } else if (!wc.isDestroyed()) wc.send('sysaudio-end', token);
+    });
+    setTimeout(() => done(false), 8000);
+  });
+});
+function stopSysAudio(token) {
+  const child = sysAudio.get(token);
+  if (!child) return;
+  sysAudio.delete(token);
+  child.stdin.end(); // ele sai sozinho quando o stdin fecha
+  setTimeout(() => child.exitCode == null && child.kill(), 1500);
+}
+ipcMain.on('sysaudio-stop', (e, token) => stopSysAudio(token));
+app.on('will-quit', () => [...sysAudio.keys()].forEach(stopSysAudio));
+
 // Busca no YouTube Music (sem chave de API) pela mesma interface que o site usa
 let innertube = null;
 function ytClient() {

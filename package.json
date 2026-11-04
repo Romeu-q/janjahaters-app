@@ -11,7 +11,8 @@
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
     "release": "npm version patch && git push --follow-tags",
     "build:mobile": "npm run build:ui && node scripts/build-mobile.mjs && npx cap sync android",
-    "build:lab": "node scripts/copy-vendor.mjs && esbuild renderer/ns-lab.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/ns-lab.bundle.js"
+    "build:lab": "node scripts/copy-vendor.mjs && esbuild renderer/ns-lab.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/ns-lab.bundle.js",
+    "build:sysaudio": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-sysaudio.ps1"
   },
   "build": {
     "appId": "app.janjahaters",
@@ -24,6 +25,7 @@
       "renderer/style.css",
       "renderer/bundle.js",
       "renderer/gate-worklet.js",
+      "renderer/pcm-worklet.js",
       "renderer/icon.png",
       "renderer/vendor/**",
       "oauth.json"
@@ -62,6 +64,15 @@
         "name": "janjahaters",
         "schemes": [
           "janjahaters"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "janja-sysaudio.exe"
         ]
       }
     ]

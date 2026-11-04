@@ -1420,8 +1420,71 @@ $('#btnGoLive').onclick = async () => {
 };
 $('#streamDlg').addEventListener('close', stopLiveStats);
 
+// Som do PC separado por programa (Windows 10 2004+): a janela leva só o som do programa dela; a tela
+// inteira leva tudo menos o app e os programas de chamada (Discord...). Devolve uma faixa ou null.
+const sysAudioFeeds = new Map(); // token -> AudioWorkletNode
+let sysAudioCtx = null;
+if (window.desk?.onSysAudio) {
+  window.desk.onSysAudio((token, data) => {
+    const node = sysAudioFeeds.get(token);
+    if (!node) return;
+    const f = new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    node.port.postMessage(f, [f.buffer]);
+  });
+  window.desk.onSysAudioEnd((token) => sysAudioFeeds.has(token) && toast('O som do PC parou na stream'));
+}
+async function captureSysAudio(sourceId) {
+  if (!window.desk?.sysAudioStart) return null;
+  const token = await window.desk.sysAudioStart(sourceId).catch(() => null);
+  if (!token) return null;
+  try {
+    sysAudioCtx ||= new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    await sysAudioCtx.audioWorklet.addModule('pcm-worklet.js').catch(() => {}); // já carregado: tudo bem
+    if (sysAudioCtx.state === 'suspended') await sysAudioCtx.resume();
+    const node = new AudioWorkletNode(sysAudioCtx, 'janja-pcm', { numberOfInputs: 0, outputChannelCount: [2] });
+    const dest = sysAudioCtx.createMediaStreamDestination();
+    dest.channelCount = 2;
+    node.connect(dest);
+    sysAudioFeeds.set(token, node);
+    const track = dest.stream.getAudioTracks()[0];
+    // quem para a stream chama track.stop(): aí fecha o programa de captura junto
+    const stop = track.stop.bind(track);
+    track.stop = () => {
+      stop();
+      sysAudioFeeds.delete(token);
+      node.disconnect();
+      window.desk.sysAudioStop(token);
+    };
+    return track;
+  } catch (err) {
+    console.warn('som do PC', err);
+    window.desk.sysAudioStop(token);
+    return null;
+  }
+}
+
 async function captureScreen(sourceId, withAudio) {
   const q = settings.stream;
+  const sys = isDesktop && !isMobile && withAudio ? await captureSysAudio(sourceId) : null;
+  if (sys) {
+    // só o vídeo pela captura do Chromium; o som vem do janja-sysaudio
+    await window.desk.pick(sourceId, false);
+    let s;
+    try {
+      s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio: false });
+    } catch (err) {
+      sys.stop();
+      throw err;
+    }
+    sys.contentHint = 'music';
+    s.addTrack(sys);
+    const vt = s.getVideoTracks()[0];
+    if (vt) {
+      vt.contentHint = CONTENT_HINT[q.mode] || '';
+      vt.addEventListener('ended', () => C.screen === s && (follow ? followEnded(s) : stopStream(true)));
+    }
+    return s;
+  }
   if (isDesktop) await window.desk.pick(sourceId, withAudio);
   // som do PC sem os filtros de voz (eles estragam música/jogo) e, quando o Windows deixa,
   // sem o som do próprio app (senão quem assiste ouve a call e a própria voz de volta)
@@ -3328,12 +3391,25 @@ const djPlaying = (ch) => {
   return !!item && pb?.pausedAt == null;
 };
 // som de entrar/sair quando o DJ chega ou vai embora da minha call
+// Trocar, pausar ou pular música (e o autoplay buscando a próxima) deixa o DJ "fora" por um instante:
+// só conta como saída se ele continuar fora por 8 s, e aí sim toca o som de sair.
 let djHere = false;
+let djLeaveTimer = 0;
 function checkDj() {
   const here = !!C.ch && voiceMembers(C.ch).some((m) => m.key === 'dj');
-  if (here === djHere) return;
-  djHere = here;
-  here ? sfx.join() : sfx.leave();
+  if (here) {
+    clearTimeout(djLeaveTimer);
+    djLeaveTimer = 0;
+    if (!djHere) sfx.join();
+    djHere = true;
+  } else if (djHere && !djLeaveTimer) {
+    djLeaveTimer = setTimeout(() => {
+      djLeaveTimer = 0;
+      if (!C.ch || voiceMembers(C.ch).some((m) => m.key === 'dj')) return;
+      djHere = false;
+      sfx.leave();
+    }, 8000);
+  }
 }
 setInterval(() => {
   const on = !!C.ch && djPlaying(C.ch) && !settings.musicMuted;
