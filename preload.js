@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('desk', {
   sysAudioStop: (token) => ipcRenderer.send('sysaudio-stop', token),
   onSysAudio: (fn) => ipcRenderer.on('sysaudio', (e, token, data) => fn(token, data)),
   onSysAudioEnd: (fn) => ipcRenderer.on('sysaudio-end', (e, token) => fn(token)),
+  pttSet: (vk) => ipcRenderer.invoke('ptt-set', vk),
+  onPtt: (fn) => ipcRenderer.on('ptt', (e, down) => fn(down)),
   ytSearch: (q) => ipcRenderer.invoke('yt-search', q),
   ytRelated: (id) => ipcRenderer.invoke('yt-related', id),
   openExternal: (url) => ipcRenderer.send('open-external', url),

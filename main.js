@@ -383,7 +383,38 @@ function stopSysAudio(token) {
   setTimeout(() => child.exitCode == null && child.kill(), 1500);
 }
 ipcMain.on('sysaudio-stop', (e, token) => stopSysAudio(token));
-app.on('will-quit', () => [...sysAudio.keys()].forEach(stopSysAudio));
+
+// aperte para falar (como no TeamSpeak): o mesmo programa olha a tecla mesmo com o jogo em foco
+let pttProc = null;
+function setPtt(wc, vk) {
+  if (pttProc) {
+    pttProc.stdin.end();
+    const old = pttProc;
+    setTimeout(() => old.exitCode == null && old.kill(), 1500);
+    pttProc = null;
+  }
+  vk = Number(vk) | 0;
+  if (!vk || vk > 255 || process.platform !== 'win32' || !fs.existsSync(SYSAUDIO_EXE)) return false;
+  const child = require('child_process').spawn(SYSAUDIO_EXE, ['keys', String(vk)], { windowsHide: true });
+  pttProc = child;
+  let line = '';
+  child.stdout.on('data', (b) => {
+    line += b;
+    let i;
+    while ((i = line.indexOf('\n')) >= 0) {
+      const s = line.slice(0, i).trim();
+      line = line.slice(i + 1);
+      if (!wc.isDestroyed()) wc.send('ptt', s === 'd');
+    }
+  });
+  child.on('exit', () => pttProc === child && (pttProc = null));
+  return true;
+}
+ipcMain.handle('ptt-set', (e, vk) => setPtt(e.sender, vk));
+app.on('will-quit', () => {
+  [...sysAudio.keys()].forEach(stopSysAudio);
+  pttProc?.kill();
+});
 
 // Busca no YouTube Music (sem chave de API) pela mesma interface que o site usa
 let innertube = null;

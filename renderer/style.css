@@ -854,3 +854,14 @@ html.mobile .stream-grid { grid-template-columns: 1fr !important; grid-template-
 .pcard.cam.speaking { box-shadow: inset 0 0 0 3px var(--green); }
 .thumb.cam { padding: 0; }
 .thumb.cam .tag { position: absolute; left: 6px; bottom: 6px; z-index: 1; }
+
+/* aperte para falar e cutucar (TeamSpeak) */
+.ptt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ptt-row > span { flex: 1; min-width: 180px; }
+.ptt-row button.listening { outline: 2px solid var(--accent); }
+#pokeInDlg h2 { color: var(--accent); }
+#pokeMsg { font-size: 16px; word-break: break-word; }
+#pokeMsg:empty { display: none; }
+.voice-users li[draggable='true'] { cursor: grab; }
+.ch.drop-here { outline: 2px dashed var(--accent); outline-offset: -2px; }
+.ptt-tag { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }

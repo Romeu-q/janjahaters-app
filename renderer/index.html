@@ -398,6 +398,17 @@
           </label>
           <label class="check"><input type="checkbox" id="stEcho"> Cancelamento de eco (para quem usa caixa de som)</label>
           <label class="check"><input type="checkbox" id="stHear"> Me ouvir no teste do mic (use fone)</label>
+          <div class="ptt-row" data-desk hidden>
+            <span>Aperte para falar <small class="muted">(funciona dentro do jogo; tecla ou botão do mouse)</small></span>
+            <button type="button" class="ghost" id="stPttKey">Desligado</button>
+            <button type="button" class="ghost" id="stPttOff">Desligar</button>
+          </div>
+          <label>Quando alguém entra ou sai do seu canal
+            <select id="stAnnounce">
+              <option value="voice">Falar o nome (como no TeamSpeak)</option>
+              <option value="beep">Só o toque</option>
+            </select>
+          </label>
           <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair da call e de mensagem</label>
           <label>Volume desses sons <b id="stSfxVal"></b><input type="range" id="stSfxVol" min="0" max="150" step="5"></label>
         </section>
@@ -590,10 +601,24 @@
       <span><kbd>Ctrl</kbd>+<kbd>,</kbd></span><span>Configurações</span>
       <span><kbd>↑</kbd> no campo vazio</span><span>Editar sua última mensagem</span>
       <span><kbd>@</kbd></span><span>Mencionar alguém (Tab ou Enter completa)</span>
-      <span>Botão direito</span><span>Menu da pessoa (volume, silenciar), do canal e do DJ</span>
+      <span>Botão direito</span><span>Menu da pessoa (volume, silenciar, cutucar, trazer para o seu canal), do canal e do DJ</span>
+      <span>Arrastar alguém</span><span>Solte num canal de voz para mover a pessoa para lá</span>
+      <span>Aperte para falar</span><span>Escolha a tecla em Configurações → Voz e áudio</span>
       <span><kbd>Ctrl</kbd>+<kbd>/</kbd></span><span>Esta lista</span>
     </div>
     <menu><button class="ghost" data-close>Fechar</button></menu>
+  </dialog>
+
+  <!-- cutucar (poke do TeamSpeak) -->
+  <dialog id="pokeDlg">
+    <h2>Cutucar <span id="pokeTo"></span></h2>
+    <input id="pokeText" maxlength="100" placeholder="Mensagem (opcional)" autocomplete="off">
+    <menu><button class="ghost" data-close>Cancelar</button><button id="pokeSend">Cutucar</button></menu>
+  </dialog>
+  <dialog id="pokeInDlg">
+    <h2><span id="pokeFrom"></span> cutucou você</h2>
+    <p id="pokeMsg"></p>
+    <menu><button id="pokeReply" class="ghost">Cutucar de volta</button><button data-close>OK</button></menu>
   </dialog>
 
   <div id="lightbox" hidden><img id="lightboxImg" alt=""><button class="icon-btn" id="lightboxClose" title="Fechar"><i data-icon="x"></i></button></div>

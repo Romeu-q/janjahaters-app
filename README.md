@@ -24,6 +24,20 @@ do celular, mas dá para assistir as streams dos amigos. Com a tela desligada a 
 O app procura versão nova sozinho (ao abrir e a cada 30 minutos), baixa em segundo plano e mostra um botão
 verde **Reiniciar** na barra de cima. Se ninguém clicar, a atualização é instalada quando o app for fechado.
 
+## Coisas de TeamSpeak
+
+- **Aperte para falar**: Configurações → Voz e áudio → escolha uma tecla ou botão lateral do mouse. Funciona com o
+  jogo em foco (o `bin/janja-sysaudio.exe` olha só essa tecla).
+- **Avisos falados**: "Fulano entrou no canal" / "saiu do canal" com a voz do Windows (dá para trocar pelo toque).
+- **Cutucar**: botão direito na pessoa → Cutucar. Aparece na frente dela com som, mesmo com o app minimizado.
+- **Mover gente**: arraste alguém da lista para outro canal de voz, ou botão direito → Trazer para o meu canal.
+
+## Som do PC na stream
+
+O `bin/janja-sysaudio.exe` (fonte em `native/sysaudio.cpp`, compilado no GitHub Actions) captura o som por programa:
+stream de janela leva só o som daquele programa; tela inteira leva tudo menos o janjahaters e os programas de chamada
+(Discord, TeamSpeak, Teams…), para ninguém se ouvir de volta. Em Windows antigos volta para a captura do Chromium.
+
 ## Supressão de ruído do microfone
 
 Configurações → Voz e áudio → Supressão de ruído:

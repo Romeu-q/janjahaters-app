@@ -64,6 +64,8 @@ import {
   Volume2,
   VolumeX,
   X,
+  BellRing,
+  ArrowDownToLine,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -177,6 +179,8 @@ const ICONS = {
   search: Search,
   upload: Upload,
   x: X,
+  'bell-ring': BellRing,
+  'arrow-down-to-line': ArrowDownToLine,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -308,6 +312,8 @@ settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mi
 settings.streamMute = { ...settings.streamMute }; // uid -> som da stream dele mutado só para mim
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
 settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
+settings.ptt = { vk: 0, label: '', ...settings.ptt }; // aperte para falar: tecla virtual do Windows (0 = desligado)
+settings.announce ||= 'voice'; // alguém entra/sai do canal: fala o nome (TeamSpeak) ou só o toque
 const look = settings.look;
 const plug = (id) => !!settings.plugins[id];
 const saveSettings = () => store.set('settings', settings);
@@ -397,7 +403,23 @@ const sfx = {
   unmute: () => beep([660], 0.06, 0.2),
   streamOn: () => beep([392, 523, 659, 1047], 0.09), // arpejo subindo: ao vivo
   streamOff: () => beep([1047, 659, 392], 0.09),
+  poke: () => beep([880, 1175, 880, 1175], 0.08, 0.3),
 };
+// como no TeamSpeak: "Fulano entrou no canal" falado (voz do Windows), ou só o toque
+let ptVoice;
+function announce(kind, name) {
+  if (!settings.sounds) return;
+  const synth = window.speechSynthesis;
+  if (settings.announce !== 'voice' || !synth || !name) return sfx[kind]();
+  ptVoice ||= synth.getVoices().find((v) => /^pt(-|_)BR/i.test(v.lang)) || synth.getVoices().find((v) => /^pt/i.test(v.lang));
+  const u = new SpeechSynthesisUtterance(`${name} ${kind === 'join' ? 'entrou no canal' : 'saiu do canal'}`);
+  u.lang = 'pt-BR';
+  if (ptVoice) u.voice = ptVoice;
+  u.rate = 1.15;
+  u.volume = clamp(settings.sfxVol ?? 0.8, 0, 1);
+  synth.speak(u);
+}
+window.speechSynthesis?.addEventListener?.('voiceschanged', () => (ptVoice = null));
 
 // ============================================================ dados sincronizados
 // Tudo que o grupo compartilha é um "registro" com versão (o mais novo vence):
@@ -606,7 +628,11 @@ function connectRoom() {
     freq: room.makeAction('freq'), // pedido de arquivo
     fdat: room.makeAction('fdat'), // arquivo (ou "não tenho")
     sndp: room.makeAction('sndp'), // tocar som do soundboard
+    poke: room.makeAction('poke'), // cutucar
+    move: room.makeAction('move'), // "vai para o canal X" (arrastaram você)
   };
+  A.poke.onMessage = (d, { peerId }) => onPoke(d, peerId);
+  A.move.onMessage = (d, { peerId }) => onMove(d, peerId);
   room.onPeerJoin = (pid) => {
     ensurePeer(pid);
     A.hi.send(hiPayload(), { target: pid });
@@ -625,7 +651,7 @@ function connectRoom() {
   room.onPeerLeave = (pid) => {
     const p = peers.get(pid);
     if (!p) return;
-    if (C.ch && p.voice?.ch === C.ch) sfx.leave();
+    if (C.ch && p.voice?.ch === C.ch) announce('leave', p.user?.name);
     dropMedia(p);
     peers.delete(pid);
     C.sent.delete(pid);
@@ -671,11 +697,11 @@ function onHi(pid, d) {
   const isIn = C.ch && p.voice?.ch === C.ch;
   const isLive = isIn && p.voice.streaming;
   if (!wasIn && isIn) {
-    sfx.join();
+    announce('join', p.user.name);
     pluginEmit('join', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
   if (wasIn && !isIn) {
-    sfx.leave();
+    announce('leave', p.user.name);
     pluginEmit('leave', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
   if (!wasLive && isLive) {
@@ -964,8 +990,24 @@ function leaveVoice(switching) {
 }
 
 function applyMicEnabled() {
-  C.mic?.getAudioTracks().forEach((t) => (t.enabled = !C.muted && !C.deafened));
+  const ptt = !!settings.ptt.vk && !!window.desk?.pttSet;
+  C.mic?.getAudioTracks().forEach((t) => (t.enabled = !C.muted && !C.deafened && (!ptt || C.pttDown)));
 }
+// aperte para falar: abre o mic enquanto a tecla está apertada e segura mais 250 ms para não cortar a última sílaba
+let pttRelease = 0;
+window.desk?.onPtt?.((down) => {
+  clearTimeout(pttRelease);
+  if (down) {
+    C.pttDown = true;
+    applyMicEnabled();
+  } else
+    pttRelease = setTimeout(() => {
+      C.pttDown = false;
+      applyMicEnabled();
+    }, 250);
+});
+const applyPtt = () => window.desk?.pttSet?.(settings.ptt.vk).catch(() => false);
+applyPtt();
 
 // cada amigo no mesmo canal de voz recebe exatamente os streams certos
 function syncMedia() {
@@ -3470,6 +3512,22 @@ function renderSidebar() {
         openView(c.id);
         if (C.ch !== c.id) joinVoice(c.id);
       };
+      // soltar um amigo arrastado aqui move ele para este canal; soltar você mesmo troca de canal
+      row.ondragover = (e) => {
+        if (!e.dataTransfer.types.includes('janja/uid')) return;
+        e.preventDefault();
+        row.classList.add('drop-here');
+      };
+      row.ondragleave = () => row.classList.remove('drop-here');
+      row.ondrop = (e) => {
+        row.classList.remove('drop-here');
+        const uid = e.dataTransfer.getData('janja/uid');
+        if (!uid) return;
+        e.preventDefault();
+        if (uid === me.id) return C.ch !== c.id && (openView(c.id), joinVoice(c.id));
+        const u = userFromUid(uid);
+        if (u) moveUser(u, c.id);
+      };
       li.append(row);
       if (members.length) {
         const ul = el('ul', 'voice-users');
@@ -3481,6 +3539,13 @@ function renderSidebar() {
           u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name));
           if (m.dj) u.append(el('span', 'bot-tag', 'BOT'));
           u.append(flagsEl(m.voice, m.key));
+          if (!m.dj) {
+            u.draggable = true;
+            u.ondragstart = (e) => {
+              e.dataTransfer.setData('janja/uid', m.user.id);
+              e.dataTransfer.effectAllowed = 'move';
+            };
+          }
           u.onclick = (e) => (e.stopPropagation(), openProfile(m.user, u));
           ul.append(u);
           rows.push([c.id + ':' + m.user.id, u]);
@@ -4218,6 +4283,8 @@ async function openSettings(page = 'profile') {
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
+  $('#stAnnounce').value = settings.announce;
+  renderPttKey();
   $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
   $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
   $('#stHotkeys').checked = desktopPrefs.hotkeys;
@@ -4244,6 +4311,7 @@ $('#btnSaveSettings').onclick = async () => {
   settings.noise = $('#stNoise').value;
   settings.echo = $('#stEcho').checked;
   settings.sounds = $('#stSounds').checked;
+  settings.announce = $('#stAnnounce').value;
   if (window.desk?.setPrefs) {
     window.desk
       .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked })
@@ -5200,6 +5268,8 @@ function userMenu(e, user) {
     head,
     menuItem('Ver perfil', 'user', () => openProfile(user, e.target)),
     menuItem('Mencionar', 'message-square', () => mention(user.name)),
+    peer && menuItem('Cutucar', 'bell-ring', () => openPoke(user)),
+    peer?.voice && C.ch && peer.voice.ch !== C.ch && menuItem('Trazer para o meu canal', 'arrow-down-to-line', () => moveUser(user, C.ch)),
     el('div', 'ctx-sep'),
     menuSlider('Volume do usuário', settings.volumes[uid] ?? 1, max, (v) => {
       settings.volumes[uid] = v;
@@ -5700,6 +5770,103 @@ $('#stSfxVol').addEventListener('input', () => {
   sfxPreview = setTimeout(sfx.join, 150);
 });
 let sfxPreview;
+
+// ----- aperte para falar: escolher a tecla (vale na hora, sem precisar salvar) -----
+const MOUSE_VK = { 1: [4, 'Botão do meio'], 3: [5, 'Mouse 4'], 4: [6, 'Mouse 5'] };
+function renderPttKey() {
+  $('#stPttKey').textContent = settings.ptt.vk ? settings.ptt.label || 'Tecla ' + settings.ptt.vk : 'Desligado (escolher tecla)';
+  $('#stPttOff').hidden = !settings.ptt.vk;
+}
+function setPttKey(vk, label) {
+  settings.ptt = { vk, label };
+  saveSettings();
+  applyPtt();
+  C.pttDown = false;
+  applyMicEnabled();
+  renderPttKey();
+  toast(vk ? `Aperte para falar: segure ${label}` : 'Aperte para falar desligado: o mic abre sozinho');
+}
+$('#stPttKey').onclick = (ev) => {
+  const btn = ev.currentTarget;
+  btn.textContent = 'Aperte a tecla ou o botão do mouse… (Esc cancela)';
+  btn.classList.add('listening');
+  const done = () => {
+    btn.classList.remove('listening');
+    removeEventListener('keydown', onKey, true);
+    removeEventListener('mousedown', onMouse, true);
+    renderPttKey();
+  };
+  const onKey = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    done();
+    if (e.key === 'Escape') return;
+    const label = e.code.replace(/^Key|^Digit/, '').replace(/^Numpad/, 'Num ') || e.key;
+    setPttKey(e.keyCode, label);
+  };
+  const onMouse = (e) => {
+    const m = MOUSE_VK[e.button];
+    if (!m) return;
+    e.preventDefault();
+    done();
+    setPttKey(m[0], m[1]);
+  };
+  setTimeout(() => {
+    addEventListener('keydown', onKey, true);
+    addEventListener('mousedown', onMouse, true);
+  });
+};
+$('#stPttOff').onclick = () => setPttKey(0, '');
+
+// ----- cutucar (poke do TeamSpeak): aparece na frente do amigo com som, mesmo minimizado -----
+let pokeTarget = null;
+function openPoke(user) {
+  pokeTarget = user;
+  $('#pokeTo').textContent = user.name;
+  $('#pokeText').value = '';
+  openDialog($('#pokeDlg'));
+  $('#pokeText').focus();
+}
+$('#pokeSend').onclick = () => {
+  const peer = [...peers.values()].find((p) => p.user?.id === pokeTarget?.id);
+  closeDialog($('#pokeDlg'));
+  if (!peer) return toast(`${pokeTarget?.name || 'Ele'} não está online`);
+  A.poke.send({ text: $('#pokeText').value.trim().slice(0, 100) }, { target: peer.pid });
+  toast(`Você cutucou ${peer.user.name}`);
+};
+$('#pokeText').onkeydown = (e) => {
+  if (e.key === 'Enter') $('#pokeSend').click();
+};
+function onPoke(d, pid) {
+  const p = peers.get(pid);
+  if (!p?.user || settings.localMute[p.user.id]) return;
+  $('#pokeFrom').textContent = p.user.name;
+  $('#pokeMsg').textContent = typeof d?.text === 'string' ? d.text.slice(0, 100) : '';
+  $('#pokeReply').onclick = () => {
+    closeDialog($('#pokeInDlg'));
+    openPoke(p.user);
+  };
+  if (!$('#pokeInDlg').open) openDialog($('#pokeInDlg'));
+  if (myStatus() !== 'dnd') sfx.poke();
+  window.desk?.flash();
+  if (document.hidden && 'Notification' in window) new Notification(`${p.user.name} cutucou você`, { body: $('#pokeMsg').textContent || undefined });
+}
+
+// ----- mover amigos de canal (arrastar, como no TeamSpeak) -----
+function moveUser(user, ch) {
+  const peer = [...peers.values()].find((p) => p.user?.id === user.id);
+  if (!peer?.voice || peer.voice.ch === ch) return;
+  A.move.send({ ch }, { target: peer.pid });
+  toast(`${user.name} foi movido para ${channel(ch)?.name || 'o canal'}`);
+}
+function onMove(d, pid) {
+  const p = peers.get(pid);
+  const c = channel(d?.ch);
+  if (!p?.user || !c || c.type !== 'voice' || !C.ch || C.ch === c.id) return; // só quem já está numa call
+  joinVoice(c.id);
+  openView(c.id);
+  toast(`${p.user.name} moveu você para ${c.name}`);
+}
 
 // popup de quem está ao vivo: entrar na live ou ver o perfil
 function openLivePopup(user, peer, anchor) {

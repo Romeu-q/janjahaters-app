@@ -1,11 +1,12 @@
-﻿// janja-sysaudio: som do PC para a stream, separado por programa (como o Discord faz).
+// janja-sysaudio: som do PC para a stream, separado por programa (como o Discord faz).
 //
-//   janja-sysaudio.exe window <hwnd> <pid-do-app>   sÃ³ o som do programa dessa janela
-//   janja-sysaudio.exe screen 0 <pid-do-app>        o som de todos os programas, menos o prÃ³prio app e
-//                                                   os de chamada de voz (Discord, TeamSpeak...): senÃ£o
-//                                                   quem assiste ouve a prÃ³pria voz de volta
+//   janja-sysaudio.exe window <hwnd> <pid-do-app>   só o som do programa dessa janela
+//   janja-sysaudio.exe screen 0 <pid-do-app>        o som de todos os programas, menos o próprio app e
+//                                                   os de chamada de voz (Discord, TeamSpeak...): senão
+//                                                   quem assiste ouve a própria voz de volta
+//   janja-sysaudio.exe keys <vk>                    aperte para falar: "d"/"u" quando a tecla desce/sobe
 //
-// Sai em stdout: float32 estÃ©reo intercalado, 48 kHz, em blocos de 10 ms, num ritmo fixo de relÃ³gio.
+// Sai em stdout: float32 estéreo intercalado, 48 kHz, em blocos de 10 ms, num ritmo fixo de relógio.
 // Termina quando o stdin fecha (o app fechou ou parou a stream). Precisa do Windows 10 2004+ (build 19041).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -36,10 +37,10 @@
 #pragma comment(lib, "winmm.lib")
 
 static const int RATE = 48000, CH = 2, BLOCK = RATE / 100; // 10 ms
-static const size_t MAX_BUF = RATE / 5 * CH;               // 200 ms: mais que isso Ã© atraso, joga fora
+static const size_t MAX_BUF = RATE / 5 * CH;               // 200 ms: mais que isso é atraso, joga fora
 static std::atomic<bool> running{true};
 
-// ---------- ativaÃ§Ã£o do "process loopback" (ActivateAudioInterfaceAsync) ----------
+// ---------- ativação do "process loopback" (ActivateAudioInterfaceAsync) ----------
 class Done : public IActivateAudioInterfaceCompletionHandler, public IAgileObject {
   LONG refs = 1;
 
@@ -139,7 +140,7 @@ static void pull(Source& s) {
   if (s.buf.size() > MAX_BUF) s.buf.erase(s.buf.begin(), s.buf.end() - MAX_BUF);
 }
 
-// ---------- quem estÃ¡ tocando som (modo tela) ----------
+// ---------- quem está tocando som (modo tela) ----------
 struct Proc {
   DWORD parent;
   std::wstring exe;
@@ -157,7 +158,7 @@ static std::map<DWORD, Proc> processes() {
   CloseHandle(snap);
   return m;
 }
-// programas de chamada de voz: o som deles Ã© a voz dos amigos
+// programas de chamada de voz: o som deles é a voz dos amigos
 static bool voiceApp(const std::wstring& exe) {
   static const wchar_t* names[] = {L"discord", L"teamspeak", L"ts3client", L"skype", L"zoom", L"slack", L"teams",
                                    L"ms-teams", L"mumble", L"guilded", L"element", L"whatsapp", L"telegram",
@@ -221,7 +222,7 @@ static std::set<DWORD> soundPids() {
   en->Release();
   return out;
 }
-// os pids a capturar: quem toca som, menos o app, apps de voz e quem jÃ¡ entra pela Ã¡rvore de um pai
+// os pids a capturar: quem toca som, menos o app, apps de voz e quem já entra pela árvore de um pai
 static std::set<DWORD> screenTargets(DWORD self) {
   auto ps = processes();
   std::set<DWORD> raw;
@@ -237,7 +238,68 @@ static std::set<DWORD> screenTargets(DWORD self) {
   return out;
 }
 
+// aperte para falar: olha a tecla (ou botão do mouse) mesmo com o jogo em foco e escreve "d"/"u" ao mudar
+// Usa ganchos de baixo nível (o GetAsyncKeyState não enxerga nada quando o processo nasce do Electron).
+static int pttVk = 0;
+static bool pttDown = false;
+static void pttSet(bool down) {
+  if (down == pttDown) return;
+  pttDown = down;
+  fputs(down ? "d\n" : "u\n", stdout);
+  fflush(stdout);
+}
+static LRESULT CALLBACK onKey(int code, WPARAM wp, LPARAM lp) {
+  if (code == HC_ACTION) {
+    auto* k = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
+    int vk = int(k->vkCode);
+    // Shift/Ctrl/Alt chegam como esquerdo/direito; aceita os dois para a tecla genérica
+    bool match = vk == pttVk || (pttVk == VK_SHIFT && (vk == VK_LSHIFT || vk == VK_RSHIFT)) ||
+                 (pttVk == VK_CONTROL && (vk == VK_LCONTROL || vk == VK_RCONTROL)) ||
+                 (pttVk == VK_MENU && (vk == VK_LMENU || vk == VK_RMENU));
+    if (match) pttSet(wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+  }
+  return CallNextHookEx(nullptr, code, wp, lp);
+}
+static LRESULT CALLBACK onMouse(int code, WPARAM wp, LPARAM lp) {
+  if (code == HC_ACTION) {
+    auto* m = reinterpret_cast<MSLLHOOKSTRUCT*>(lp);
+    int x = HIWORD(m->mouseData);
+    if (pttVk == VK_MBUTTON && (wp == WM_MBUTTONDOWN || wp == WM_MBUTTONUP)) pttSet(wp == WM_MBUTTONDOWN);
+    if ((pttVk == VK_XBUTTON1 && x == XBUTTON1) || (pttVk == VK_XBUTTON2 && x == XBUTTON2))
+      if (wp == WM_XBUTTONDOWN || wp == WM_XBUTTONUP) pttSet(wp == WM_XBUTTONDOWN);
+  }
+  return CallNextHookEx(nullptr, code, wp, lp);
+}
+static int watchKey(int vk) {
+  pttVk = vk;
+  DWORD tid = GetCurrentThreadId();
+  std::thread([tid] {
+    char b[64];
+    while (fread(b, 1, sizeof b, stdin) > 0) {
+    }
+    PostThreadMessageW(tid, WM_QUIT, 0, 0);
+  }).detach();
+  bool mouse = vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2;
+  auto hook = [&] { return SetWindowsHookExW(mouse ? WH_MOUSE_LL : WH_KEYBOARD_LL, mouse ? onMouse : onKey, GetModuleHandleW(nullptr), 0); };
+  HHOOK h = hook();
+  if (!h) return 5;
+  // o Windows tira o gancho sem avisar se ele demorar a responder (PC ocupado abrindo o jogo):
+  // reinstala a cada 2 s para o aperte-para-falar nunca parar de funcionar
+  SetTimer(nullptr, 0, 2000, nullptr);
+  MSG msg;
+  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    if (msg.message != WM_TIMER) continue;
+    if (HHOOK n = hook()) {
+      UnhookWindowsHookEx(h);
+      h = n;
+    }
+  }
+  UnhookWindowsHookEx(h);
+  return 0;
+}
+
 int wmain(int argc, wchar_t** argv) {
+  if (argc == 3 && wcscmp(argv[1], L"keys") == 0) return watchKey(_wtoi(argv[2]));
   if (argc < 4) {
     fwprintf(stderr, L"uso: janja-sysaudio window|screen <hwnd> <pid-do-app>\n");
     return 2;
@@ -276,19 +338,19 @@ int wmain(int argc, wchar_t** argv) {
   if (!screen) {
     DWORD pid = 0;
     if (!IsWindow(hwnd) || !GetWindowThreadProcessId(hwnd, &pid) || !pid) {
-      fwprintf(stderr, L"janela nÃ£o encontrada\n");
+      fwprintf(stderr, L"janela não encontrada\n");
       return 3;
     }
     want({pid});
     if (sources.empty()) {
-      fwprintf(stderr, L"nÃ£o deu para capturar o processo %lu\n", pid);
+      fwprintf(stderr, L"não deu para capturar o processo %lu\n", pid);
       return 4;
     }
   } else {
     // o Windows sem process loopback falha aqui, e o app volta para a captura antiga
     auto probe = openSource(self, true);
     if (!probe) {
-      fwprintf(stderr, L"process loopback indisponÃ­vel\n");
+      fwprintf(stderr, L"process loopback indisponível\n");
       return 4;
     }
     probe.reset();
@@ -308,7 +370,7 @@ int wmain(int argc, wchar_t** argv) {
     for (auto& [pid, s] : sources) pull(*s);
     QueryPerformanceCounter(&now);
     long long due = (now.QuadPart - t0.QuadPart) * RATE / freq.QuadPart;
-    if (due - written > RATE) written = due - BLOCK; // o PC travou: nÃ£o tenta recuperar um segundo de atraso
+    if (due - written > RATE) written = due - BLOCK; // o PC travou: não tenta recuperar um segundo de atraso
     while (due - written >= BLOCK) {
       std::fill(out.begin(), out.end(), 0.f);
       for (auto& [pid, s] : sources) {
@@ -321,7 +383,7 @@ int wmain(int argc, wchar_t** argv) {
       fflush(stdout);
       written += BLOCK;
     }
-    // modo tela: programas que comeÃ§am ou param de tocar som entram e saem da mistura
+    // modo tela: programas que começam ou param de tocar som entram e saem da mistura
     if (screen && due - lastScan > RATE * 2) {
       lastScan = due;
       if (failed.size() > 64) failed.clear();
