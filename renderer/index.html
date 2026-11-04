@@ -20,6 +20,16 @@
     </div>
   </header>
 
+  <!-- barra de ferramentas do PC (os botões da call vêm para cá pelo app.js) -->
+  <nav id="toolbar" hidden>
+    <span class="tool-sep" id="toolSepEnd"></span>
+    <button type="button" class="tool" id="tbAway" title="Ficar ausente"><i data-icon="moon"></i><span>Ausente</span></button>
+    <span class="grow"></span>
+    <button type="button" class="tool" id="tbInvite" title="Convidar amigos"><i data-icon="user-plus"></i><span>Convidar</span></button>
+    <button type="button" class="tool" id="tbServer" title="Perfil do servidor"><i data-icon="server"></i><span>Servidor</span></button>
+    <button type="button" class="tool" id="tbSettings" title="Configurações (Ctrl+,)"><i data-icon="settings"></i><span>Opções</span></button>
+  </nav>
+
   <nav id="mobileNav">
     <button type="button" data-pane="side"><i data-icon="hash"></i><span>Canais</span><b class="mn-dot" id="mnUnread" hidden></b></button>
     <button type="button" data-pane="center" class="active"><i data-icon="message-square"></i><span>Conversa</span></button>
@@ -189,6 +199,14 @@
       </section>
     </aside>
   </div>
+
+  <!-- barra de status do PC -->
+  <footer id="statusBar" hidden>
+    <span class="sb-item" id="sbVoice"></span>
+    <span class="sb-item" id="sbPtt" hidden></span>
+    <span class="grow"></span>
+    <span class="sb-item" id="sbVersion"></span>
+  </footer>
 
   <!-- ===== tela de entrada ===== -->
   <div id="setup" class="overlay" hidden>
@@ -403,12 +421,6 @@
             <button type="button" class="ghost" id="stPttKey">Desligado</button>
             <button type="button" class="ghost" id="stPttOff">Desligar</button>
           </div>
-          <label>Quando alguém entra ou sai do seu canal
-            <select id="stAnnounce">
-              <option value="voice">Falar o nome (como no TeamSpeak)</option>
-              <option value="beep">Só o toque</option>
-            </select>
-          </label>
           <label class="check"><input type="checkbox" id="stSounds"> Sons de entrar/sair da call e de mensagem</label>
           <label>Volume desses sons <b id="stSfxVal"></b><input type="range" id="stSfxVol" min="0" max="150" step="5"></label>
         </section>

@@ -865,3 +865,91 @@ html.mobile .stream-grid { grid-template-columns: 1fr !important; grid-template-
 .voice-users li[draggable='true'] { cursor: grab; }
 .ch.drop-here { outline: 2px dashed var(--accent); outline-offset: -2px; }
 .ptt-tag { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+/* ======================================================================
+   Interface 2 (PC): estilo TeamSpeak. Barra de ferramentas em cima, árvore de canais com linhas
+   à esquerda, canal aberto no meio, painel de informações à direita e barra de status embaixo.
+   O celular continua com o layout de antes (html.mobile).
+   ====================================================================== */
+html:not(.mobile) body { font-size: 13px; }
+html:not(.mobile) { --radius: 3px; }
+
+/* barra de ferramentas */
+html:not(.mobile) #toolbar { flex: none; display: flex; align-items: center; gap: 2px; height: 46px; padding: 0 8px; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+#toolbar .ctl, #toolbar .tool { flex: none; display: flex; flex-direction: row; align-items: center; gap: 7px; min-width: 0; height: 34px; padding: 0 11px; background: none; border: 1px solid transparent; border-radius: 3px; color: var(--text); transition: background .1s, border-color .1s; }
+#toolbar .ctl span, #toolbar .tool span { font-size: 12.5px; color: inherit; font-weight: 500; }
+#toolbar .ctl svg.lucide, #toolbar .tool svg.lucide { width: 17px; height: 17px; }
+#toolbar .ctl:hover, #toolbar .tool:hover { background: var(--panel-3); border-color: var(--line); }
+#toolbar .ctl:disabled { opacity: .4; cursor: default; background: none; border-color: transparent; }
+#toolbar .ctl.off { background: none; border-color: transparent; color: var(--red); }
+#toolbar .ctl.on, #toolbar .tool.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent-2); }
+/* Conectar/Desconectar vem primeiro, separado do resto como no TeamSpeak */
+#toolbar .ctl.join { order: -2; background: color-mix(in srgb, var(--green) 16%, transparent); border-color: color-mix(in srgb, var(--green) 45%, transparent); color: var(--green); min-width: 0; margin-right: 6px; }
+#toolbar .ctl.join span { color: inherit; font-weight: 700; }
+#toolbar .ctl.join.leave { background: color-mix(in srgb, var(--red) 15%, transparent); border-color: color-mix(in srgb, var(--red) 45%, transparent); color: var(--red); }
+#toolbar .ctl.join.leave:hover { background: var(--red); color: #fff; }
+#toolbar .ctl.join:disabled { background: none; border-color: var(--line); color: var(--muted); }
+.tool-sep { flex: none; width: 1px; height: 24px; background: var(--line); margin: 0 6px; }
+html:not(.mobile) #controls { display: none; }
+
+/* área principal */
+html:not(.mobile) #app { grid-template-columns: 300px minmax(0, 1fr) 320px; gap: 0; background: var(--bg); }
+
+/* árvore de canais */
+html:not(.mobile) #side { background: var(--panel); }
+html:not(.mobile) .group-card { background: none; padding: 10px 8px 8px 12px; gap: 8px; border-bottom: 1px solid var(--line); }
+html:not(.mobile) .group-card #btnServer, html:not(.mobile) .group-card #btnInvite { display: none; }
+html:not(.mobile) .group-avatar { width: 22px; height: 22px; border-radius: 4px; font-size: 11px; }
+html:not(.mobile) .group-name { font-size: 13.5px; }
+html:not(.mobile) .group-sub { font-size: 11px; }
+html:not(.mobile) .group-desc { display: none; }
+html:not(.mobile) #channels { padding: 6px 6px 10px 12px; }
+html:not(.mobile) .ch-head { padding: 10px 4px 4px 2px; font-size: 10.5px; letter-spacing: .1em; }
+html:not(.mobile) .ch-list { border-left: 1px solid var(--line); margin-left: 8px; }
+html:not(.mobile) .ch-list > li { position: relative; }
+html:not(.mobile) .ch-list > li::before { content: ""; position: absolute; left: 0; top: 13px; width: 9px; border-top: 1px solid var(--line); }
+html:not(.mobile) .ch { height: 26px; margin-left: 10px; padding: 0 4px 0 6px; gap: 6px; border-radius: 3px; border: 1px solid transparent; }
+html:not(.mobile) .ch svg.lucide { width: 15px; height: 15px; }
+html:not(.mobile) .ch.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--text); }
+html:not(.mobile) .ch.active::before { display: none; }
+html:not(.mobile) .voice-users { margin: 0 0 2px 22px; padding: 0; border-left: 1px dotted var(--line); }
+html:not(.mobile) .voice-users li { position: relative; height: 24px; margin-left: 10px; padding: 0 4px 0 4px; gap: 6px; font-size: 12.5px; color: var(--text); border-radius: 3px; }
+html:not(.mobile) .voice-users li::before { content: ""; position: absolute; left: -10px; top: 12px; width: 8px; border-top: 1px dotted var(--line); }
+html:not(.mobile) .voice-users .avatar.xs { width: 18px; height: 18px; font-size: 9px; }
+html:not(.mobile) .voice-users li.speaking .pname { color: var(--green); }
+html:not(.mobile) .speaking .avatar, html:not(.mobile) .avatar.speaking { box-shadow: 0 0 0 2px var(--green); }
+html:not(.mobile) #voiceBar { padding: 7px 8px 7px 12px; background: color-mix(in srgb, var(--green) 7%, var(--panel)); }
+html:not(.mobile) .me-card { padding: 6px 6px 6px 10px; }
+
+/* canal aberto */
+html:not(.mobile) #viewHead { height: 38px; font-size: 13.5px; padding: 0 14px; background: var(--panel); }
+html:not(.mobile) #messages { padding: 8px 0 4px; }
+html:not(.mobile) .msg { grid-template-columns: 26px 1fr; column-gap: 10px; padding: 1px 14px; margin-top: 8px; }
+html:not(.mobile) .msg > .avatar { width: 26px; height: 26px; font-size: 11px; }
+html:not(.mobile) .msg .author { font-size: 13px; }
+html:not(.mobile) #composer { margin: 0 12px 12px; border-radius: 3px; }
+html:not(.mobile) #stage { padding: 12px; }
+html:not(.mobile) .pcard, html:not(.mobile) .focus, html:not(.mobile) .thumb { border-radius: 4px; }
+html:not(.mobile) #nowPlaying { margin: 10px 12px 0; border-radius: 4px; }
+
+/* painel da direita */
+html:not(.mobile) .tabs { height: 38px; background: var(--panel); }
+html:not(.mobile) .tab { height: 38px; font-size: 12.5px; gap: 6px; }
+html:not(.mobile) .tab svg.lucide { width: 14px; height: 14px; }
+html:not(.mobile) .people li { padding: 5px 8px; border-radius: 3px; }
+html:not(.mobile) .primary, html:not(.mobile) .ghost, html:not(.mobile) dialog { border-radius: 4px; }
+
+/* barra de status */
+html:not(.mobile) #statusBar { flex: none; display: flex; align-items: center; gap: 14px; height: 24px; padding: 0 10px; background: var(--titlebar, #0e1012); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+#statusBar .tb-status { margin: 0; }
+#statusBar .sb-item.on { color: var(--green); }
+#statusBar .sb-item + .sb-item::before, #statusBar .tb-status + .sb-item::before { content: "│"; margin-right: 14px; opacity: .35; }
+html:not(.mobile) #titlebar .tb-status { display: none; }
+html:not(.mobile) #titlebar .tb-buttons { margin-left: auto; }
+html:not(.mobile) #titlebar .tb-update { margin-left: auto; margin-right: 8px; }
+html:not(.mobile) #titlebar .tb-update:not([hidden]) + .tb-buttons { margin-left: 0; }
+/* janela estreita: a barra de ferramentas fica só com os ícones (o nome aparece ao passar o mouse) */
+@media (max-width: 1280px) {
+  html:not(.mobile) #toolbar .ctl:not(.join) span, html:not(.mobile) #toolbar .tool span { display: none; }
+  html:not(.mobile) #app { grid-template-columns: 250px minmax(0, 1fr) 290px; }
+}

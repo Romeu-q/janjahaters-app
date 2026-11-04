@@ -28,7 +28,6 @@ verde **Reiniciar** na barra de cima. Se ninguém clicar, a atualização é ins
 
 - **Aperte para falar**: Configurações → Voz e áudio → escolha uma tecla ou botão lateral do mouse. Funciona com o
   jogo em foco (o `bin/janja-sysaudio.exe` olha só essa tecla).
-- **Avisos falados**: "Fulano entrou no canal" / "saiu do canal" com a voz do Windows (dá para trocar pelo toque).
 - **Cutucar**: botão direito na pessoa → Cutucar. Aparece na frente dela com som, mesmo com o app minimizado.
 - **Mover gente**: arraste alguém da lista para outro canal de voz, ou botão direito → Trazer para o meu canal.
 

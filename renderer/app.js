@@ -66,6 +66,8 @@ import {
   X,
   BellRing,
   ArrowDownToLine,
+  Moon,
+  Server,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -181,6 +183,8 @@ const ICONS = {
   x: X,
   'bell-ring': BellRing,
   'arrow-down-to-line': ArrowDownToLine,
+  moon: Moon,
+  server: Server,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -313,7 +317,6 @@ settings.streamMute = { ...settings.streamMute }; // uid -> som da stream dele m
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
 settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
 settings.ptt = { vk: 0, label: '', ...settings.ptt }; // aperte para falar: tecla virtual do Windows (0 = desligado)
-settings.announce ||= 'voice'; // alguém entra/sai do canal: fala o nome (TeamSpeak) ou só o toque
 const look = settings.look;
 const plug = (id) => !!settings.plugins[id];
 const saveSettings = () => store.set('settings', settings);
@@ -405,21 +408,6 @@ const sfx = {
   streamOff: () => beep([1047, 659, 392], 0.09),
   poke: () => beep([880, 1175, 880, 1175], 0.08, 0.3),
 };
-// como no TeamSpeak: "Fulano entrou no canal" falado (voz do Windows), ou só o toque
-let ptVoice;
-function announce(kind, name) {
-  if (!settings.sounds) return;
-  const synth = window.speechSynthesis;
-  if (settings.announce !== 'voice' || !synth || !name) return sfx[kind]();
-  ptVoice ||= synth.getVoices().find((v) => /^pt(-|_)BR/i.test(v.lang)) || synth.getVoices().find((v) => /^pt/i.test(v.lang));
-  const u = new SpeechSynthesisUtterance(`${name} ${kind === 'join' ? 'entrou no canal' : 'saiu do canal'}`);
-  u.lang = 'pt-BR';
-  if (ptVoice) u.voice = ptVoice;
-  u.rate = 1.15;
-  u.volume = clamp(settings.sfxVol ?? 0.8, 0, 1);
-  synth.speak(u);
-}
-window.speechSynthesis?.addEventListener?.('voiceschanged', () => (ptVoice = null));
 
 // ============================================================ dados sincronizados
 // Tudo que o grupo compartilha é um "registro" com versão (o mais novo vence):
@@ -651,7 +639,7 @@ function connectRoom() {
   room.onPeerLeave = (pid) => {
     const p = peers.get(pid);
     if (!p) return;
-    if (C.ch && p.voice?.ch === C.ch) announce('leave', p.user?.name);
+    if (C.ch && p.voice?.ch === C.ch) sfx.leave();
     dropMedia(p);
     peers.delete(pid);
     C.sent.delete(pid);
@@ -697,11 +685,11 @@ function onHi(pid, d) {
   const isIn = C.ch && p.voice?.ch === C.ch;
   const isLive = isIn && p.voice.streaming;
   if (!wasIn && isIn) {
-    announce('join', p.user.name);
+    sfx.join();
     pluginEmit('join', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
   if (wasIn && !isIn) {
-    announce('leave', p.user.name);
+    sfx.leave();
     pluginEmit('leave', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
   if (!wasLive && isLive) {
@@ -1255,7 +1243,9 @@ function toggleDeafen() {
 $('#btnMute').onclick = $('#ctlMute').onclick = toggleMute;
 $('#btnDeafen').onclick = $('#ctlDeafen').onclick = toggleDeafen;
 $('#vbLeave').onclick = () => leaveVoice();
-$('#ctlCall').onclick = () => (C.ch === S.view ? leaveVoice() : joinVoice(S.view));
+// no PC o botão fica na barra de ferramentas: com a call aberta ele sempre desconecta, de qualquer canal
+const callBtnLeaves = () => !!C.ch && (C.ch === S.view || !isMobile);
+$('#ctlCall').onclick = () => (callBtnLeaves() ? leaveVoice() : channel(S.view)?.type === 'voice' && joinVoice(S.view));
 $('#ctlMusic').onclick = () => selectTab('music');
 
 // ============================================================ stream de tela
@@ -3564,6 +3554,7 @@ function renderSidebar() {
 
   $('#voiceBar').hidden = !C.ch;
   if (C.ch) $('#vbChannel').textContent = channel(C.ch)?.name || '';
+  renderStatusBar();
   setIcon($('#vbStream'), C.screen ? 'screen-share-off' : 'screen-share');
   $('#vbStream').classList.toggle('on', !!C.screen);
   const gname = groupName();
@@ -3911,12 +3902,35 @@ function renderStage() {
   renderControls();
 }
 
+// ----- interface do PC (estilo TeamSpeak): barra de ferramentas em cima, barra de status embaixo -----
+if (!isMobile) {
+  $('#toolbar').hidden = false;
+  $('#statusBar').hidden = false;
+  $('#toolbar').prepend(...$('#controls').children); // os botões da call viram ferramentas
+  $('#statusBar').prepend($('.tb-status'));
+  $('#tbInvite').onclick = () => $('#btnInvite').click();
+  $('#tbServer').onclick = () => $('#btnServer').click();
+  $('#tbSettings').onclick = () => $('#btnSettings').click();
+  $('#tbAway').onclick = () => setStatus(myStatus() === 'idle' ? 'online' : 'idle');
+}
+function renderStatusBar() {
+  if (isMobile) return;
+  const c = C.ch && channel(C.ch);
+  $('#sbVoice').textContent = c ? `Conectado em ${c.name}` : 'Fora da call';
+  $('#sbVoice').classList.toggle('on', !!c);
+  $('#sbPtt').hidden = !settings.ptt.vk;
+  $('#sbPtt').textContent = settings.ptt.vk ? `Aperte para falar: ${settings.ptt.label}` : '';
+  $('#tbAway').classList.toggle('on', myStatus() === 'idle');
+}
 function renderControls() {
-  const inThis = C.ch && C.ch === S.view;
+  const inThis = callBtnLeaves();
   const call = $('#ctlCall');
-  call.classList.toggle('leave', !!inThis);
+  call.classList.toggle('leave', inThis);
   setIcon(call, inThis ? 'phone-off' : 'phone');
-  call.querySelector('span').textContent = inThis ? 'Sair' : 'Entrar';
+  call.querySelector('span').textContent = inThis ? (isMobile ? 'Sair' : 'Desconectar') : isMobile ? 'Entrar' : 'Conectar';
+  call.disabled = !inThis && channel(S.view)?.type !== 'voice';
+  call.title = call.disabled ? 'Abra um canal de voz para conectar' : '';
+  renderStatusBar();
   const off = C.muted || C.deafened || (C.ch && !C.mic);
   const mute = $('#ctlMute');
   mute.classList.toggle('off', !!off);
@@ -4283,7 +4297,6 @@ async function openSettings(page = 'profile') {
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
-  $('#stAnnounce').value = settings.announce;
   renderPttKey();
   $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
   $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
@@ -4311,7 +4324,6 @@ $('#btnSaveSettings').onclick = async () => {
   settings.noise = $('#stNoise').value;
   settings.echo = $('#stEcho').checked;
   settings.sounds = $('#stSounds').checked;
-  settings.announce = $('#stAnnounce').value;
   if (window.desk?.setPrefs) {
     window.desk
       .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked })
@@ -5169,6 +5181,7 @@ if (window.desk?.appInfo) {
   window.desk.onUpdateProgress((pct) => setUpdStatus(`Baixando atualização… ${pct}%`));
   window.desk.appInfo().then(({ version, updateReady, google, prefs }) => {
     $('#appVersion').textContent = `janjahaters v${version}`;
+    $('#sbVersion').textContent = `v${version}`;
     $$('[data-google]').forEach((e) => (e.hidden = !google));
     if (prefs) desktopPrefs = prefs;
     if (updateReady) showUpdate(updateReady);
@@ -5339,6 +5352,7 @@ function setStatus(st) {
   store.set('profile', me);
   sendHi();
   renderPresence();
+  renderStatusBar();
   toast(st === 'dnd' ? 'Não perturbe: sem sons nem piscar de mensagens' : `Status: ${STATUSES.find((x) => x[0] === st)[1]}`);
 }
 const statusOf = (uid) => (uid === me.id ? myStatus() : [...peers.values()].find((p) => p.user?.id === uid)?.user?.st || 'online');
@@ -5784,6 +5798,7 @@ function setPttKey(vk, label) {
   C.pttDown = false;
   applyMicEnabled();
   renderPttKey();
+  renderStatusBar();
   toast(vk ? `Aperte para falar: segure ${label}` : 'Aperte para falar desligado: o mic abre sozinho');
 }
 $('#stPttKey').onclick = (ev) => {
