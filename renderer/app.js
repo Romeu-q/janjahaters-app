@@ -1031,7 +1031,7 @@ async function joinVoice(ch) {
   }
   C.ch = ch;
   C.joinedAt = Date.now();
-  window.desk?.callActive?.(true, channel(ch)?.name);
+  window.desk?.callActive?.(true, channel(ch)?.name, !!C.cam);
   djHere = voiceMembers(ch).some((m) => m.key === 'dj'); // já estava lá: sem som
   applyMicEnabled();
   if (C.mic) meter('me', C.mic);
@@ -1125,6 +1125,88 @@ function peerConnections() {
   const pcs = room?.getPeers() || {};
   return pcs instanceof Map ? [...pcs.entries()] : Object.entries(pcs);
 }
+// ----- ping e estado da conexão com cada amigo -----
+// Lê o tempo de ida e volta (RTT) do par de candidatos que o WebRTC escolheu: é o caminho real do
+// áudio, inclusive quando passa pelo servidor TURN. Atualiza só os números na tela, sem redesenhar tudo.
+const net = new Map(); // peerId -> { ping, relay, state }
+const pingClass = (ms) => (ms == null ? '' : ms < 80 ? 'good' : ms < 160 ? 'ok' : 'bad');
+async function pollNet() {
+  if (!room) return;
+  const live = new Set();
+  for (const [pid, pc] of peerConnections()) {
+    live.add(pid);
+    try {
+      const st = await pc.getStats();
+      let pair = null;
+      st.forEach((x) => {
+        if (x.type === 'transport' && x.selectedCandidatePairId) pair = st.get(x.selectedCandidatePairId);
+      });
+      if (!pair) st.forEach((x) => x.type === 'candidate-pair' && x.nominated && x.state === 'succeeded' && (pair ||= x));
+      const local = pair && st.get(pair.localCandidateId);
+      const remote = pair && st.get(pair.remoteCandidateId);
+      const rtt = pair?.currentRoundTripTime;
+      net.set(pid, {
+        ping: rtt != null ? Math.round(rtt * 1000) : (net.get(pid)?.ping ?? null),
+        relay: local?.candidateType === 'relay' || remote?.candidateType === 'relay',
+        state: pc.connectionState,
+      });
+    } catch {}
+  }
+  for (const pid of net.keys()) if (!live.has(pid)) net.delete(pid);
+  paintNet();
+}
+setInterval(pollNet, 2000);
+const netDown = (n) => !!n && !['connected', 'new', 'connecting'].includes(n.state);
+function netTitle(n) {
+  if (!n || n.state === 'new' || n.state === 'connecting') return 'Conectando…';
+  if (netDown(n)) return 'Conexão caiu, tentando de novo…';
+  return `Ping ${n.ping ?? '?'} ms · ${n.relay ? 'pelo servidor (TURN)' : 'conexão direta'}`;
+}
+function paintPing(e) {
+  const n = net.get(e.dataset.ping);
+  e.textContent = netDown(n) ? 'caiu' : n?.ping != null ? n.ping + ' ms' : '…';
+  e.className = 'ping ' + (netDown(n) ? 'bad' : pingClass(n?.ping)) + (n?.relay ? ' relay' : '');
+  e.title = netTitle(n);
+}
+function pingEl(pid) {
+  const e = el('span', 'ping');
+  e.dataset.ping = pid;
+  paintPing(e);
+  return e;
+}
+// resumo da minha call: ping médio e com quantos ainda está conectando
+function callNet() {
+  if (!C.ch) return null;
+  const others = voiceMembers(C.ch).filter((m) => m.peer);
+  const ok = others.map((m) => net.get(m.key)).filter((n) => n?.state === 'connected' && n.ping != null);
+  const avg = ok.length ? Math.round(ok.reduce((a, n) => a + n.ping, 0) / ok.length) : null;
+  return { people: others.length + 1, avg, bad: others.length - ok.length, relay: ok.filter((n) => n.relay).length };
+}
+function renderCallStatus() {
+  const c = callNet();
+  if (!c) return;
+  let text = 'Voz conectada';
+  let cls = c.avg != null ? pingClass(c.avg) : 'good';
+  if (c.people === 1) text = 'Só você na call';
+  else if (c.bad) {
+    text = c.bad === c.people - 1 ? 'Conectando…' : `Conectando com ${c.bad}`;
+    if (cls === 'good') cls = 'ok';
+  }
+  $('#vbStatusText').textContent = text;
+  const p = $('#vbPing');
+  p.textContent = c.avg != null ? c.avg + ' ms' : '';
+  p.className = 'ping ' + cls;
+  p.title = c.avg != null ? `Ping médio com ${c.people - 1 - c.bad} pessoa(s)${c.relay ? ` · ${c.relay} pelo servidor (TURN)` : ''}` : '';
+  $('#voiceBar').dataset.quality = cls;
+  if (!isMobile) {
+    $('#sbVoice').textContent = `Conectado em ${channel(C.ch)?.name || ''} · ${c.people} na call${c.avg != null ? ` · ping ${c.avg} ms` : ''}${c.bad ? ` · conectando com ${c.bad}` : ''}`;
+  }
+}
+function paintNet() {
+  $$('[data-ping]').forEach(paintPing);
+  renderCallStatus();
+}
+
 function tuneSenders() {
   if (!room) return;
   for (const [, pc] of peerConnections()) {
@@ -3533,6 +3615,7 @@ function renderSidebar() {
           u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name));
           if (m.dj) u.append(el('span', 'bot-tag', 'BOT'));
           u.append(flagsEl(m.voice, m.key));
+          if (m.peer) u.append(pingEl(m.key));
           if (!m.dj) {
             u.draggable = true;
             u.ondragstart = (e) => {
@@ -3558,6 +3641,7 @@ function renderSidebar() {
 
   $('#voiceBar').hidden = !C.ch;
   if (C.ch) $('#vbChannel').textContent = channel(C.ch)?.name || '';
+  if (C.ch) renderCallStatus();
   renderStatusBar();
   setIcon($('#vbStream'), C.screen ? 'screen-share-off' : 'screen-share');
   $('#vbStream').classList.toggle('on', !!C.screen);
@@ -3818,6 +3902,7 @@ function renderStage() {
       const cs = camOf(m);
       card.append(flagsEl(m.voice), cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
       if (cs) card.classList.add('cam');
+      if (m.peer) card.append(pingEl(m.key));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
       if (m.dj) {
         card.classList.add('dj-card');
@@ -3922,6 +4007,7 @@ function renderStatusBar() {
   const c = C.ch && channel(C.ch);
   $('#sbVoice').textContent = c ? `Conectado em ${c.name}` : 'Fora da call';
   $('#sbVoice').classList.toggle('on', !!c);
+  if (c) renderCallStatus();
   $('#sbPtt').hidden = !settings.ptt.vk;
   $('#sbPtt').textContent = settings.ptt.vk ? `Aperte para falar: ${settings.ptt.label}` : '';
   $('#tbAway').classList.toggle('on', myStatus() === 'idle');
@@ -6009,14 +6095,30 @@ function camVideo(stream, mirror) {
 async function toggleCam() {
   if (C.cam) return stopCam(true);
   if (!C.ch) return toast('Entre em um canal de voz para ligar a câmera');
-  try {
-    C.cam = await navigator.mediaDevices.getUserMedia({
-      video: { deviceId: settings.cam ? { exact: settings.cam } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-    });
-  } catch (err) {
-    C.cam = null;
-    return toast('Não consegui abrir a câmera: ' + err.message);
+  // No celular: câmera da frente e 640x480 (o 720p esquenta e trava em muito Android).
+  // Se a câmera escolhida sumiu ou não aceita o formato, tenta de novo com qualquer câmera.
+  const size = isMobile ? { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } } : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const tries = [
+    settings.cam && !isMobile ? { deviceId: { exact: settings.cam }, ...size } : isMobile ? { facingMode: 'user', ...size } : size,
+    size,
+    true,
+  ];
+  let lastErr = null;
+  for (const video of tries) {
+    try {
+      C.cam = await navigator.mediaDevices.getUserMedia({ video });
+      break;
+    } catch (err) {
+      lastErr = err;
+      C.cam = null;
+      if (err.name === 'NotAllowedError' || err.name === 'SecurityError') break; // sem permissão: não adianta tentar outra
+    }
   }
+  if (!C.cam) {
+    const denied = lastErr?.name === 'NotAllowedError' || lastErr?.name === 'SecurityError';
+    return toast(denied ? (isMobile ? 'Sem permissão de câmera: libere em Configurações > Apps > janjahaters > Permissões' : 'Sem permissão de câmera') : 'Não consegui abrir a câmera: ' + (lastErr?.message || 'sem câmera'));
+  }
+  window.desk?.callActive?.(true, channel(C.ch)?.name, true); // Android: câmera continua com o app em segundo plano
   const t = C.cam.getVideoTracks()[0];
   t.contentHint = 'motion';
   t.addEventListener('ended', () => stopCam(true)); // câmera desconectada
@@ -6030,6 +6132,7 @@ function stopCam(notify) {
   C.cam = null;
   syncMedia();
   s.getTracks().forEach((t) => t.stop());
+  if (C.ch) window.desk?.callActive?.(true, channel(C.ch)?.name, false);
   if (notify) {
     sendHi();
     renderPresence();

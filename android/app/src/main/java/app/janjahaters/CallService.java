@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
@@ -41,21 +42,31 @@ public class CallService extends Service {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .build();
 
+        // Tipos do serviço: mídia sempre; microfone e câmera só com a permissão dada (senão o Android
+        // recusa e o app fechava). Câmera ligada = o Android deixa a câmera funcionando em segundo plano.
+        boolean cam = intent != null && intent.getBooleanExtra("camera", false);
         int type = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            if (granted(android.Manifest.permission.RECORD_AUDIO)) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            if (cam && granted(android.Manifest.permission.CAMERA)) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
         }
-        try {
-            ServiceCompat.startForeground(this, ID, n, type);
-        } catch (Exception e) {
-            // sem permissão de microfone o Android recusa o tipo "microfone": fica só com a mídia
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceCompat.startForeground(this, ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(ID, n);
+        int[] attempts = { type, Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK : 0 };
+        for (int t : attempts) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceCompat.startForeground(this, ID, n, t);
+                else startForeground(ID, n);
+                return START_NOT_STICKY;
+            } catch (Exception e) {
+                // tenta o próximo (só mídia); nunca deixa a exceção derrubar o app
             }
         }
+        stopSelf();
         return START_NOT_STICKY;
+    }
+
+    private boolean granted(String perm) {
+        return checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED;
     }
 
     @Override

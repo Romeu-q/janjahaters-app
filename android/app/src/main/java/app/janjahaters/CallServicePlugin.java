@@ -33,6 +33,7 @@ public class CallServicePlugin extends Plugin {
         Intent i = new Intent(getContext(), CallService.class);
         i.putExtra("title", call.getString("title", "Na call"));
         i.putExtra("text", call.getString("text", "janjahaters"));
+        i.putExtra("camera", Boolean.TRUE.equals(call.getBoolean("camera", false)));
         try {
             ContextCompat.startForegroundService(getContext(), i);
             call.resolve();

@@ -126,7 +126,7 @@ window.desk = {
   onHotkey: (fn) => listeners.push(fn),
   googleVerify,
   onMaximized: () => {},
-  callActive: (on, channel) => native && (on ? CallService.start({ title: 'Na call', text: channel || 'janjahaters' }) : CallService.stop()).catch(() => {}),
+  callActive: (on, channel, cam) => native && (on ? CallService.start({ title: 'Na call', text: channel || 'janjahaters', camera: !!cam }) : CallService.stop()).catch(() => {}),
   backButton: (fn) => native && App.addListener('backButton', fn),
   minimize: () => native && App.minimizeApp(),
 };

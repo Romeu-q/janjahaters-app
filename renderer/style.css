@@ -967,3 +967,18 @@ html:not(.mobile) #titlebar .tb-update:not([hidden]) + .tb-buttons { margin-left
 .sfx-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sfx-row > span { flex: 1; min-width: 200px; }
 .sfx-pick { cursor: pointer; display: inline-flex; align-items: center; padding: 9px 16px; font-size: 14px; }
+
+/* ping de cada um e estado da call */
+.ping { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+.ping.good { color: var(--green); }
+.ping.ok { color: #e3b341; }
+.ping.bad { color: #f04747; }
+.ping.relay::after { content: " ↻"; opacity: .7; }
+.voice-users li .pname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-users li .flags { margin-left: auto; }
+.voice-users li > .ping { margin-left: 4px; }
+.voice-users li .flags:empty + .ping { margin-left: auto; }
+.pcard > .ping { position: absolute; top: 10px; left: 12px; font-size: 12px; background: color-mix(in srgb, var(--panel) 80%, transparent); padding: 2px 6px; border-radius: 6px; }
+.vb-status .ping { margin-left: 6px; font-size: 11px; }
+#voiceBar[data-quality='ok'] .vb-status { color: #e3b341; }
+#voiceBar[data-quality='bad'] .vb-status { color: #f04747; }
