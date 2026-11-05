@@ -27,7 +27,6 @@ import {
   CircleX,
   Copy,
   Disc3,
-  CirclePlay,
   Download,
   Drum,
   Eye,
@@ -132,7 +131,6 @@ const ICONS = {
   reply: Reply,
   copy: Copy,
   'disc-3': Disc3,
-  youtube: CirclePlay,
   'face-slightly-smiling-plus': FaceSlightlySmilingPlus,
   hash: Hash,
   'headphone-off': HeadphoneOff,
@@ -1913,40 +1911,6 @@ async function ytPlayer() {
     });
   }));
 }
-// Recria o player (depois de entrar/sair do YouTube, para ele pegar a conta nova)
-async function resetYtPlayer() {
-  try {
-    Y.player?.destroy();
-  } catch {}
-  Y.player = null;
-  Y.creating = null;
-  Y.vid = null;
-  if (!$('#ytPlayer')) $('#ytBox').replaceChildren(el('div'));
-  $('#ytBox').firstElementChild.id = 'ytPlayer';
-  syncMusic();
-}
-async function renderYtAccount() {
-  const box = $('#ytAccount');
-  if (!window.desk?.ytAccount) return (box.hidden = true);
-  const logged = await window.desk.ytAccount().catch(() => false);
-  box.hidden = false;
-  $('#ytAccText').textContent = logged ? 'Conta do YouTube conectada: com Premium a música toca sem anúncios' : 'Tem YouTube Premium? Entre na sua conta e a música toca sem anúncios para você';
-  $('#ytAccBtn').textContent = logged ? 'Sair' : 'Entrar no YouTube';
-  $('#ytAccBtn').onclick = async () => {
-    $('#ytAccBtn').disabled = true;
-    try {
-      if (logged) await window.desk.ytLogout();
-      else if (!(await window.desk.ytLogin())) return toast('Login no YouTube cancelado');
-      resetYtPlayer();
-      toast(logged ? 'Saiu da conta do YouTube' : 'Pronto: o player agora usa a sua conta do YouTube');
-    } finally {
-      $('#ytAccBtn').disabled = false;
-      renderYtAccount();
-    }
-  };
-}
-renderYtAccount();
-
 function pbOf(ch) {
   const pb = recs.get('pb:' + ch);
   const item = pb?.item ? recs.get(pb.item) : null;
@@ -2103,20 +2067,69 @@ function parseYouTube(text) {
 const THUMB_OK = /^https:\/\/(i\.ytimg\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com)\//;
 const thumbOf = (item) => (THUMB_OK.test(item.thumb || '') ? item.thumb : `https://i.ytimg.com/vi/${item.ref}/mqdefault.jpg`);
 
-function enqueue(fields) {
+// Spotify, Deezer e playlists do YouTube (o link de uma música só do YouTube continua indo direto)
+const MUSIC_LINK = /(open\.spotify\.com\/|spotify:(track|album|playlist):|spotify\.link\/|spotify\.app\.link\/|deezer\.com\/|link\.deezer\.com\/|deezer\.page\.link\/|dzr\.page\.link\/|(youtube\.com|youtu\.be)\S*[?&]list=(?!RD))/i;
+const SRC_NAME = { spotify: 'Spotify', deezer: 'Deezer', youtube: 'YouTube' };
+// Lê as músicas do link e acha cada uma no YouTube Music. Procura 3 por vez, mas entra na fila na ordem
+// do link; a primeira já começa a tocar enquanto as outras ainda estão sendo procuradas.
+let linkBusy = false;
+async function addMusicLink(text) {
+  if (!C.ch) return toast('Entre em um canal de voz primeiro');
+  if (!window.desk?.musicLink) return toast('Links do Spotify e do Deezer só funcionam no app');
+  if (linkBusy) return toast('Calma, ainda estou colocando o último link na fila');
+  linkBusy = true;
+  const ch = C.ch;
+  try {
+    toast('Lendo o link…');
+    let info;
+    try {
+      info = await window.desk.musicLink(text);
+    } catch (err) {
+      return toast(String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') || 'Não consegui abrir esse link');
+    }
+    if (!info) return toast('Não reconheci esse link');
+    const n = info.tracks.length;
+    const from = SRC_NAME[info.src] || '';
+    if (n > 1) toast(`Colocando ${n} músicas de "${info.name}" (${from}) na fila…`);
+    const find = (t) => (t.id ? Promise.resolve(t) : window.desk.musicMatch(t).catch(() => null));
+    const jobs = info.tracks.slice(0, 3).map(find);
+    let added = 0;
+    let missing = 0;
+    let first = null;
+    for (let i = 0; i < n; i++) {
+      if (i + 3 < n) jobs[i + 3] = find(info.tracks[i + 3]);
+      const m = await jobs[i];
+      if (C.ch !== ch) break; // saiu da call no meio
+      if (!m?.id) {
+        missing++;
+        continue;
+      }
+      const item = enqueue({ ref: m.id, title: m.title || PLACEHOLDER, artist: m.artist || '', dur: m.dur || 0, thumb: m.thumb || '' }, n > 1);
+      first ||= item;
+      added++;
+    }
+    if (n > 1 || missing) toast(added ? `${added} música${added > 1 ? 's' : ''} de "${info.name}" na fila${missing ? ` (${missing} não achei no YouTube)` : ''}` : 'Não achei essas músicas no YouTube');
+    return { first, added, name: info.name, from, many: n > 1 };
+  } finally {
+    linkBusy = false;
+  }
+}
+
+function enqueue(fields, quiet) {
   if (!C.ch) return toast('Entre em um canal de voz primeiro');
   const item = { k: 'q', id: 'q:' + randId(), ch: C.ch, title: PLACEHOLDER, artist: '', dur: 0, thumb: '', addedBy: me.name, at: Date.now(), ...fields };
   put(item);
   const { item: playing } = pbOf(C.ch);
   if (!playing) writePb(C.ch, { item: item.id });
-  else toast(`"${item.title}" entrou na fila`);
+  else if (!quiet) toast(`"${item.title}" entrou na fila`);
   return item;
 }
 async function addLink(text) {
   if (!C.ch) return toast('Entre em um canal de voz primeiro');
+  if (MUSIC_LINK.test(text)) return (await addMusicLink(text))?.first;
   const yt = parseYouTube(text);
-  if (yt?.playlist) return toast('Playlists ainda não. Cole o link de uma música.');
-  if (!yt) return toast('Não reconheci esse link. Use um link do YouTube Music.');
+  if (yt?.playlist) return toast('Esse tipo de playlist (mix automático) não dá. Cole o link de uma música ou de uma playlist.');
+  if (!yt) return toast('Não reconheci esse link. Use um link do YouTube Music, Spotify ou Deezer.');
   const fields = { ref: yt.id };
   try {
     const res = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + yt.id));
@@ -2197,7 +2210,7 @@ async function doSearch(q) {
 addInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const v = addInput.value.trim();
-  if (!v || parseYouTube(v)) {
+  if (!v || parseYouTube(v) || MUSIC_LINK.test(v)) {
     searchSeq++;
     results = [];
     return hideResults();
@@ -2219,7 +2232,7 @@ $('#addForm').onsubmit = (e) => {
   e.preventDefault();
   const v = addInput.value.trim();
   if (!v) return;
-  if (parseYouTube(v)) {
+  if (parseYouTube(v) || MUSIC_LINK.test(v)) {
     addInput.value = '';
     hideResults();
     return addLink(v);
@@ -2331,7 +2344,7 @@ function renderMusic() {
   $('#mediaEmpty').hidden = !!item;
   $('#ytBox').style.visibility = item ? 'visible' : 'hidden';
   $('#plTitle').textContent = item ? item.title : 'Nada tocando';
-  $('#plSub').textContent = item ? [item.artist, 'adicionada por ' + item.addedBy].filter(Boolean).join(' · ') : 'Cole um link do YouTube Music abaixo';
+  $('#plSub').textContent = item ? [item.artist, 'adicionada por ' + item.addedBy].filter(Boolean).join(' · ') : 'Busque ou cole um link do YouTube Music, Spotify ou Deezer';
   setIcon($('#plPlay'), item && pb.pausedAt == null ? 'pause' : 'play');
   const q = queueOf(C.ch);
   const ids = q.map((x) => x.id + x.v).join();
@@ -2376,9 +2389,15 @@ $('#nowPlaying').onclick = () => selectTab('music');
 function applyMusicVolume() {
   const p = Y.player;
   if (p?.setVolume) {
-    // o volume do YouTube é linear: no meio da barra já fica alto perto das vozes. A curva deixa a barra
-    // parecida com o ouvido (60 na barra = 28 no player; 100 continua 100).
-    p.setVolume(Math.round(Math.pow(settings.musicVol, 2.5) * 100));
+    // Barra em decibéis, como em mesa de som: 100 = volume cheio, cada 10 da barra = -5 dB,
+    // 60 = -20 dB (um décimo), 1 = quase nada. No PC o app controla o volume de verdade dentro do player
+    // (o do YouTube não baixa de ~4%); no celular sobra o volume do YouTube com uma curva.
+    const v = settings.musicVol;
+    const gain = v <= 0 ? 0 : Math.pow(10, ((v - 1) * 50) / 20);
+    if (window.desk?.musicGain) {
+      p.setVolume(100);
+      window.desk.musicGain(gain).catch(() => {});
+    } else p.setVolume(Math.round(Math.pow(v, 2.5) * 100));
     C.deafened || settings.musicMuted || settings.musicVol === 0 ? p.mute() : p.unMute();
   }
   const muted = settings.musicMuted || settings.musicVol === 0;
@@ -3206,7 +3225,11 @@ async function runCommand(text, ch, box) {
         return note(box, 'Use /play seguido do nome da música ou de um link.');
       }
       let added;
-      if (parseYouTube(arg)) added = await addLink(arg);
+      if (MUSIC_LINK.test(arg)) {
+        const r = await addMusicLink(arg);
+        if (r?.many && r.added) return botSay(ch, `${who} colocou **${r.added} músicas** de **${r.name}** (${r.from}) na fila`);
+        added = r?.first;
+      } else if (parseYouTube(arg)) added = await addLink(arg);
       else {
         if (!window.desk?.ytSearch) return note(box, 'A busca só funciona no app. Aqui, cole um link.');
         let r;

@@ -5,6 +5,7 @@ import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { Innertube } from 'youtubei.js/web';
 import yt from '../yt.js';
+import links from '../links.js';
 
 /* global __APP_VERSION__, __GOOGLE_CLIENT_ID__ */
 const VERSION = __APP_VERSION__;
@@ -35,6 +36,17 @@ const ytClient = () =>
     client = null;
     throw err;
   }));
+
+// páginas do Spotify/Deezer para ler os links de música (pelo Android, sem o bloqueio de CORS)
+async function webGet(url) {
+  if (!/^https:\/\//.test(url)) throw new Error('link inválido');
+  if (!native) {
+    const r = await fetch(url);
+    return { url: r.url, text: await r.text() };
+  }
+  const r = await CapacitorHttp.request({ url, method: 'GET', headers: { 'Accept-Language': 'pt-BR,pt;q=0.9' }, responseType: 'text' });
+  return { url: r.url || url, text: typeof r.data === 'string' ? r.data : JSON.stringify(r.data) };
+}
 
 // ----- convite por link: janjahaters://join/CODIGO -----
 const inviteFrom = (url) => decodeURIComponent(String(url || '')).match(/^janjahaters:\/\/join\/?([A-Za-z0-9-]{16,60})/i)?.[1] || null;
@@ -103,6 +115,8 @@ window.desk = {
   pick: async () => {},
   ytSearch: async (q) => yt.search(await ytClient(), q),
   ytRelated: async (id) => yt.related(await ytClient(), id),
+  musicLink: async (url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)),
+  musicMatch: async (t) => links.matchTrack(await ytClient(), yt.search, t),
   openExternal: (url) => /^https:\/\//.test(url) && Browser.open({ url }),
   win: () => {},
   flash: () => {},

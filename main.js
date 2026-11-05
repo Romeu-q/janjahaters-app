@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, desktopCapturer, shell, session } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, shell, session, webFrameMain } = require('electron');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -88,6 +88,43 @@ function keepBounds() {
   for (const ev of ['resize', 'move', 'maximize', 'unmaximize']) win.on(ev, save);
 }
 
+// ----- volume da música -----
+// O player do YouTube nunca baixa de ~4% (mesmo no volume 0 sem mudo) e tem a curva dele. Aqui o app
+// controla o volume do <video> dentro do player: o YouTube fica em 100 e o que sai é o valor dele
+// vezes o nosso ganho. O YouTube continua lendo o volume que ele mesmo pôs (sem briga entre os dois).
+let musicGain = 1;
+const GAIN_JS = `(() => {
+  if (!window.__janjaSetGain) {
+    const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
+    const raw = new WeakMap();
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    window.__janjaGain = 1;
+    Object.defineProperty(HTMLMediaElement.prototype, 'volume', {
+      configurable: true,
+      get() { return raw.has(this) ? raw.get(this) : d.get.call(this); },
+      set(v) { raw.set(this, v); d.set.call(this, clamp(v * window.__janjaGain)); },
+    });
+    window.__janjaSetGain = (g) => {
+      window.__janjaGain = g;
+      document.querySelectorAll('video, audio').forEach((m) => {
+        const r = raw.has(m) ? raw.get(m) : d.get.call(m);
+        raw.set(m, r);
+        d.set.call(m, clamp(r * g));
+      });
+    };
+  }
+  window.__janjaSetGain(__GAIN__);
+})()`;
+function injectMusicGain(frame) {
+  if (!frame || !/^https:\/\/www\.youtube(-nocookie)?\.com\/embed\//.test(frame.url)) return;
+  frame.executeJavaScript(GAIN_JS.replace('__GAIN__', String(musicGain))).catch(() => {});
+}
+ipcMain.handle('music-gain', (e, g) => {
+  musicGain = Math.min(1, Math.max(0, Number(g) || 0));
+  for (const f of e.sender.mainFrame.framesInSubtree) injectMusicGain(f);
+  return true;
+});
+
 function createWindow() {
   const saved = savedBounds();
   win = new BrowserWindow({
@@ -112,6 +149,7 @@ function createWindow() {
   if (saved?.maximized) win.maximize();
   keepBounds();
   win.loadURL(`http://localhost:${UI_PORT}/`);
+  win.webContents.on('did-frame-finish-load', (e, isMain, pid, rid) => !isMain && injectMusicGain(webFrameMain.fromId(pid, rid)));
   // aberto pelo "iniciar com o Windows": fica só na bandeja
   win.once('ready-to-show', () => !(process.argv.includes('--hidden') && prefs().tray) && win.show());
   // com a bandeja ligada, o X só esconde a janela (a call e a música continuam)
@@ -438,53 +476,18 @@ function ytClient() {
   return innertube;
 }
 const yt = require('./yt');
-// ----- YouTube Premium: a pessoa entra na conta dela numa janela do app; o player embutido usa a
-// mesma sessão, então com Premium não aparece anúncio. A senha é digitada direto no site do Google.
-// O Google recusa login em navegador que se identifica como Electron: a janela usa o nome do Chrome.
-const ytLoggedIn = async () => (await session.defaultSession.cookies.get({ domain: 'youtube.com', name: 'LOGIN_INFO' })).length > 0;
-let ytLoginWin = null;
-ipcMain.handle('yt-account', () => ytLoggedIn());
-ipcMain.handle('yt-login', () => {
-  if (ytLoginWin) {
-    ytLoginWin.focus();
-    return false;
-  }
-  return new Promise((resolve) => {
-    const w = (ytLoginWin = new BrowserWindow({
-      width: 500,
-      height: 720,
-      parent: win || undefined,
-      title: 'Entrar no YouTube',
-      autoHideMenuBar: true,
-      backgroundColor: '#ffffff',
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-    }));
-    w.webContents.setUserAgent(session.defaultSession.getUserAgent().replace(/ (janjahaters|Electron)\/\S+/g, ''));
-    w.webContents.setWindowOpenHandler(({ url }) => (/^https:\/\/([\w-]+\.)*(google|youtube)\.com\//.test(url) ? (w.loadURL(url), { action: 'deny' }) : { action: 'deny' }));
-    const done = async () => {
-      if (!w.isDestroyed() && (await ytLoggedIn())) w.close();
-    };
-    w.webContents.on('did-navigate', done);
-    w.webContents.on('did-navigate-in-page', done);
-    w.on('closed', async () => {
-      ytLoginWin = null;
-      resolve(await ytLoggedIn());
-    });
-    w.loadURL('https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=' + encodeURIComponent('https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=%2F'));
-  });
-});
-ipcMain.handle('yt-logout', async () => {
-  const jar = session.defaultSession.cookies;
-  for (const c of await jar.get({})) {
-    if (!/(^|\.)(youtube|google)\.com$/.test(c.domain.replace(/^\./, ''))) continue;
-    const host = c.domain.replace(/^\./, '');
-    await jar.remove(`http${c.secure ? 's' : ''}://${host}${c.path}`, c.name).catch(() => {});
-  }
-  return false;
-});
-
 ipcMain.handle('yt-search', async (e, query) => yt.search(await ytClient(), query));
 ipcMain.handle('yt-related', async (e, id) => yt.related(await ytClient(), id));
+// links do Spotify, Deezer e playlists do YouTube (links.js): lê as músicas e acha cada uma no YouTube Music
+const links = require('./links');
+const WEB_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+async function webGet(url) {
+  if (!/^https:\/\//.test(url)) throw new Error('link inválido');
+  const r = await fetch(url, { headers: { 'User-Agent': WEB_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' }, signal: AbortSignal.timeout(15000) });
+  return { url: r.url, text: await r.text() };
+}
+ipcMain.handle('music-link', async (e, url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)));
+ipcMain.handle('music-match', async (e, t) => links.matchTrack(await ytClient(), yt.search, { title: String(t?.title || ''), artist: String(t?.artist || ''), dur: Number(t?.dur) || 0 }));
 
 // ----- login com Google (OAuth para apps de desktop: navegador + retorno em 127.0.0.1 + PKCE) -----
 // O ID e o "segredo" do cliente vêm de oauth.json (gerado pelo workflow a partir dos secrets do GitHub)

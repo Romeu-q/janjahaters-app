@@ -989,8 +989,3 @@ html:not(.mobile) #titlebar .tb-update:not([hidden]) + .tb-buttons { margin-left
 #plVol::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); transition: transform .1s; }
 .pl-vol:hover #plVol::-webkit-slider-thumb { transform: scale(1.15); }
 
-/* conta do YouTube (Premium sem anúncios) */
-.yt-account { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); font-size: 12px; color: var(--muted); }
-.yt-account svg.lucide { width: 16px; height: 16px; color: #ff3d3d; flex: none; }
-.yt-account span { flex: 1; min-width: 0; }
-.yt-account button { flex: none; }
