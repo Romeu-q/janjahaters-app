@@ -27,6 +27,7 @@ import {
   CircleX,
   Copy,
   Disc3,
+  CirclePlay,
   Download,
   Drum,
   Eye,
@@ -131,6 +132,7 @@ const ICONS = {
   reply: Reply,
   copy: Copy,
   'disc-3': Disc3,
+  youtube: CirclePlay,
   'face-slightly-smiling-plus': FaceSlightlySmilingPlus,
   hash: Hash,
   'headphone-off': HeadphoneOff,
@@ -1911,6 +1913,40 @@ async function ytPlayer() {
     });
   }));
 }
+// Recria o player (depois de entrar/sair do YouTube, para ele pegar a conta nova)
+async function resetYtPlayer() {
+  try {
+    Y.player?.destroy();
+  } catch {}
+  Y.player = null;
+  Y.creating = null;
+  Y.vid = null;
+  if (!$('#ytPlayer')) $('#ytBox').replaceChildren(el('div'));
+  $('#ytBox').firstElementChild.id = 'ytPlayer';
+  syncMusic();
+}
+async function renderYtAccount() {
+  const box = $('#ytAccount');
+  if (!window.desk?.ytAccount) return (box.hidden = true);
+  const logged = await window.desk.ytAccount().catch(() => false);
+  box.hidden = false;
+  $('#ytAccText').textContent = logged ? 'Conta do YouTube conectada: com Premium a música toca sem anúncios' : 'Tem YouTube Premium? Entre na sua conta e a música toca sem anúncios para você';
+  $('#ytAccBtn').textContent = logged ? 'Sair' : 'Entrar no YouTube';
+  $('#ytAccBtn').onclick = async () => {
+    $('#ytAccBtn').disabled = true;
+    try {
+      if (logged) await window.desk.ytLogout();
+      else if (!(await window.desk.ytLogin())) return toast('Login no YouTube cancelado');
+      resetYtPlayer();
+      toast(logged ? 'Saiu da conta do YouTube' : 'Pronto: o player agora usa a sua conta do YouTube');
+    } finally {
+      $('#ytAccBtn').disabled = false;
+      renderYtAccount();
+    }
+  };
+}
+renderYtAccount();
+
 function pbOf(ch) {
   const pb = recs.get('pb:' + ch);
   const item = pb?.item ? recs.get(pb.item) : null;
@@ -2234,10 +2270,31 @@ $('#plProgress').onclick = (e) => {
   const ms = clamp((e.clientX - r.left) / r.width, 0, 1) * item.dur;
   setPb(pb.pausedAt != null ? { pausedAt: ms } : { startedAt: Date.now() - ms });
 };
-$('#plVol').value = settings.musicVol * 100;
+// Barra de volume como a do YouTube: arrastar até o fim muta; o botão de mudo guarda o volume e,
+// ao desmutar, volta para ele. A parte preenchida da barra mostra o volume.
+function paintMusicVol() {
+  const v = settings.musicMuted ? 0 : Math.round(settings.musicVol * 100);
+  const r = $('#plVol');
+  r.value = v;
+  r.style.setProperty('--fill', v + '%');
+  r.title = v ? `Volume da música para você: ${v}%` : 'Música mutada (só para você)';
+}
 $('#plVol').oninput = (e) => {
-  settings.musicVol = e.target.value / 100;
-  if (settings.musicMuted && e.target.value > 0) settings.musicMuted = false;
+  const v = e.target.value / 100;
+  settings.musicVol = v;
+  settings.musicMuted = v === 0;
+  if (v > 0) settings.musicVolPrev = v;
+  saveSettings();
+  applyMusicVolume();
+};
+paintMusicVol();
+$('#plVol').onwheel = (e) => {
+  e.preventDefault();
+  const cur = settings.musicMuted ? 0 : settings.musicVol;
+  const v = clamp(Math.round((cur - Math.sign(e.deltaY) * 0.05) * 100) / 100, 0, 1);
+  settings.musicVol = v;
+  settings.musicMuted = v === 0;
+  if (v > 0) settings.musicVolPrev = v;
   saveSettings();
   applyMusicVolume();
 };
@@ -2322,9 +2379,10 @@ function applyMusicVolume() {
     // o volume do YouTube é linear: no meio da barra já fica alto perto das vozes. A curva deixa a barra
     // parecida com o ouvido (60 na barra = 28 no player; 100 continua 100).
     p.setVolume(Math.round(Math.pow(settings.musicVol, 2.5) * 100));
-    C.deafened || settings.musicMuted ? p.mute() : p.unMute();
+    C.deafened || settings.musicMuted || settings.musicVol === 0 ? p.mute() : p.unMute();
   }
   const muted = settings.musicMuted || settings.musicVol === 0;
+  paintMusicVol();
   for (const b of [$('#plMute'), $('#npMute')]) {
     setIcon(b, muted ? 'volume-x' : 'volume-2');
     b.classList.toggle('off', muted);
@@ -2333,9 +2391,9 @@ function applyMusicVolume() {
 }
 function toggleMusicMute(e) {
   e?.stopPropagation();
-  settings.musicMuted = !settings.musicMuted;
-  if (!settings.musicMuted && settings.musicVol === 0) settings.musicVol = 0.5;
-  $('#plVol').value = settings.musicVol * 100;
+  const muted = settings.musicMuted || settings.musicVol === 0;
+  settings.musicMuted = !muted;
+  if (muted && settings.musicVol === 0) settings.musicVol = settings.musicVolPrev || 0.6; // volta ao volume de antes
   saveSettings();
   applyMusicVolume();
 }
@@ -3132,8 +3190,8 @@ async function runCommand(text, ch, box) {
     const v = parseInt(arg, 10);
     if (!(v >= 0 && v <= 100)) return note(box, `Volume da música: ${Math.round(settings.musicVol * 100)}. Use /volume 0 a 100.`);
     settings.musicVol = v / 100;
-    settings.musicMuted = false;
-    $('#plVol').value = v;
+    settings.musicMuted = v === 0;
+    if (v > 0) settings.musicVolPrev = v / 100;
     saveSettings();
     applyMusicVolume();
     return note(box, `Volume da música (só para você): ${v}`);

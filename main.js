@@ -438,6 +438,51 @@ function ytClient() {
   return innertube;
 }
 const yt = require('./yt');
+// ----- YouTube Premium: a pessoa entra na conta dela numa janela do app; o player embutido usa a
+// mesma sessão, então com Premium não aparece anúncio. A senha é digitada direto no site do Google.
+// O Google recusa login em navegador que se identifica como Electron: a janela usa o nome do Chrome.
+const ytLoggedIn = async () => (await session.defaultSession.cookies.get({ domain: 'youtube.com', name: 'LOGIN_INFO' })).length > 0;
+let ytLoginWin = null;
+ipcMain.handle('yt-account', () => ytLoggedIn());
+ipcMain.handle('yt-login', () => {
+  if (ytLoginWin) {
+    ytLoginWin.focus();
+    return false;
+  }
+  return new Promise((resolve) => {
+    const w = (ytLoginWin = new BrowserWindow({
+      width: 500,
+      height: 720,
+      parent: win || undefined,
+      title: 'Entrar no YouTube',
+      autoHideMenuBar: true,
+      backgroundColor: '#ffffff',
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    }));
+    w.webContents.setUserAgent(session.defaultSession.getUserAgent().replace(/ (janjahaters|Electron)\/\S+/g, ''));
+    w.webContents.setWindowOpenHandler(({ url }) => (/^https:\/\/([\w-]+\.)*(google|youtube)\.com\//.test(url) ? (w.loadURL(url), { action: 'deny' }) : { action: 'deny' }));
+    const done = async () => {
+      if (!w.isDestroyed() && (await ytLoggedIn())) w.close();
+    };
+    w.webContents.on('did-navigate', done);
+    w.webContents.on('did-navigate-in-page', done);
+    w.on('closed', async () => {
+      ytLoginWin = null;
+      resolve(await ytLoggedIn());
+    });
+    w.loadURL('https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=' + encodeURIComponent('https://www.youtube.com/signin?action_handle_signin=true&app=desktop&next=%2F'));
+  });
+});
+ipcMain.handle('yt-logout', async () => {
+  const jar = session.defaultSession.cookies;
+  for (const c of await jar.get({})) {
+    if (!/(^|\.)(youtube|google)\.com$/.test(c.domain.replace(/^\./, ''))) continue;
+    const host = c.domain.replace(/^\./, '');
+    await jar.remove(`http${c.secure ? 's' : ''}://${host}${c.path}`, c.name).catch(() => {});
+  }
+  return false;
+});
+
 ipcMain.handle('yt-search', async (e, query) => yt.search(await ytClient(), query));
 ipcMain.handle('yt-related', async (e, id) => yt.related(await ytClient(), id));
 
