@@ -41,7 +41,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # servidor TURN (Cloudflare) para quem está atrás de CGNAT: secrets TURN_KEY_ID e TURN_API_TOKEN
       - run: npm run build:ui
+        env:
+          TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+          TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}
       # som da stream separado por programa (native/sysaudio.cpp)
       - run: npm run build:sysaudio
       # login com Google: o cliente OAuth fica nos secrets GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET do repositório
@@ -74,6 +78,8 @@ jobs:
       - name: Montar a interface do celular
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+          TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}
         run: npm run build:mobile
       - name: Chave de assinatura
         env:

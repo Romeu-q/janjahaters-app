@@ -8,3 +8,5 @@ www/
 android-release.jks
 renderer/ns-lab.bundle.js
 bin/
+turn.json
+renderer/turn.gen.js

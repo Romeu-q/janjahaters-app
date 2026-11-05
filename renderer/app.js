@@ -1,4 +1,5 @@
 import { joinRoom, selfId } from 'trystero';
+import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
 import {
@@ -666,8 +667,38 @@ function sendRecs(list, target) {
   for (let i = 0; i < list.length; i += 300) A.recs.send(list.slice(i, i + 300), { target });
 }
 
+// ----- TURN (Cloudflare): quando a conexão direta entre dois amigos falha (CGNAT, 4G, roteador chato),
+// a call passa por esse servidor. Credenciais temporárias, guardadas por algumas horas. O Trystero lê
+// este array a cada conexão nova, então renovar troca os dados no lugar e vale para as próximas.
+const turnServers = [];
+const TURN_TTL = 48 * 3600;
+function setTurn(list) {
+  turnServers.splice(0, turnServers.length, ...list.filter((x) => x.username)); // só os TURN; o STUN já vem do Trystero
+}
+async function refreshTurn() {
+  if (!TURN.id) return;
+  const cached = store.get('turn', null);
+  if (cached?.exp > Date.now() + 24 * 3600e3) return setTurn(cached.servers);
+  if (cached?.exp > Date.now()) setTurn(cached.servers);
+  try {
+    const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${TURN.id}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TURN.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: TURN_TTL }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const { iceServers } = await r.json();
+    setTurn(iceServers);
+    store.set('turn', { exp: Date.now() + TURN_TTL * 1000, servers: turnServers });
+  } catch (err) {
+    console.warn('TURN indisponível', err);
+  }
+}
+refreshTurn();
+setInterval(refreshTurn, 6 * 3600e3);
+
 function connectRoom() {
-  room = joinRoom({ appId: 'toca-voice-p2p-v2', password: R.key }, R.hash, {
+  room = joinRoom({ appId: 'toca-voice-p2p-v2', password: R.key, turnConfig: turnServers }, R.hash, {
     onJoinError: (d) => console.warn('falha ao conectar com um amigo', d),
   });
   A = {
