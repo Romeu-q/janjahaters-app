@@ -2319,7 +2319,9 @@ $('#nowPlaying').onclick = () => selectTab('music');
 function applyMusicVolume() {
   const p = Y.player;
   if (p?.setVolume) {
-    p.setVolume(Math.round(settings.musicVol * 100));
+    // o volume do YouTube é linear: no meio da barra já fica alto perto das vozes. A curva deixa a barra
+    // parecida com o ouvido (60 na barra = 28 no player; 100 continua 100).
+    p.setVolume(Math.round(Math.pow(settings.musicVol, 2.5) * 100));
     C.deafened || settings.musicMuted ? p.mute() : p.unMute();
   }
   const muted = settings.musicMuted || settings.musicVol === 0;
