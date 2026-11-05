@@ -1974,6 +1974,7 @@ setInterval(() => {
   const { pb, item } = pbOf(C.ch);
   // se ninguém conseguiu tocar até o fim, avança pelo relógio
   if (item?.dur && pb.pausedAt == null && musicPos(pb) > item.dur + 4000) advance(item.id);
+  watchStall(C.ch);
   syncMusic();
 }, 2000);
 setInterval(renderProgress, 500);
@@ -1986,17 +1987,23 @@ function onYtState(state) {
   renderMusic();
   renderNowPlaying();
 }
-// erro só aqui: não pula para o grupo (pode ser coisa da rede/PC de um só)
+// 100 (vídeo removido/privado), 101 e 150 (dono não deixa tocar fora do YouTube) valem para todo mundo:
+// pula sozinho. Outros erros podem ser só da rede/PC de um, então só avisa.
 function onYtError(code) {
-  toast(code === 101 || code === 150 ? 'O YouTube não deixou tocar essa música aqui. Use Pular se ninguém ouvir.' : 'Não deu para tocar essa música aqui.');
+  const { item } = C.ch ? pbOf(C.ch) : {};
+  if (item && (code === 100 || code === 101 || code === 150)) {
+    toast(`O YouTube não deixa tocar "${item.title}" fora do site. Pulei.`);
+    return advance(item.id, true);
+  }
+  toast('Não deu para tocar essa música aqui.');
 }
 
-function advance(fromId) {
+function advance(fromId, broken) {
   const ch = C.ch;
   const { pb } = pbOf(ch);
   if (!pb || pb.item !== fromId) return;
   const cur = recs.get(fromId);
-  if (cur && !cur.del) put({ ...cur, del: true });
+  if (cur && !cur.del) put({ ...cur, del: true, ...(broken ? { broken: true } : {}) });
   const next = queueOf(ch).find((q) => q.id !== fromId);
   const hist = [...(pb.hist || []), cur?.ref].filter(Boolean).slice(-40);
   // fila acabou: o DJ continua com músicas parecidas (só um PC da call busca, para não repetir)
@@ -2012,22 +2019,62 @@ function writePb(ch, fields) {
   put({ k: 'pb', id: 'pb:' + ch, ch, item: null, startedAt: Date.now(), pausedAt: null, auto: old?.auto, hist: old?.hist || [], ...fields });
 }
 // quem da call busca a próxima do autoplay: o de menor id (todos chegam à mesma conta)
-function isDjLeader(ch) {
-  const ids = [selfId, ...[...peers.values()].filter((p) => p.voice?.ch === ch).map((p) => p.pid)];
-  return ids.sort()[0] === selfId;
+function djRank(ch) {
+  const ids = [selfId, ...[...peers.values()].filter((p) => p.voice?.ch === ch).map((p) => p.pid)].sort();
+  return ids.indexOf(selfId);
+}
+const isDjLeader = (ch) => djRank(ch) === 0;
+// A música acabou, mas ninguém pôs a próxima. Acontecia sempre que o "DJ" (o de menor id) terminava a
+// música depois de outro da call: o outro já tirava a música e o DJ nem ficava sabendo que ela acabou.
+// Também cobre o DJ que caiu ou saiu e a busca do autoplay que falhou. Cada um espera a sua vez (pela
+// ordem de id) e assume: o DJ na hora, o segundo depois de uns segundos e assim por diante.
+const AP = { item: null, since: 0, tries: 0, busy: false };
+function watchStall(ch) {
+  const pb = recs.get('pb:' + ch);
+  const cur = pb?.item ? recs.get(pb.item) : null;
+  if (!pb?.item || pb.pausedAt != null || !cur?.del) return (AP.item = null);
+  if (AP.busy) return;
+  if (AP.item !== pb.item) Object.assign(AP, { item: pb.item, since: Date.now(), tries: 0 });
+  if (Date.now() - AP.since < djRank(ch) * 5000 + AP.tries * 6000) return;
+  AP.tries++;
+  AP.since = Date.now();
+  const hist = [...(pb.hist || []), cur?.ref].filter(Boolean).slice(-40);
+  const next = queueOf(ch)[0];
+  if (next) return writePb(ch, { item: next.id, hist });
+  const seed = cur?.ref || hist[hist.length - 1];
+  if (pb.auto === false || !seed || !window.desk?.ytRelated || AP.tries > 4) return writePb(ch, { item: null, hist });
+  autoplayNext(ch, cur || { id: pb.item, ref: seed }, hist);
 }
 async function autoplayNext(ch, cur, hist) {
-  let list = [];
+  if (AP.busy) return;
+  AP.busy = true;
   try {
-    list = await window.desk.ytRelated(cur.ref);
-  } catch (err) {
-    console.warn('autoplay', err);
+    await autoplayPick(ch, cur, hist);
+  } finally {
+    AP.busy = false;
+  }
+}
+async function autoplayPick(ch, cur, hist) {
+  const recent = new Set([...hist, cur.ref]);
+  // músicas que o YouTube não deixa tocar aqui não voltam
+  for (const q of recs.values()) if (q.k === 'q' && q.ch === ch && q.broken) recent.add(q.ref);
+  // parecidas com a última; se todas já tocaram, parecidas com as anteriores
+  const seeds = [cur.ref, ...hist.slice(-6).reverse()].filter((r, i, a) => r && a.indexOf(r) === i).slice(0, 4);
+  let pick = null;
+  let list = [];
+  for (const seed of seeds) {
+    try {
+      list = await window.desk.ytRelated(seed);
+    } catch (err) {
+      console.warn('autoplay', err);
+      continue;
+    }
+    pick = list.find((r) => !recent.has(r.id));
+    if (pick) break;
   }
   const pb = recs.get('pb:' + ch);
   if (pb?.item !== cur.id || queueOf(ch).length) return; // alguém já pôs outra coisa
-  const recent = new Set([...hist, cur.ref]);
-  const pick = list.find((r) => !recent.has(r.id));
-  if (!pick) return writePb(ch, { item: null, hist });
+  if (!pick) return; // a busca falhou: watchStall tenta de novo daqui a pouco (e desiste depois de algumas)
   const item = { k: 'q', id: 'q:' + randId(), ch, ref: pick.id, title: pick.title || PLACEHOLDER, artist: pick.artist, dur: pick.dur || 0, thumb: pick.thumb, addedBy: 'Autoplay', auto: true, at: Date.now() };
   put(item);
   writePb(ch, { item: item.id, hist });
