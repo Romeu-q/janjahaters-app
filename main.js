@@ -413,10 +413,17 @@ ipcMain.handle('sysaudio-start', (e, sourceId) => {
   });
   return new Promise((resolve) => {
     let log = '';
+    let settled = false;
+    // só a primeira resposta vale: o aviso de "não abriu em 8 s" matava a captura que já estava funcionando
+    // (a stream ficava muda depois de 8 segundos)
     const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve(ok ? token : null);
       if (!ok) stopSysAudio(token);
     };
+    const timer = setTimeout(() => done(false), 8000);
     child.stderr.on('data', (d) => {
       log += d;
       if (/^ok$/m.test(log)) done(true);
@@ -429,7 +436,6 @@ ipcMain.handle('sysaudio-start', (e, sourceId) => {
         done(false);
       } else if (!wc.isDestroyed()) wc.send('sysaudio-end', token);
     });
-    setTimeout(() => done(false), 8000);
   });
 });
 function stopSysAudio(token) {
