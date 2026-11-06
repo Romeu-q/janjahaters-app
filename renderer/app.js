@@ -1465,8 +1465,8 @@ const RES_OPTS = [
 ];
 const FPS_OPTS = [5, 10, 15, 24, 30, 48, 60, 90, 120, 144];
 const CODEC_OPTS = [
-  ['h264', 'H.264 (leve, usa a placa de vídeo)'],
-  ['vp8', 'VP8 (o mais compatível)'],
+  ['h264', 'H.264 (usa a placa de vídeo; em algumas placas o fps cai)'],
+  ['vp8', 'VP8 (o mais fluido e compatível)'],
   ['vp9', 'VP9 (mais nítido, pesa mais)'],
   ['av1', 'AV1 (o mais eficiente, pesa bastante)'],
 ];
@@ -1693,44 +1693,67 @@ async function captureSysAudio(sourceId) {
   }
 }
 
+// som do PC sem os filtros de voz (eles estragam música/jogo) e, quando o Windows deixa,
+// sem o som do próprio app (senão quem assiste ouve a call e a própria voz de volta)
+const LOOPBACK_AUDIO = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+  channelCount: 2,
+  sampleRate: 48000,
+  restrictOwnAudio: true,
+};
+// Vídeo da tela no PC pelo caminho "desktop" do Chromium. O getDisplayMedia do Electron entregava só 2 a 5
+// quadros por segundo mesmo pedindo 30 (medido no mesmo PC e na mesma tela: getDisplayMedia 2 fps, desktop
+// 22 fps), e a stream parecia travada para quem assistia.
+function desktopVideo(sourceId, q) {
+  const h = q.res || 1080;
+  return navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      mandatory: {
+        chromeMediaSource: 'desktop',
+        chromeMediaSourceId: sourceId,
+        maxWidth: Math.round((h * 16) / 9),
+        maxHeight: h,
+        maxFrameRate: q.fps,
+        minFrameRate: q.fps,
+      },
+    },
+  });
+}
 async function captureScreen(sourceId, withAudio) {
   const q = settings.stream;
-  const sys = isDesktop && !isMobile && withAudio ? await captureSysAudio(sourceId) : null;
-  if (sys) {
-    // só o vídeo pela captura do Chromium; o som vem do janja-sysaudio
-    await window.desk.pick(sourceId, false);
-    let s;
+  const pc = isDesktop && !isMobile;
+  const sys = pc && withAudio ? await captureSysAudio(sourceId) : null;
+  let s;
+  if (pc) {
     try {
-      s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio: false });
+      s = await desktopVideo(sourceId, q);
     } catch (err) {
-      sys.stop();
+      sys?.stop();
       throw err;
     }
-    sys.contentHint = 'music';
-    s.addTrack(sys);
-    const vt = s.getVideoTracks()[0];
-    if (vt) {
-      vt.contentHint = CONTENT_HINT[q.mode] || '';
-      vt.addEventListener('ended', () => C.screen === s && (follow ? followEnded(s) : stopStream(true)));
+    if (sys) {
+      // o som vem do janja-sysaudio (separado por programa)
+      sys.contentHint = 'music';
+      s.addTrack(sys);
+    } else if (withAudio) {
+      // Windows sem o janja-sysaudio: o som vem do loopback do Chromium (o vídeo dessa captura é descartado)
+      await window.desk.pick(sourceId, true);
+      const a = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: LOOPBACK_AUDIO }).catch(() => null);
+      a?.getVideoTracks().forEach((t) => t.stop());
+      for (const at of a?.getAudioTracks() || []) s.addTrack(at);
     }
-    return s;
+  } else {
+    if (isDesktop) await window.desk.pick(sourceId, withAudio);
+    s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio: withAudio && LOOPBACK_AUDIO });
   }
-  if (isDesktop) await window.desk.pick(sourceId, withAudio);
-  // som do PC sem os filtros de voz (eles estragam música/jogo) e, quando o Windows deixa,
-  // sem o som do próprio app (senão quem assiste ouve a call e a própria voz de volta)
-  const audio = withAudio && {
-    echoCancellation: false,
-    noiseSuppression: false,
-    autoGainControl: false,
-    channelCount: 2,
-    sampleRate: 48000,
-    restrictOwnAudio: true,
-  };
-  const s = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints(q), audio });
   for (const at of s.getAudioTracks()) {
+    if (at === sys) continue;
     // Nunca transmitir a call: se o Windows não separou o som do app (deviceId "loopbackWithoutChrome"),
     // a stream vai sem o som do PC em vez de os amigos ouvirem a própria voz de volta.
-    if (isDesktop && !isMobile && at.getSettings().restrictOwnAudio !== true) {
+    if (pc && at.getSettings().restrictOwnAudio !== true) {
       at.stop();
       s.removeTrack(at);
       toast('Este Windows não deixa separar o som do app: a stream vai sem o som do PC para ninguém se ouvir de volta');
