@@ -44,6 +44,8 @@ import {
   Link,
   ListMusic,
   Maximize,
+  Maximize2,
+  Minimize2,
   Mic,
   MicOff,
   Minus,
@@ -138,6 +140,8 @@ const ICONS = {
   link: Link,
   'list-music': ListMusic,
   maximize: Maximize,
+  'maximize-2': Maximize2,
+  'minimize-2': Minimize2,
   mic: Mic,
   'mic-off': MicOff,
   minus: Minus,
@@ -1031,6 +1035,7 @@ async function joinVoice(ch) {
   }
   C.ch = ch;
   C.joinedAt = Date.now();
+  saveRejoin();
   window.desk?.callActive?.(true, channel(ch)?.name, !!C.cam);
   djHere = voiceMembers(ch).some((m) => m.key === 'dj'); // já estava lá: sem som
   applyMicEnabled();
@@ -1045,9 +1050,18 @@ async function joinVoice(ch) {
   renderCallChat();
 }
 
+// Atualizou ou reiniciou o app no meio da call: ao abrir de novo, volta para a mesma call.
+// Vale se o app estava na call até uns minutos atrás; sair da call pelo botão desliga isso.
+let keepRejoin = false;
+const REJOIN_MS = 3 * 60_000;
+function saveRejoin() {
+  if (C.ch) store.set('rejoin', { hash: R.hash, ch: C.ch, at: Date.now() });
+}
+setInterval(saveRejoin, 20_000);
 function leaveVoice(switching) {
   if (!C.ch) return;
   if (!switching) window.desk?.callActive?.(false);
+  if (!switching && !keepRejoin) store.del('rejoin'); // saiu de propósito: não volta sozinho
   stopStream(false);
   stopCam(false);
   C.ch = null;
@@ -1921,7 +1935,7 @@ const queueOf = (ch) => {
   const cur = recs.get('pb:' + ch)?.item;
   return all('q')
     .filter((q) => q.ch === ch && q.id !== cur)
-    .sort((a, b) => a.at - b.at);
+    .sort((a, b) => !!a.auto - !!b.auto || a.at - b.at);
 };
 
 async function syncMusic() {
@@ -1975,6 +1989,7 @@ setInterval(() => {
   // se ninguém conseguiu tocar até o fim, avança pelo relógio
   if (item?.dur && pb.pausedAt == null && musicPos(pb) > item.dur + 4000) advance(item.id);
   watchStall(C.ch);
+  fillAutoplay(C.ch);
   syncMusic();
 }, 2000);
 setInterval(renderProgress, 500);
@@ -2045,6 +2060,42 @@ function watchStall(ch) {
   if (pb.auto === false || !seed || !window.desk?.ytRelated || AP.tries > 4) return writePb(ch, { item: null, hist });
   autoplayNext(ch, cur || { id: pb.item, ref: seed }, hist);
 }
+// Autoplay ligado: a fila sempre mostra as próximas parecidas (como a rádio do Spotify). Quem busca é o
+// DJ da call (o de menor id), uma busca por vez; as músicas que alguém põe entram antes delas.
+const AUTO_FILL = 5;
+async function fillAutoplay(ch) {
+  const pb = recs.get('pb:' + ch);
+  if (!pb?.item || pb.auto === false || !window.desk?.ytRelated || AP.busy || AP.filling || djRank(ch) !== 0) return;
+  if (Date.now() - (AP.fillAt || 0) < 4000) return;
+  const q = queueOf(ch);
+  const autos = q.filter((x) => x.auto);
+  if (autos.length >= AUTO_FILL) return;
+  const cur = recs.get(pb.item);
+  const seed = autos.length ? autos[autos.length - 1].ref : cur?.ref || (pb.hist || []).slice(-1)[0];
+  if (!seed) return;
+  AP.filling = true;
+  AP.fillAt = Date.now();
+  try {
+    const list = await window.desk.ytRelated(seed);
+    const now = recs.get('pb:' + ch);
+    if (now?.auto === false || C.ch !== ch) return;
+    const skip = new Set([...(now?.hist || []), cur?.ref, ...queueOf(ch).map((x) => x.ref)]);
+    for (const x of recs.values()) if (x.k === 'q' && x.ch === ch && x.broken) skip.add(x.ref);
+    let n = AUTO_FILL - queueOf(ch).filter((x) => x.auto).length;
+    let at = Date.now();
+    for (const r of list) {
+      if (n <= 0) break;
+      if (skip.has(r.id)) continue;
+      skip.add(r.id);
+      put({ k: 'q', id: 'q:' + randId(), ch, ref: r.id, title: r.title || PLACEHOLDER, artist: r.artist, dur: r.dur || 0, thumb: r.thumb, addedBy: 'Autoplay', auto: true, at: at++ });
+      n--;
+    }
+  } catch (err) {
+    console.warn('autoplay', err);
+  } finally {
+    AP.filling = false;
+  }
+}
 async function autoplayNext(ch, cur, hist) {
   if (AP.busy) return;
   AP.busy = true;
@@ -2099,6 +2150,12 @@ function toggleAutoplay(ch = C.ch) {
   const on = old?.auto === false;
   if (old) put({ ...old, auto: on });
   else writePb(ch, { auto: on });
+  if (!on) {
+    for (const x of queueOf(ch)) if (x.auto) put({ ...x, del: true });
+  } else {
+    AP.fillAt = 0;
+    fillAutoplay(ch);
+  }
   renderMusic();
   return on;
 }
@@ -2389,7 +2446,12 @@ function renderMusic() {
   $('#plAuto').classList.toggle('on', pb?.auto !== false);
   $('#plAuto').title = pb?.auto !== false ? 'Autoplay ligado: quando a fila acabar, toca músicas parecidas (clique para desligar)' : 'Autoplay desligado (clique para ligar)';
   $('#mediaEmpty').hidden = !!item;
-  $('#ytBox').style.visibility = item ? 'visible' : 'hidden';
+  const art = $('#plArt');
+  art.hidden = !item;
+  if (item) {
+    const src = THUMB_OK.test(item.thumb || '') ? item.thumb.replace(/=w\d+-h\d+/, '=w544-h544') : `https://i.ytimg.com/vi/${item.ref}/hqdefault.jpg`;
+    if (art.getAttribute('src') !== src) art.src = src;
+  }
   $('#plTitle').textContent = item ? item.title : 'Nada tocando';
   $('#plSub').textContent = item ? [item.artist, 'adicionada por ' + item.addedBy].filter(Boolean).join(' · ') : 'Busque ou cole um link do YouTube Music, Spotify ou Deezer';
   setIcon($('#plPlay'), item && pb.pausedAt == null ? 'pause' : 'play');
@@ -2399,8 +2461,16 @@ function renderMusic() {
     const prev = new Set(lastQueueIds.split(','));
     lastQueueIds = ids;
     const list = $('#queue');
-    list.replaceChildren(...q.map((x) => trackRow(x, true)));
-    const fresh = [...list.children].filter((li, i) => !prev.has(q[i].id + q[i].v));
+    const rows = q.map((x) => trackRow(x, true));
+    const firstAuto = q.findIndex((x) => x.auto);
+    const nodes = [...rows];
+    if (firstAuto >= 0) {
+      const sep = el('li', 'queue-sep');
+      sep.append(icon('infinity', 'sm'), document.createTextNode('A seguir pelo autoplay'));
+      nodes.splice(firstAuto, 0, sep);
+    }
+    list.replaceChildren(...nodes);
+    const fresh = rows.filter((li, i) => !prev.has(q[i].id + q[i].v));
     if (fresh.length && fresh.length < 10) popIn(fresh, { delay: stagger(0.04) });
   }
   $('#queueEmpty').hidden = q.length > 0;
@@ -4021,6 +4091,70 @@ function renderStage() {
   };
 
   const keysNow = new Set();
+  // câmera maximizada: ocupa o palco; o resto fica pequeno embaixo
+  const fm = C.camFocus ? members.find((m) => m.key === C.camFocus) : null;
+  const fcs = fm && camOf(fm);
+  if (C.camFocus && !fcs) C.camFocus = null;
+  if (fcs) {
+    if (document.fullscreenElement && document.fullscreenElement === C.camTile) {
+      stageKeys = keysNow;
+      return renderControls();
+    }
+    const main = el('div', 'stream-focus');
+    const t = el('div', 'focus cam-focus' + (C.speaking.has(fm.key) ? ' speaking' : ''));
+    t.dataset.speak = fm.key;
+    C.camTile = t;
+    const v = camVideo(fcs, fm.key === 'me');
+    const tag = el('div', 'tag');
+    tag.textContent = fm.user.name + (fm.key === 'me' ? ' (você)' : '');
+    const tools = el('div', 'tile-tools');
+    const tbtn = (name, title, fn) => {
+      const b = el('button', 'fs');
+      b.type = 'button';
+      b.title = title;
+      b.append(icon(name, 'sm'));
+      b.onclick = (e) => {
+        e.stopPropagation();
+        fn();
+      };
+      tools.append(b);
+      return b;
+    };
+    tbtn('minimize-2', 'Minimizar a câmera (Esc)', () => setCamFocus(null));
+    if (document.pictureInPictureEnabled)
+      tbtn('pip', 'Janela flutuante (fica por cima dos outros programas)', () =>
+        (document.pictureInPictureElement === v ? document.exitPictureInPicture() : v.requestPictureInPicture()).catch((err) => toast('Não deu para abrir a janela flutuante: ' + err.message)),
+      );
+    const fsb = tbtn('maximize', 'Tela cheia', () => (document.fullscreenElement ? document.exitFullscreen() : t.requestFullscreen()));
+    t.ondblclick = () => fsb.click();
+    t.append(v, tag, tools);
+    main.append(t);
+    const strip = el('div', 'strip');
+    for (const s of shown) {
+      const st = fillStreamTile(s, shown.length);
+      st.classList.add('mini');
+      st.onclick = (e) => {
+        if (e.target.closest('button')) return;
+        C.focus = s.key;
+        setCamFocus(null);
+      };
+      strip.append(st);
+    }
+    for (const m of unwatched) {
+      const w = el('div', 'watch-tile');
+      w.append(icon('eye'), el('span', '', `Assistir ${m.user.name}`));
+      w.onclick = () => watchStream(m.key);
+      strip.append(w);
+    }
+    for (const m of members) if (m.key !== fm.key) strip.append(memberThumb(m));
+    stage.replaceChildren(main, stripResizer(), strip);
+    if (!stageKeys.has('camfocus:' + fm.key)) springIn(t);
+    keysNow.add('camfocus:' + fm.key);
+    for (const vid of stage.querySelectorAll('video')) vid.play().catch(() => {});
+    stageKeys = keysNow;
+    return renderControls();
+  }
+  C.camTile = null;
   if (!shown.length) {
     const grid = el('div', 'grid');
     const fresh = [];
@@ -4031,7 +4165,11 @@ function renderStage() {
       card.dataset.uid = m.user.id;
       const cs = camOf(m);
       card.append(flagsEl(m.voice), cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), wrapEl('div', 'pc-name', nameEl(m.user.name + (m.key === 'me' ? ' (você)' : ''), m.user.color, m.user.id)));
-      if (cs) card.classList.add('cam');
+      if (cs) {
+        card.classList.add('cam');
+        card.append(camMaxBtn(m.key));
+        card.ondblclick = (e) => !e.target.closest('button') && setCamFocus(m.key);
+      }
       if (m.peer) card.append(pingEl(m.key));
       if (isLive) card.append(watchBtn(m, 'primary sm watch-btn'));
       if (m.dj) {
@@ -4105,20 +4243,127 @@ function renderStage() {
       t.onclick = () => watchStream(m.key);
       strip.append(t);
     }
-    for (const m of members) {
-      const t = el('div', 'thumb' + (C.speaking.has(m.key) ? ' speaking' : ''));
-      t.dataset.speak = m.key;
-      t.dataset.uid = m.user.id;
-      const cs = camOf(m);
-      t.append(cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
-      if (cs) t.classList.add('cam');
-      strip.append(t);
-    }
-    stage.append(main, strip);
+    for (const m of members) strip.append(memberThumb(m));
+    stage.append(main, stripResizer(), strip);
     for (const vid of stage.querySelectorAll('video')) vid.play().catch(() => {});
   }
   stageKeys = keysNow;
   renderControls();
+}
+
+// quadrinho de quem está na call (embaixo do palco); quem tem câmera pode ser maximizado
+function memberThumb(m) {
+  const t = el('div', 'thumb' + (C.speaking.has(m.key) ? ' speaking' : ''));
+  t.dataset.speak = m.key;
+  t.dataset.uid = m.user.id;
+  const cs = camOf(m);
+  t.append(cs ? camVideo(cs, m.key === 'me') : avatar(m.user.name, m.user.color, '', m.user.id), Object.assign(el('div', 'tag'), { textContent: m.user.name }));
+  if (cs) {
+    t.classList.add('cam');
+    t.append(camMaxBtn(m.key));
+    t.onclick = (e) => !e.target.closest('button') && setCamFocus(m.key);
+  }
+  return t;
+}
+function camMaxBtn(key) {
+  const b = el('button', 'cam-max');
+  b.type = 'button';
+  b.title = 'Maximizar a câmera';
+  b.append(icon('maximize-2', 'sm'));
+  b.onclick = (e) => {
+    e.stopPropagation();
+    setCamFocus(key);
+  };
+  return b;
+}
+function setCamFocus(key) {
+  if (!key && document.fullscreenElement === C.camTile) document.exitFullscreen().catch(() => {});
+  C.camFocus = key || null;
+  renderStage();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && C.camFocus && !document.fullscreenElement && !document.querySelector('dialog[open]')) setCamFocus(null);
+});
+
+// ----- painéis que mudam de tamanho (arrastando a borda; duplo clique volta ao padrão) -----
+settings.layout = { ...settings.layout };
+function applyLayout() {
+  const app = $('#app');
+  const L = settings.layout;
+  if (isMobile) return;
+  app.style.setProperty('--side-w', L.side ? L.side + 'px' : '');
+  app.style.setProperty('--right-w', L.right ? L.right + 'px' : '');
+  app.style.gridTemplateColumns = L.side || L.right ? `${L.side ? L.side + 'px' : 'var(--side-def, 300px)'} minmax(0, 1fr) ${L.right ? L.right + 'px' : 'var(--right-def, 320px)'}` : '';
+  if (L.thumb) document.documentElement.style.setProperty('--thumb-h', L.thumb + 'px');
+  else document.documentElement.style.removeProperty('--thumb-h');
+}
+function dragResize(handle, { rows, onMove, onReset }) {
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing');
+    document.body.classList.toggle('rows', !!rows);
+    const move = (ev) => {
+      onMove(ev);
+      applyLayout();
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing', 'rows');
+      saveSettings();
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once: true });
+    handle.addEventListener('pointercancel', up, { once: true });
+  });
+  handle.addEventListener('dblclick', () => {
+    onReset();
+    applyLayout();
+    saveSettings();
+  });
+}
+if (!isMobile) {
+  const centerMin = 420;
+  const sideH = el('div', 'resizer');
+  sideH.title = 'Arraste para mudar a largura (duplo clique: padrão)';
+  $('#side').append(sideH);
+  dragResize(sideH, {
+    onMove: (ev) => {
+      const left = $('#side').getBoundingClientRect().left;
+      const rightW = $('#right').getBoundingClientRect().width;
+      settings.layout.side = Math.round(clamp(ev.clientX - left, 200, Math.min(520, innerWidth - rightW - centerMin)));
+    },
+    onReset: () => delete settings.layout.side,
+  });
+  const rightH = el('div', 'resizer');
+  rightH.title = 'Arraste para mudar a largura (duplo clique: padrão)';
+  $('#right').append(rightH);
+  dragResize(rightH, {
+    onMove: (ev) => {
+      const r = $('#right').getBoundingClientRect().right;
+      const sideW = $('#side').getBoundingClientRect().width;
+      settings.layout.right = Math.round(clamp(r - ev.clientX, 260, Math.min(760, innerWidth - sideW - centerMin)));
+    },
+    onReset: () => delete settings.layout.right,
+  });
+  applyLayout();
+}
+// a fileira de baixo do palco (câmeras e streams pequenas): arraste para cima para aumentar
+function stripResizer() {
+  const h = el('div', 'strip-resizer');
+  h.title = 'Arraste para mudar o tamanho dos quadrinhos (duplo clique: padrão)';
+  dragResize(h, {
+    rows: true,
+    onMove: (ev) => {
+      const stage = $('#stage').getBoundingClientRect();
+      settings.layout.thumb = Math.round(clamp(stage.bottom - 18 - ev.clientY, 64, Math.max(80, stage.height * 0.55)));
+    },
+    onReset: () => delete settings.layout.thumb,
+  });
+  return h;
 }
 
 // ----- interface do PC (estilo TeamSpeak): barra de ferramentas em cima, barra de status embaixo -----
@@ -5374,6 +5619,8 @@ function forceUpdate(version, state, detail) {
   if (box.hidden) {
     box.hidden = false;
     $$('dialog[open]').forEach(hardClose);
+    keepRejoin = true; // depois de atualizar, volta para a call
+    saveRejoin();
     if (!isMobile && C.ch) leaveVoice();
   }
   $('#fuTitle').textContent = `Atualizando para a versão ${version}`;
@@ -5406,7 +5653,9 @@ function showUpdate(version) {
   forceUpdate(version, 'ready');
 }
 $('#tbUpdate').onclick = () => {
-  if (!isMobile && C.ch && !confirm('Reiniciar agora vai te tirar da call. Atualizar mesmo assim?')) return;
+  if (!isMobile && C.ch && !confirm('O app vai reiniciar para atualizar e te colocar de volta na call. Atualizar agora?')) return;
+  keepRejoin = true;
+  saveRejoin();
   if (isMobile) toast('Baixando… quando terminar, abra o arquivo para instalar por cima');
   window.desk?.installUpdate();
 };
@@ -6002,9 +6251,16 @@ function start() {
   renderMusic();
   renderSounds();
   setInterval(sendHi, 15_000);
+  const rj = store.get('rejoin');
+  if (rj?.hash === R.hash && Date.now() - rj.at < REJOIN_MS && channel(rj.ch)?.type === 'voice') {
+    openView(rj.ch);
+    joinVoice(rj.ch).then(() => toast(`De volta na call ${channel(rj.ch)?.name || ''}`));
+  } else if (rj) store.del('rejoin');
 }
 
 window.addEventListener('beforeunload', () => {
+  keepRejoin = true; // recarregou / fechou / atualizou: ao abrir de novo em poucos minutos, volta para a call
+  saveRejoin();
   if (C.ch) leaveVoice();
   room?.leave();
 });

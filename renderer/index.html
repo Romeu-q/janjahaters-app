@@ -124,6 +124,9 @@
       </section>
     </main>
 
+    <!-- player do YouTube escondido e pequeno: só o som importa (vídeo pequeno = YouTube manda 144p, quase nada para decodificar) -->
+    <div id="ytBox" aria-hidden="true"><div id="ytPlayer"></div></div>
+
     <!-- ===== direita: pessoas e música ===== -->
     <aside id="right">
       <nav class="tabs">
@@ -156,7 +159,7 @@
         <div id="musicOn" hidden>
           <div class="player">
             <div class="media-box">
-              <div id="ytBox"><div id="ytPlayer"></div></div>
+              <img id="plArt" alt="" hidden>
               <div id="mediaEmpty" class="media-empty"><i data-icon="disc-3"></i></div>
             </div>
             <div class="pl-meta">

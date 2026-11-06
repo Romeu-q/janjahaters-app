@@ -172,7 +172,7 @@ i[data-icon] { display: contents; }
 .tag { position: absolute; left: 10px; bottom: 10px; background: rgba(0,0,0,.72); padding: 3px 10px; border-radius: 5px; font-size: 13px; display: flex; gap: 6px; align-items: center; }
 .focus .fs { position: absolute; right: 10px; bottom: 10px; background: rgba(0,0,0,.72); border: 0; border-radius: 6px; width: 34px; height: 30px; display: grid; place-items: center; }
 .strip { flex: none; display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
-.thumb { flex: none; width: 170px; height: 96px; border-radius: 8px; background: var(--panel); border: 2px solid transparent; position: relative; overflow: hidden; display: grid; place-items: center; cursor: pointer; }
+.thumb { flex: none; width: calc(var(--thumb-h, 96px) * 16 / 9); height: var(--thumb-h, 96px); border-radius: 8px; background: var(--panel); border: 2px solid transparent; position: relative; overflow: hidden; display: grid; place-items: center; cursor: pointer; }
 .thumb.speaking { border-color: var(--green); }
 .thumb video { width: 100%; height: 100%; object-fit: cover; }
 .thumb .avatar { width: 44px; height: 44px; font-size: 18px; }
@@ -212,7 +212,9 @@ i[data-icon] { display: contents; }
 .big-icon svg.lucide, svg.lucide.big-icon { width: 40px; height: 40px; margin: 0 auto 8px; color: var(--faint); }
 .player { padding: 16px; border-bottom: 1px solid var(--line); }
 .media-box { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: #0c0d0f; }
-#ytBox, #ytBox iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+#ytBox { position: fixed; left: 0; bottom: 0; width: 192px; height: 108px; opacity: 0; pointer-events: none; z-index: -1; overflow: hidden; }
+#ytBox iframe { width: 100%; height: 100%; border: 0; }
+#plArt { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 #spArt { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .media-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); }
 .media-empty svg.lucide { width: 48px; height: 48px; stroke-width: 1.4; }
@@ -828,7 +830,7 @@ html.mobile #toast { bottom: calc(150px + env(safe-area-inset-bottom)); max-widt
 .focus .stop-watch { right: auto; left: 10px; z-index: 2; }
 .focus .tile-tools, .focus .stop-watch { opacity: 0; transition: opacity .15s; }
 .focus:hover .tile-tools, .focus:hover .stop-watch, .focus .tile-tools:has(.off), html.mobile .focus .tile-tools, html.mobile .focus .stop-watch { opacity: 1; }
-.strip .focus.mini { flex: none; width: 200px; height: 112px; cursor: pointer; border: 2px solid transparent; }
+.strip .focus.mini { flex: none; width: calc(var(--thumb-h, 96px) * 16 / 9); height: var(--thumb-h, 96px); cursor: pointer; border: 2px solid transparent; }
 .strip .focus.mini:hover { border-color: var(--accent); }
 .strip .focus.mini .stop-watch, .strip .focus.mini .tile-tools .fs:not(.off) { display: none; }
 .strip .focus.mini .tag { font-size: 11px; }
@@ -854,6 +856,30 @@ html.mobile .stream-grid { grid-template-columns: 1fr !important; grid-template-
 .pcard.cam.speaking { box-shadow: inset 0 0 0 3px var(--green); }
 .thumb.cam { padding: 0; }
 .thumb.cam .tag { position: absolute; left: 6px; bottom: 6px; z-index: 1; }
+/* maximizar / minimizar a câmera */
+.cam-max { position: absolute; left: 8px; top: 8px; z-index: 2; background: rgba(0,0,0,.65); color: #fff; border: 0; border-radius: 6px; width: 30px; height: 28px; display: grid; place-items: center; opacity: 0; transition: opacity .15s; }
+.pcard.cam:hover .cam-max, .thumb.cam:hover .cam-max, html.mobile .cam-max { opacity: 1; }
+.thumb .cam-max { left: 4px; top: 4px; width: 26px; height: 24px; }
+.focus.cam-focus .cam-video { object-fit: contain; }
+.focus.cam-focus .tile-tools .fs { position: static; }
+
+/* painéis que mudam de tamanho: arraste a borda (duplo clique volta ao tamanho padrão) */
+#side, #right { position: relative; }
+.resizer { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 20; cursor: col-resize; touch-action: none; }
+.resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background .15s; }
+.resizer:hover::after, .resizer.dragging::after { background: var(--accent); width: 2px; }
+#side > .resizer { right: -4px; }
+#right > .resizer { left: -4px; }
+.strip-resizer { flex: none; height: 8px; margin: -6px 0 -2px; cursor: row-resize; position: relative; touch-action: none; }
+.strip-resizer::after { content: ""; position: absolute; left: 40%; right: 40%; top: 3px; height: 2px; border-radius: 2px; background: var(--line); transition: background .15s; }
+.strip-resizer:hover::after, .strip-resizer.dragging::after { background: var(--accent); }
+body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
+body.resizing.rows, body.resizing.rows * { cursor: row-resize !important; }
+body.resizing iframe, body.resizing video { pointer-events: none; }
+html.mobile .resizer, html.mobile .strip-resizer { display: none; }
+/* separador das músicas do autoplay na fila */
+#queue .queue-sep { display: flex; align-items: center; gap: 6px; padding: 10px 12px 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: none; cursor: default; }
+#queue .queue-sep svg.lucide { width: 14px; height: 14px; }
 
 /* aperte para falar e cutucar (TeamSpeak) */
 .ptt-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

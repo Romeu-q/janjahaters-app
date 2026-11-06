@@ -112,6 +112,15 @@ const GAIN_JS = `(() => {
         d.set.call(m, clamp(r * g));
       });
     };
+    // só o som importa: pede ao player a menor qualidade (144p), quase nada de vídeo para baixar e decodificar
+    const low = () => {
+      try {
+        document.getElementById('movie_player')?.setPlaybackQualityRange?.('tiny', 'tiny');
+      } catch {}
+    };
+    document.addEventListener('loadedmetadata', low, true);
+    document.addEventListener('playing', low, true);
+    low();
   }
   window.__janjaSetGain(__GAIN__);
 })()`;
@@ -131,8 +140,8 @@ function createWindow() {
     width: saved?.width || 1320,
     height: saved?.height || 820,
     ...(saved ? { x: saved.x, y: saved.y } : {}),
-    minWidth: 1000,
-    minHeight: 620,
+    minWidth: 900,
+    minHeight: 560,
     frame: false,
     backgroundColor: '#141619',
     title: 'janjahaters',
