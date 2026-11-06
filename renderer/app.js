@@ -312,6 +312,13 @@ if ((settings.nsVersion || 0) < 2) {
   settings.nsVersion = 2;
   store.set('settings', settings);
 }
+// v1.12: o DeepFilterNet3 deixou o mic ruim para a galera: todo mundo volta para o RNNoise (Forte).
+// A Máxima continua nas opções para quem quiser testar.
+if (settings.nsVersion < 3) {
+  if (settings.noise === 'dfn') settings.noise = 'strong';
+  settings.nsVersion = 3;
+  store.set('settings', settings);
+}
 // aparência (só deste PC) e plugins ligados
 const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
@@ -324,7 +331,8 @@ settings.mutedCh = { ...settings.mutedCh }; // canais sem notificação
 settings.ptt = { vk: 0, label: '', ...settings.ptt };
 settings.sfxFiles = { join: '', leave: '', ...settings.sfxFiles }; // nome do arquivo escolhido para entrar/sair ('' = padrão) // aperte para falar: tecla virtual do Windows (0 = desligado)
 const look = settings.look;
-const plug = (id) => !!settings.plugins[id];
+// plugins vêm ligados: só fica desligado o que a pessoa desligou em Opções > Plugins
+const plug = (id) => settings.plugins[id] !== false;
 const saveSettings = () => store.set('settings', settings);
 // contas Google conferidas dos amigos (uid -> { email, picture }), lembradas para as mensagens antigas
 const googleUsers = store.get('googleUsers', {});
@@ -5244,6 +5252,12 @@ const BUILTIN_PLUGINS = [
   { id: 'callTimer', name: 'Tempo de call', desc: 'Mostra há quanto tempo você está na call, embaixo do nome do canal.' },
   { id: 'noTypingSounds', name: 'Sem som de mensagem', desc: 'Não toca som quando chega mensagem (a janela ainda pisca).' },
 ];
+// v1.12: liga todos os plugins de uma vez para todo mundo (uma vez só; depois cada um desliga o que quiser)
+if ((settings.pluginsVersion || 0) < 2) {
+  for (const p of BUILTIN_PLUGINS) settings.plugins[p.id] = true;
+  settings.pluginsVersion = 2;
+  saveSettings();
+}
 function renderPluginList() {
   const q = $('#plSearch').value.trim().toLowerCase();
   const match = (p) => !q || (p.name + ' ' + p.desc).toLowerCase().includes(q);
