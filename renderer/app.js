@@ -224,8 +224,23 @@ function setIcon(btn, name) {
 
 // ----- animações (motion) -----
 const EASE = [0.2, 0.8, 0.2, 1];
-const popIn = (els, opts = {}) => animate(els, { opacity: [0, 1], y: [6, 0] }, { duration: 0.22, ease: EASE, ...opts });
-const springIn = (els, opts = {}) => animate(els, { opacity: [0, 1], scale: [0.9, 1] }, { type: 'spring', stiffness: 380, damping: 26, ...opts });
+// estilo "Bolha" (o padrão): as coisas aparecem com um pulinho de mola, como uma bolha
+const bubbly = () => document.body.classList.contains('style-bolha');
+const noMotion = () => typeof look !== 'undefined' && look.noAnim;
+const SPRING = { type: 'spring', stiffness: 460, damping: 22 };
+function popIn(els, opts = {}) {
+  if (noMotion()) return Promise.resolve();
+  if (!bubbly()) return animate(els, { opacity: [0, 1], y: [6, 0] }, { duration: 0.22, ease: EASE, ...opts });
+  const { duration, ease, ...rest } = opts;
+  return animate(els, { opacity: [0, 1], scale: [0.86, 1], y: [8, 0] }, { ...SPRING, ...rest });
+}
+function springIn(els, opts = {}) {
+  if (noMotion()) return Promise.resolve();
+  return animate(els, { opacity: [0, 1], scale: [bubbly() ? 0.8 : 0.9, 1] }, bubbly() ? { ...SPRING, ...opts } : { type: 'spring', stiffness: 380, damping: 26, ...opts });
+}
+// abrir janela/menu: com mola no estilo Bolha
+const openAnim = (node, from = 0.95) =>
+  noMotion() ? null : bubbly() ? animate(node, { opacity: [0, 1], scale: [from - 0.07, 1] }, SPRING) : animate(node, { opacity: [0, 1], scale: [from, 1] }, { duration: 0.15, ease: EASE });
 // Janelas (dialogs): uma janela que ficasse aberta e invisível (animação de fechar interrompida) bloquearia
 // os cliques e a digitação das outras. Por isso: fechar sempre de verdade e, ao abrir, limpar as travadas.
 function hardClose(dlg) {
@@ -240,7 +255,8 @@ function openDialog(dlg) {
   }
   if (dlg.open) hardClose(dlg); // reabrindo a mesma: começa limpa e fica por cima
   dlg.showModal();
-  animate(dlg, { opacity: [0, 1], scale: [0.96, 1], y: [10, 0] }, { duration: 0.22, ease: EASE });
+  if (bubbly()) openAnim(dlg, 0.96);
+  else if (!noMotion()) animate(dlg, { opacity: [0, 1], scale: [0.96, 1], y: [10, 0] }, { duration: 0.22, ease: EASE });
 }
 async function closeDialog(dlg) {
   if (!dlg.open) return;
@@ -308,7 +324,8 @@ function toast(msg) {
   t.textContent = msg;
   if (t.hidden) {
     t.hidden = false;
-    animate(t, { opacity: [0, 1], y: [12, 0] }, { duration: 0.2, ease: EASE });
+    if (bubbly() && !noMotion()) animate(t, { opacity: [0, 1], scale: [0.7, 1], y: [16, 0] }, SPRING);
+    else animate(t, { opacity: [0, 1], y: [12, 0] }, { duration: 0.2, ease: EASE });
   }
   clearTimeout(toastTimer);
   toastTimer = setTimeout(async () => {
@@ -340,7 +357,7 @@ if (settings.nsVersion < 3) {
   store.set('settings', settings);
 }
 // aparência (só deste PC) e plugins ligados
-const LOOK_DEFAULTS = { theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
+const LOOK_DEFAULTS = { style: 'bolha', theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
 settings.plugins = { ...settings.plugins };
 settings.gate = { on: true, auto: true, db: -50, ...settings.gate }; // sensibilidade do mic
@@ -3304,6 +3321,7 @@ function messageEl(m, prev) {
   d.dataset.id = m.id;
   d.dataset.ts = m.ts;
   d.dataset.uid = m.uid;
+  if (m.uid === me.id && !m.bot) d.classList.add('mine');
   if (m.bot) {
     d.classList.add('bot');
     d.dataset.bot = '1';
@@ -3992,7 +4010,7 @@ function openPopover(anchor, content) {
     pop.style.left = clamp(r.left, 8, innerWidth - pop.offsetWidth - 8) + 'px';
     pop.style.top = clamp(r.top - h - 8 > 40 ? r.top - h - 8 : r.bottom + 8, 8, innerHeight - h - 8) + 'px';
   }
-  animate(pop, { opacity: [0, 1], scale: [0.95, 1] }, { duration: 0.15, ease: EASE });
+  openAnim(pop);
 }
 document.addEventListener('mousedown', (e) => {
   if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true;
@@ -5917,6 +5935,12 @@ $('#pfStatusEmoji').onclick = (e) =>
   });
 
 // ============================================================ aparência
+// estilo: "Bolha" (cantos redondos, balões e animações com mola) ou "Clássico" (o visual de antes)
+$('#lkStyle').onchange = () => {
+  look.style = $('#lkStyle').value;
+  saveSettings();
+  applyLook();
+};
 const THEMES = {
   padrao: { name: 'Janja', accent: '#ff7a1a', bg: '#141619', panel: '#1c1f23', panel2: '#23272c', panel3: '#2c3137', line: '#2a2e34', text: '#e4e6ea', muted: '#8b929c', faint: '#5d636c', input: '#121416', code: '#0f1113' },
   grafite: { name: 'Grafite', accent: '#5865f2', bg: '#1e1f22', panel: '#2b2d31', panel2: '#313338', panel3: '#3f4147', line: '#3a3c42', text: '#f2f3f5', muted: '#b5bac1', faint: '#80848e', input: '#1e1f22', code: '#1e1f22' },
@@ -5977,6 +6001,7 @@ async function applyLook() {
   b.classList.toggle('light', !!t.light);
   b.classList.toggle('compact', !!look.compact);
   b.classList.toggle('no-anim', !!look.noAnim);
+  b.classList.toggle('style-bolha', look.style !== 'classico');
   b.classList.toggle('r-square', look.radius === 'square');
   b.classList.toggle('r-round', look.radius === 'round');
   b.classList.toggle('has-bg', !!look.bg);
@@ -6041,6 +6066,7 @@ function fillLookForm() {
   $('#lkRadius').value = look.radius;
   $('#lkCompact').checked = look.compact;
   $('#lkNoAnim').checked = look.noAnim;
+  $('#lkStyle').value = look.style === 'classico' ? 'classico' : 'bolha';
   $('#lkNoFx').checked = look.noFx;
   $('#lkBgDel').hidden = !look.bg;
   $('#lkBgOpts').hidden = !look.bg;
@@ -6936,7 +6962,15 @@ function reactionsEl(m) {
 function refreshReactions(msgIds) {
   for (const id of msgIds) {
     const m = recs.get(id);
-    for (const node of $$(`.reactions[data-rx="${id}"]`)) if (m) node.replaceWith(reactionsEl(m));
+    for (const node of $$(`.reactions[data-rx="${id}"]`)) {
+      if (!m) continue;
+      const before = new Map([...node.querySelectorAll('.rx:not(.rx-add)')].map((b) => [b.title + b.textContent, true]));
+      const next = reactionsEl(m);
+      node.replaceWith(next);
+      // só a reação que mudou dá o pulinho
+      const changed = [...next.querySelectorAll('.rx:not(.rx-add)')].filter((b) => !before.has(b.title + b.textContent));
+      if (changed.length) springIn(changed);
+    }
   }
 }
 
