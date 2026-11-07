@@ -965,7 +965,9 @@ function connectRoom() {
     poke: room.makeAction('poke'), // cutucar
     move: room.makeAction('move'), // "vai para o canal X" (arrastaram você)
     frq: room.makeAction('frq'), // pedido de amizade (assinado)
+    clk: room.makeAction('clk'), // acerto do relógio (para a música tocar no mesmo ponto em todo mundo)
   };
+  A.clk.onMessage = (d, { peerId }) => onClk(d, peerId);
   A.frq.onMessage = (d, { peerId }) => dm?.onFriendMsg(d, peerId);
   listenOldRooms();
   A.poke.onMessage = (d, { peerId }) => onPoke(d, peerId);
@@ -974,6 +976,7 @@ function connectRoom() {
     ensurePeer(pid);
     A.hi.send(hiPayload(), { target: pid });
     A.sum.send([...recs.values()].map((r) => [r.id, r.v]), { target: pid });
+    for (const ms of [500, 2000, 5000]) setTimeout(() => pingClock(pid), ms);
     setTimeout(retryMissingFiles, 3000);
   };
   A.freq.onMessage = async (d, { peerId }) => {
@@ -992,6 +995,7 @@ function connectRoom() {
     dropMedia(p);
     peers.delete(pid);
     C.sent.delete(pid);
+    updateClock();
     renderPresence();
   };
   A.hi.onMessage = (d, { peerId }) => onHi(peerId, d);
@@ -2183,6 +2187,42 @@ async function liveStats() {
   if (statsTimer || !box.children.length) box.replaceChildren(...rows);
 }
 
+// ============================================================ relógio do grupo
+// A música guarda "começou às X" e cada PC calcula onde ela está pelo próprio relógio. Se o relógio do
+// Windows de um amigo estiver adiantado, ele achava que a música já tinha acabado e pulava para todo mundo;
+// atrasado, ele ficava preso no começo, voltando sem parar (sem som). Agora cada PC mede a diferença para
+// os outros (ida e volta, como o NTP) e usa a mediana dos relógios de todos, inclusive o próprio: todo
+// mundo chega ao mesmo relógio sem ninguém precisar mandar.
+let clockOff = 0;
+const netNow = () => Date.now() + clockOff;
+function pingClock(pid) {
+  A.clk?.send({ t0: Date.now() }, pid ? { target: pid } : undefined);
+}
+function onClk(d, pid) {
+  if (!d || typeof d.t0 !== 'number' || !Number.isFinite(d.t0)) return;
+  if (!d.r) return A.clk.send({ t0: d.t0, t1: Date.now(), r: 1 }, { target: pid });
+  if (typeof d.t1 !== 'number' || !Number.isFinite(d.t1)) return;
+  const t2 = Date.now();
+  const rtt = t2 - d.t0;
+  const p = peers.get(pid);
+  if (!p || rtt < 0 || rtt > 5000) return;
+  const off = d.t1 + rtt / 2 - t2;
+  // relógio que pulou (alguém acertou o do Windows): as medidas antigas não valem mais
+  p.clk = (p.clk || []).filter((x) => Math.abs(x.off - off) < 1000).slice(-7);
+  p.clk.push({ rtt, off });
+  updateClock();
+}
+function updateClock() {
+  // de cada amigo vale a medida mais rápida (a de menos atraso na rede)
+  const offs = [0];
+  for (const p of peers.values()) if (p.clk?.length) offs.push(p.clk.reduce((a, b) => (b.rtt < a.rtt ? b : a)).off);
+  offs.sort((a, b) => a - b);
+  const m = offs.length >> 1;
+  const med = offs.length % 2 ? offs[m] : (offs[m - 1] + offs[m]) / 2;
+  if (Math.abs(med - clockOff) > 200) clockOff = Math.round(med);
+}
+setInterval(() => pingClock(), 30000);
+
 // ============================================================ música (YouTube Music)
 // A fila e o "tocando agora" são registros do canal de voz. Cada PC toca no próprio
 // player do YouTube, todos no mesmo ponto da música (pelo relógio).
@@ -2225,7 +2265,7 @@ function pbOf(ch) {
   const item = pb?.item ? recs.get(pb.item) : null;
   return { pb, item: item && !item.del ? item : null };
 }
-const musicPos = (pb) => (pb.pausedAt != null ? pb.pausedAt : Date.now() - pb.startedAt);
+const musicPos = (pb) => (pb.pausedAt != null ? pb.pausedAt : netNow() - pb.startedAt);
 const queueOf = (ch) => {
   const cur = recs.get('pb:' + ch)?.item;
   return all('q')
@@ -2246,14 +2286,31 @@ async function syncMusic() {
       return;
     }
     const p = await ytPlayer();
-    const pos = musicPos(pb) / 1000;
-    const paused = pb.pausedAt != null;
+    const raw = musicPos(pb) / 1000;
+    // começa "no futuro" (relógio de quem pôs ainda diferente): espera a hora em vez de voltar ao 0 sem parar
+    const early = raw < -0.5;
+    const pos = Math.max(0, raw);
+    const paused = pb.pausedAt != null || early;
     if (Y.vid !== item.ref) {
       Y.vid = item.ref;
+      Y.progT = -1;
+      Y.progAt = Date.now();
       paused ? p.cueVideoById({ videoId: item.ref, startSeconds: pos }) : p.loadVideoById({ videoId: item.ref, startSeconds: pos });
     } else {
       const st = p.getPlayerState();
       if (st === 0 && !paused) return advance(item.id);
+      // Player travado: devia tocar, mas o tempo não anda há 12 s (rede, erro do YouTube, player perdido).
+      // Era o "sair e entrar na call" que resolvia: recarrega a música sozinho no ponto certo.
+      const ct = p.getCurrentTime() || 0;
+      if (paused || Math.abs(ct - Y.progT) > 0.2) {
+        Y.progT = ct;
+        Y.progAt = Date.now();
+      } else if (Date.now() - Y.progAt > 12000) {
+        console.warn('música travada, recarregando', item.ref, st, ct);
+        Y.progAt = Date.now();
+        p.loadVideoById({ videoId: item.ref, startSeconds: pos });
+        return;
+      }
       if (paused) {
         if (st === 1 || st === 3) p.pauseVideo();
         if (Math.abs(p.getCurrentTime() - pos) > 1) p.seekTo(pos, true);
@@ -2326,7 +2383,7 @@ function advance(fromId, broken) {
 // estado do player do canal, sem perder o autoplay e o histórico
 function writePb(ch, fields) {
   const old = recs.get('pb:' + ch);
-  put({ k: 'pb', id: 'pb:' + ch, ch, item: null, startedAt: Date.now(), pausedAt: null, auto: old?.auto, hist: old?.hist || [], ...fields });
+  put({ k: 'pb', id: 'pb:' + ch, ch, item: null, startedAt: netNow(), pausedAt: null, auto: old?.auto, hist: old?.hist || [], ...fields });
 }
 // quem da call busca a próxima do autoplay: o de menor id (todos chegam à mesma conta)
 function djRank(ch) {
@@ -2371,7 +2428,7 @@ async function fillAutoplay(ch) {
   AP.filling = true;
   AP.fillAt = Date.now();
   try {
-    const list = await window.desk.ytRelated(seed);
+    const list = await ytRelated(seed);
     const now = recs.get('pb:' + ch);
     if (now?.auto === false || C.ch !== ch) return;
     const skip = new Set([...(now?.hist || []), cur?.ref, ...queueOf(ch).map((x) => x.ref)]);
@@ -2391,6 +2448,8 @@ async function fillAutoplay(ch) {
     AP.filling = false;
   }
 }
+// a busca de parecidas com prazo: se travasse, o autoplay ficava esperando para sempre
+const ytRelated = (id) => Promise.race([window.desk.ytRelated(id), new Promise((_, no) => setTimeout(() => no(new Error('o YouTube demorou para responder')), 20000))]);
 async function autoplayNext(ch, cur, hist) {
   if (AP.busy) return;
   AP.busy = true;
@@ -2410,7 +2469,7 @@ async function autoplayPick(ch, cur, hist) {
   let list = [];
   for (const seed of seeds) {
     try {
-      list = await window.desk.ytRelated(seed);
+      list = await ytRelated(seed);
     } catch (err) {
       console.warn('autoplay', err);
       continue;
@@ -2664,12 +2723,12 @@ $('#plPlay').onclick = () => {
     if (first) writePb(C.ch, { item: first.id });
     return;
   }
-  if (pb.pausedAt != null) setPb({ startedAt: Date.now() - pb.pausedAt, pausedAt: null });
-  else setPb({ pausedAt: Date.now() - pb.startedAt });
+  if (pb.pausedAt != null) setPb({ startedAt: netNow() - pb.pausedAt, pausedAt: null });
+  else setPb({ pausedAt: netNow() - pb.startedAt });
 };
 $('#plRestart').onclick = () => {
   const { pb } = pbOf(C.ch);
-  if (pb) setPb(pb.pausedAt != null ? { pausedAt: 0 } : { startedAt: Date.now() });
+  if (pb) setPb(pb.pausedAt != null ? { pausedAt: 0 } : { startedAt: netNow() });
 };
 $('#plSkip').onclick = () => {
   const { item } = pbOf(C.ch);
@@ -2680,7 +2739,7 @@ $('#plProgress').onclick = (e) => {
   if (!item?.dur) return;
   const r = e.currentTarget.getBoundingClientRect();
   const ms = clamp((e.clientX - r.left) / r.width, 0, 1) * item.dur;
-  setPb(pb.pausedAt != null ? { pausedAt: ms } : { startedAt: Date.now() - ms });
+  setPb(pb.pausedAt != null ? { pausedAt: ms } : { startedAt: netNow() - ms });
 };
 // Barra de volume como a do YouTube: arrastar até o fim muta; o botão de mudo guarda o volume e,
 // ao desmutar, volta para ele. A parte preenchida da barra mostra o volume.
@@ -3880,11 +3939,11 @@ async function runCommand(text, ch, box) {
       return botSay(ch, `${who} pulou **${item.title}**`);
     case 'pause':
       if (!item || pb.pausedAt != null) return note(box, 'Nada tocando para pausar.');
-      setPb({ pausedAt: Date.now() - pb.startedAt });
+      setPb({ pausedAt: netNow() - pb.startedAt });
       return botSay(ch, `${who} pausou a música`);
     case 'resume':
       if (!item || pb.pausedAt == null) return note(box, 'Nada pausado.');
-      setPb({ startedAt: Date.now() - pb.pausedAt, pausedAt: null });
+      setPb({ startedAt: netNow() - pb.pausedAt, pausedAt: null });
       return botSay(ch, `${who} continuou a música`);
     case 'clear': {
       const q = queueOf(C.ch);
@@ -7393,7 +7452,7 @@ window.addEventListener('beforeunload', () => {
   room?.leave();
 });
 
-window.__toca = { peers, C, recs, Y, advance, pbOf, queueOf }; // para depurar pelo DevTools (Ctrl+Shift+I)
+window.__toca = { peers, C, recs, Y, AP, advance, pbOf, queueOf, addLink, toggleAutoplay, djRank, musicPos, netNow, clock: () => clockOff }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
 // ----- convite por link (janjahaters://join/CODIGO) -----
