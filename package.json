@@ -22,6 +22,7 @@
       "preload.js",
       "yt.js",
       "links.js",
+      "preview.js",
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",

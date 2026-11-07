@@ -272,6 +272,11 @@
     </div>
     <small class="muted">GIF animado funciona. Até 6 MB.</small>
     <label class="inline">Cor do ícone <input type="color" id="srvColor"></label>
+    <h3 class="srv-sec">Emojis do grupo</h3>
+    <p class="muted small">Use no chat e nas reações com :nome:. Imagem até 512 KB (GIF animado funciona).</p>
+    <div class="emo-add"><input id="srvEmoName" maxlength="32" placeholder="nome_do_emoji"><button type="button" class="ghost sm" id="srvEmoAdd"><i data-icon="plus"></i>Escolher imagem</button></div>
+    <input type="file" id="srvEmoFile" accept="image/png,image/gif,image/webp,image/jpeg" hidden>
+    <div class="emo-list" id="srvEmojis"></div>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="srvSave">Salvar</button></menu>
   </dialog>
 

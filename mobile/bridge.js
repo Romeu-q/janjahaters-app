@@ -6,6 +6,7 @@ import { Browser } from '@capacitor/browser';
 import { Innertube } from 'youtubei.js/web';
 import yt from '../yt.js';
 import links from '../links.js';
+import preview from '../preview.js';
 
 /* global __APP_VERSION__, __GOOGLE_CLIENT_ID__ */
 const VERSION = __APP_VERSION__;
@@ -116,6 +117,13 @@ window.desk = {
   ytSearch: async (q) => yt.search(await ytClient(), q),
   ytRelated: async (id) => yt.related(await ytClient(), id),
   musicLink: async (url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)),
+  linkPreview: async (url) =>
+    preview
+      .linkPreview(async (u) => {
+        const r = await webGet(u);
+        return { url: r.url, type: 'text/html', text: r.text.slice(0, 512 * 1024) };
+      }, url)
+      .catch(() => null),
   musicMatch: async (t) => links.matchTrack(await ytClient(), yt.search, t),
   openExternal: (url) => /^https:\/\//.test(url) && Browser.open({ url }),
   win: () => {},

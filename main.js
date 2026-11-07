@@ -502,6 +502,38 @@ async function webGet(url) {
   return { url: r.url, text: await r.text() };
 }
 ipcMain.handle('music-link', async (e, url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)));
+// prévia de link no chat (título, descrição, imagem): sem cookies, 5 s e no máximo 512 KB por página
+const preview = require('./preview');
+const previewCache = new Map();
+async function previewGet(url) {
+  const r = await fetch(url, { headers: { 'User-Agent': WEB_UA, 'Accept-Language': 'pt-BR,pt;q=0.9', Accept: 'text/html,*/*;q=0.5' }, signal: AbortSignal.timeout(5000), redirect: 'follow' });
+  const type = r.headers.get('content-type') || '';
+  if (/json/i.test(type)) return { url: r.url, type, text: (await r.text()).slice(0, 64 * 1024) }; // oEmbed
+  if (!/html/i.test(type)) {
+    r.body?.cancel().catch(() => {});
+    return { url: r.url, type, text: '' };
+  }
+  // lê só o começo da página (as tags ficam no <head>)
+  const reader = r.body.getReader();
+  const chunks = [];
+  let size = 0;
+  while (size < 512 * 1024) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.length;
+  }
+  reader.cancel().catch(() => {});
+  return { url: r.url, type, text: Buffer.concat(chunks).toString('utf8') };
+}
+ipcMain.handle('link-preview', async (e, url) => {
+  const key = String(url).slice(0, 800);
+  if (!previewCache.has(key)) {
+    previewCache.set(key, preview.linkPreview(previewGet, key).catch(() => null));
+    if (previewCache.size > 300) previewCache.delete(previewCache.keys().next().value);
+  }
+  return previewCache.get(key);
+});
 ipcMain.handle('music-match', async (e, t) => links.matchTrack(await ytClient(), yt.search, { title: String(t?.title || ''), artist: String(t?.artist || ''), dur: Number(t?.dur) || 0 }));
 
 // ----- login com Google (OAuth para apps de desktop: navegador + retorno em 127.0.0.1 + PKCE) -----

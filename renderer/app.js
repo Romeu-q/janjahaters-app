@@ -71,6 +71,10 @@ import {
   ArrowDownToLine,
   Moon,
   Server,
+  Crown,
+  Sprout,
+  PinOff,
+  CornerUpLeft,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -165,6 +169,10 @@ const ICONS = {
   brush: Brush,
   image: ImageIcon,
   pin: Pin,
+  'pin-off': PinOff,
+  crown: Crown,
+  sprout: Sprout,
+  'corner-up-left': CornerUpLeft,
   shuffle: Shuffle,
   infinity: InfinityIcon,
   palette: Palette,
@@ -488,7 +496,7 @@ const sfx = {
 //   grp  nome do grupo            ch  canal (texto/voz)       msg  mensagem
 //   q    música na fila de um canal de voz                   pb   o que está tocando num canal de voz
 //   snd  som do soundboard (o áudio em si vai pelo armazenamento de arquivos)
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin']);
 const recs = new Map();
 let clock = 0;
 const tick = () => (clock = Math.max(Date.now(), clock + 1));
@@ -577,6 +585,11 @@ function onRecsChanged(list) {
     renderSidebar();
     renderHeader();
   }
+  if (kinds.has('emo')) {
+    emojiMapCache = null;
+    renderEmojiAdmin();
+  }
+  if (kinds.has('emo') || kinds.has('pin')) for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
   if (kinds.has('rx')) refreshReactions(new Set(list.filter((r) => r.k === 'rx').map((r) => r.msg)));
   if (kinds.has('msg')) {
     const fresh = list.filter((r) => r.k === 'msg');
@@ -594,14 +607,14 @@ function onRecsChanged(list) {
       if (m.del || m.edited || m.uid === me.id) continue;
       const isCall = channel(m.ch)?.type === 'voice';
       if (isCall && m.ch === callChatCh() && currentTab !== 'chat') S.callUnread++;
-      else if (!isCall && !shownIn.length && (!settings.mutedCh[m.ch] || mentionedMe(m.text))) S.unread.add(m.ch);
+      else if (!isCall && !shownIn.length && (!settings.mutedCh[m.ch] || pingsMe(m))) S.unread.add(m.ch);
     }
     for (const box of rerender) renderChat(box, boxes.find((b) => b.box === box).ch, true);
     renderCallBadge();
-    const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000 && myStatus() !== 'dnd' && (!settings.mutedCh[m.ch] || mentionedMe(m.text)));
+    const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000 && myStatus() !== 'dnd' && (!settings.mutedCh[m.ch] || pingsMe(m)));
     if (textChatCh() && document.hasFocus()) markRead(textChatCh());
     for (const m of notifyMsgs) pluginEmit('message', m);
-    if (notifyMsgs.some((m) => mentionedMe(m.text) || (plug('mentions') && mentionsMe(m.text)))) {
+    if (notifyMsgs.some((m) => pingsMe(m) || (plug('mentions') && mentionsMe(m.text)))) {
       if (!plug('noTypingSounds')) sfx.msg();
       window.desk?.flash();
     } else if (notifyMsgs.length && (!document.hasFocus() || notifyMsgs.some((m) => !boxes.some((b) => b.ch === m.ch)) || (currentTab !== 'chat' && notifyMsgs.some((m) => m.ch === callChatCh())))) {
@@ -2916,25 +2929,161 @@ document.addEventListener('click', (e) => e.target.closest?.('.spoiler')?.classL
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
+// <t:1700000000:R> (como no Stoat/Discord): data e hora no fuso de quem lê
+const relTime = new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' });
+function timeTag(sec, f) {
+  const d = new Date(Number(sec) * 1000);
+  if (!Number.isFinite(d.getTime())) return '';
+  const full = d.toLocaleString('pt-BR', { dateStyle: 'full', timeStyle: 'short' });
+  let text;
+  if (f === 'R') {
+    const diff = (d.getTime() - Date.now()) / 1000;
+    const units = [['year', 31536000], ['month', 2592000], ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]];
+    const [u, n] = units.find(([, n]) => Math.abs(diff) >= n) || ['second', 1];
+    text = relTime.format(Math.round(diff / n), u);
+  } else if (f === 't') text = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  else if (f === 'T') text = d.toLocaleTimeString('pt-BR');
+  else if (f === 'd') text = d.toLocaleDateString('pt-BR');
+  else if (f === 'D') text = d.toLocaleDateString('pt-BR', { dateStyle: 'long' });
+  else if (f === 'F') text = full;
+  else text = d.toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' });
+  return `<time class="md-time" title="${escapeHtml(full)}">${escapeHtml(text)}</time>`;
+}
 function format(text) {
   const keep = [];
   const hold = (h) => `\u0000${keep.push(h) - 1}\u0000`;
   let s = escapeHtml(text.replace(/\u0000/g, ''));
   s = s.replace(/```(?:[\w+-]*\n)?([\s\S]*?)```/g, (_, c) => hold(`<pre><code>${c}</code></pre>`));
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold(`<code>${c}</code>`));
+  s = s.replace(/&lt;t:(-?\d{1,12})(?::([tTdDfFR]))?&gt;/g, (m0, n, f) => hold(timeTag(n, f)) || m0);
+  // [texto](link): o endereço aparece ao passar o mouse
+  s = s.replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)<]+)\)/g, (_, t, u) => hold(`<a href="${u}" target="_blank" title="${u}">${t}</a>`));
   s = s.replace(/https?:\/\/[^\s<]+[^\s<.,:;"')\]!?]/g, (u) => hold(`<a href="${u}" target="_blank">${u}</a>`));
+  // :nome: = emoji do grupo
+  const emo = emojiMap();
+  s = s.replace(/:([a-z0-9_]{2,32}):/g, (m0, n) => {
+    const e = emo.get(n);
+    return e ? hold(`<img class="cemoji" data-file="${e.file}" data-owner="${e.by}" alt=":${n}:" title=":${n}:">`) : m0;
+  });
+  // lista com "* " vira "- " antes do itálico (senão o * vira itálico)
+  s = s.replace(/^\* /gm, '- ');
   s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/~~(.+?)~~/g, '<s>$1</s>');
   s = s.replace(/(^|\s)@([^\s@<&]{1,32})/g, '$1<span class="mention-tag">@$2</span>');
   s = s.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler" title="Spoiler: clique para ver">$1</span>');
-  s = s.replace(/^&gt; ?(.*)(\n|$)/gm, '<span class="quote">$1</span>'); // "> citação" (o Responder usa)
+  s = s.replace(/^&gt; ?(.*)$/gm, '<span class="quote">$1</span>'); // "> citação"
+  // títulos, texto pequeno e listas (cada um é uma linha inteira)
+  s = s.replace(/^(#{1,3}) (.+)$/gm, (_, h, t) => `<span class="md-h${h.length}">${t}</span>`);
+  s = s.replace(/^-# (.+)$/gm, '<span class="md-sub">$1</span>');
+  s = s.replace(/^- (.+)$/gm, '<span class="md-li">$1</span>');
+  s = s.replace(/^(\d{1,3})\. (.+)$/gm, '<span class="md-li md-ol" data-n="$1.">$2</span>');
+  s = s.replace(/(<span class="(?:quote|md-h[123]|md-sub|md-li[^"]*)"[^>]*>[^\n]*<\/span>)\n/g, '$1');
   s = s.replace(/\n/g, '<br>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[i]);
 }
-const isJumbo = (t) => t.length <= 16 && /^(\p{Extended_Pictographic}|️|‍|\s)+$/u.test(t);
+// emojis do grupo (registros "emo"): nome -> registro
+const EMO_NAME = /^[a-z0-9_]{2,32}$/;
+let emojiMapCache = null;
+function emojiMap() {
+  if (emojiMapCache) return emojiMapCache;
+  const m = new Map();
+  for (const e of all('emo').sort((a, b) => a.v - b.v)) if (EMO_NAME.test(e.name) && FILE_ID.test(e.file)) m.set(e.name, e);
+  return (emojiMapCache = m);
+}
+// carrega as imagens dos emojis do grupo depois que o texto entra na tela
+function hydrateEmojis(root) {
+  for (const img of root.querySelectorAll('img.cemoji:not([src])')) fileUrl(img.dataset.file, img.dataset.owner).then((u) => u && (img.src = u));
+  return root;
+}
+// só emojis (até 6 do grupo ou 16 caracteres normais): aparecem grandes
+const isJumbo = (t) => {
+  const rest = t.replace(/:([a-z0-9_]{2,32}):/g, (m0, n) => (emojiMap().has(n) ? '' : m0));
+  return t.length <= 220 && rest.length <= 16 && (rest.trim() !== '' || rest !== t) && /^(\p{Extended_Pictographic}|️|‍|\s)*$/u.test(rest);
+};
+const repliedToMe = (m) => !!m.reply && recs.get(m.reply)?.uid === me.id;
+const pingsMe = (m) => mentionedMe(m.text) || repliedToMe(m);
+// mensagens fixadas (registros "pin:<id da mensagem>")
+const pinOf = (msgId) => {
+  const p = recs.get('pin:' + msgId);
+  return p && !p.del ? p : null;
+};
+function togglePin(m) {
+  const cur = recs.get('pin:' + m.id);
+  if (cur && !cur.del) {
+    put({ ...cur, del: true });
+    toast('Mensagem desafixada');
+  } else {
+    put({ k: 'pin', id: ('pin:' + m.id).slice(0, 80), msg: m.id, ch: m.ch, uid: me.id, name: me.name, at: Date.now() });
+    toast('Mensagem fixada');
+  }
+}
+// leva até a mensagem (rola e pisca)
+function jumpTo(msgId) {
+  const node = [...$$(`.msg[data-id="${msgId}"]`)].find((n) => n.offsetParent);
+  if (!node) return toast('Essa mensagem não está mais aqui');
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  node.classList.remove('flash');
+  void node.offsetWidth;
+  node.classList.add('flash');
+}
+// ----- prévia de link (título, descrição e imagem da página) -----
+const previewCache = new Map();
+const firstUrl = (text) => String(text || '').replace(/```[\s\S]*?```|`[^`\n]*`/g, '').match(/https?:\/\/[^\s<]+[^\s<.,:;"')\]!?]/)?.[0];
+function previewEl(url) {
+  const box = el('div', 'embed-slot');
+  if (!window.desk?.linkPreview) return box;
+  if (!previewCache.has(url)) previewCache.set(url, window.desk.linkPreview(url).catch(() => null));
+  previewCache.get(url).then((p) => {
+    if (!p || !box.isConnected) return;
+    const chatBox = box.closest('.chat-scroll');
+    const stick = chatBox && chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight < 80;
+    const card = el('div', 'embed' + (p.big ? ' big' : ''));
+    if (p.color) card.style.setProperty('--embed', p.color);
+    const info = el('div', 'embed-info');
+    if (p.site) info.append(el('div', 'embed-site', p.site));
+    if (p.title) {
+      const a = el('a', 'embed-title', p.title);
+      a.href = p.url;
+      a.target = '_blank';
+      info.append(a);
+    }
+    if (p.desc) info.append(el('div', 'embed-desc', p.desc));
+    card.append(info);
+    if (p.image) {
+      const img = el('img', 'embed-img');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = () => img.remove();
+      img.onload = () => stick && (chatBox.scrollTop = chatBox.scrollHeight);
+      img.src = p.image;
+      if (p.big) img.onclick = () => openLightbox(p.image);
+      card.append(img);
+    }
+    box.replaceChildren(card);
+    if (stick) chatBox.scrollTop = chatBox.scrollHeight;
+  });
+  return box;
+}
+// selos do perfil (como no Stoat): fundador = escreveu na primeira semana do grupo
+function badgesOf(uid) {
+  const out = [];
+  const msgs = all('msg').filter((m) => !m.bot);
+  if (msgs.length) {
+    let start = Infinity;
+    let mine = Infinity;
+    for (const m of msgs) {
+      if (m.ts < start) start = m.ts;
+      if (m.uid === uid && m.ts < mine) mine = m.ts;
+    }
+    if (mine - start < 7 * 86400_000) out.push(['sprout', 'Fundador: está no grupo desde a primeira semana']);
+  }
+  return out;
+}
 
 function messageEl(m, prev) {
   const grouped = prev && prev.uid === m.uid && !!prev.bot === !!m.bot && m.ts - prev.ts < 5 * 60_000;
   const d = el('div', 'msg' + (grouped ? ' grouped' : ''));
+  const pinned = pinOf(m.id);
   d.dataset.id = m.id;
   d.dataset.ts = m.ts;
   d.dataset.uid = m.uid;
@@ -2958,6 +3107,11 @@ function messageEl(m, prev) {
     head.append(a);
     if (m.bot) head.append(el('span', 'bot-tag', 'BOT'));
     head.append(t);
+    if (pinned) {
+      const pi = icon('pin', 'sm pin-mark');
+      pi.setAttribute('aria-label', `Fixada por ${pinned.name}`);
+      head.append(pi);
+    }
     body.append(head);
   } else {
     const gt = el('time', 'gtime', hhmm.format(m.ts)); // horário ao passar o mouse
@@ -2965,7 +3119,22 @@ function messageEl(m, prev) {
     d.append(gt);
   }
   if (m.ghost) d.classList.add('ghost');
-  if (m.uid !== me.id && !m.bot && (mentionedMe(m.text) || (plug('mentions') && mentionsMe(m.text)))) d.classList.add('mention');
+  if (m.uid !== me.id && !m.bot && (pingsMe(m) || (plug('mentions') && mentionsMe(m.text)))) d.classList.add('mention');
+  if (pinned) d.classList.add('pinned');
+  // respondendo a uma mensagem: a citação em cima (clique leva até ela)
+  if (m.reply) {
+    const ref = recs.get(m.reply);
+    const r = el('div', 'reply-ref');
+    r.append(icon('corner-up-left', 'sm'));
+    if (ref && !ref.del) {
+      r.append(nameEl(ref.bot ? 'DJ' : ref.name, ref.color, ref.bot ? null : ref.uid, 'reply-name'));
+      const snip = el('span', 'reply-text');
+      snip.innerHTML = format(String(ref.text || (ref.att?.length ? '[anexo]' : '')).replace(/\s+/g, ' ').slice(0, 120));
+      r.append(hydrateEmojis(snip));
+      r.onclick = () => jumpTo(ref.id);
+    } else r.append(el('span', 'reply-text muted', 'mensagem apagada'));
+    body.append(r);
+  }
   if (plug('dblClick') && !m.ghost && !m.bot)
     d.ondblclick = (e) => {
       if (e.target.closest('a, button, img, video, audio, textarea')) return;
@@ -2982,6 +3151,7 @@ function messageEl(m, prev) {
   };
   if (!m.ghost) action('face-slightly-smiling-plus', 'Reagir', (e, b) => openEmoji(b, (emoji) => toggleReaction(m, emoji)));
   if (!m.ghost) action('reply', 'Responder', () => replyTo(m, d));
+  if (!m.ghost) action(pinned ? 'pin-off' : 'pin', pinned ? 'Desafixar' : 'Fixar no canal', () => togglePin(m));
   if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
   if (m.uid === me.id && !m.bot && !m.ghost) {
     if (m.text) action('pencil', 'Editar (ou seta para cima no campo vazio)', () => startEdit(m, d));
@@ -2992,9 +3162,12 @@ function messageEl(m, prev) {
   if (m.text) {
     const text = el('div', 'text' + (isJumbo(m.text) ? ' jumbo' : ''));
     text.innerHTML = format(String(m.text));
+    hydrateEmojis(text);
     if (m.edited) text.append(el('span', 'edited', '(editado)'));
     if (m.ghost) text.append(el('span', 'edited', '(apagada)'));
     body.append(text);
+    const url = !m.bot && !m.ghost && firstUrl(m.text);
+    if (url) body.append(previewEl(url));
   }
   const atts = Array.isArray(m.att) ? m.att.filter(validAtt).slice(0, 10) : [];
   if (atts.length) {
@@ -3121,15 +3294,56 @@ function renderCallChat() {
 }
 // ----- ações rápidas das mensagens -----
 const composerOf = (box) => (box?.id === 'callMessages' ? callInput : input);
+// respondendo a: caixa do chat -> id da mensagem (aparece uma barra em cima do campo)
+const replying = new Map();
 function replyTo(m, node) {
   const box = node.closest('.chat-scroll');
+  replying.set(box?.id === 'callMessages' ? 'callMessages' : 'messages', m.id);
+  renderReplyBars();
   const field = composerOf(box);
-  const quoted = String(m.text || (m.att?.length ? '[anexo]' : '')).replace(/\s+/g, ' ').slice(0, 90);
-  field.value = `> **${m.name}**: ${quoted}${m.text?.length > 90 ? '…' : ''}\n` + field.value.replace(/^>.*\n/, '');
-  field.dispatchEvent(new Event('input'));
   field.focus();
-  field.setSelectionRange(field.value.length, field.value.length);
 }
+function renderReplyBars() {
+  for (const [boxId, form] of [['messages', $('#composer')], ['callMessages', $('#callComposer')]]) {
+    let bar = form.querySelector('.reply-bar');
+    const m = recs.get(replying.get(boxId));
+    if (!m || m.del) {
+      replying.delete(boxId);
+      bar?.remove();
+      continue;
+    }
+    if (!bar) {
+      bar = el('div', 'reply-bar');
+      form.prepend(bar);
+      popIn(bar, { duration: 0.15 });
+    }
+    const x = el('button', 'icon-btn sm');
+    x.type = 'button';
+    x.title = 'Cancelar resposta (Esc)';
+    x.append(icon('x', 'sm'));
+    x.onclick = () => {
+      replying.delete(boxId);
+      renderReplyBars();
+    };
+    const label = el('span', 'reply-bar-text');
+    label.append(document.createTextNode('Respondendo a '), nameEl(m.bot ? 'DJ' : m.name, m.color, m.bot ? null : m.uid));
+    bar.replaceChildren(icon('corner-up-left', 'sm'), label, x);
+  }
+}
+// tira a resposta pendente do campo e devolve o id (para a mensagem que vai sair agora)
+function takeReply(boxId) {
+  const id = replying.get(boxId);
+  replying.delete(boxId);
+  renderReplyBars();
+  return id && recs.get(id) && !recs.get(id).del ? id : undefined;
+}
+for (const [field, boxId] of [[$('#input'), 'messages'], [$('#callInput'), 'callMessages']])
+  field.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && replying.has(boxId)) {
+      replying.delete(boxId);
+      renderReplyBars();
+    }
+  });
 async function copyText(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
@@ -3244,7 +3458,8 @@ async function sendMessage() {
     await blobPut(id, f);
     att.push({ id, name: (f.name || 'imagem.png').slice(0, 200), size: f.size, type: (f.type || 'application/octet-stream').slice(0, 100) });
   }
-  put({ k: 'msg', id: 'm:' + randId(), ch: S.view, uid: me.id, name: me.name, color: me.color, text: text.slice(0, 2000), att, ts: Date.now() });
+  const reply = takeReply('messages');
+  put({ k: 'msg', id: 'm:' + randId(), ch: S.view, uid: me.id, name: me.name, color: me.color, text: text.slice(0, 2000), att, ts: Date.now(), ...(reply ? { reply } : {}) });
 }
 
 // ----- chat da call (aba Chat da direita) -----
@@ -3262,7 +3477,8 @@ callInput.addEventListener('keydown', (e) => {
   callInput.value = '';
   callInput.style.height = 'auto';
   if (isCommand(text)) return runCommand(text, ch, $('#callMessages'));
-  put({ k: 'msg', id: 'm:' + randId(), ch, uid: me.id, name: me.name, color: me.color, text: text.slice(0, 2000), att: [], ts: Date.now() });
+  const reply = takeReply('callMessages');
+  put({ k: 'msg', id: 'm:' + randId(), ch, uid: me.id, name: me.name, color: me.color, text: text.slice(0, 2000), att: [], ts: Date.now(), ...(reply ? { reply } : {}) });
 });
 input.addEventListener('keydown', (e) => editLast(input, $('#messages'), e));
 callInput.addEventListener('keydown', (e) => editLast(callInput, $('#callMessages'), e));
@@ -3564,6 +3780,28 @@ document.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('keydown', (e) => e.key === 'Escape' && (pop.hidden = true));
 function openEmoji(anchor, pick) {
+  const wrap = el('div', 'emoji-pop');
+  const custom = [...emojiMap().values()];
+  if (custom.length) {
+    wrap.append(el('div', 'emoji-sec', 'Do grupo'));
+    const cg = el('div', 'emoji-grid custom');
+    for (const e of custom) {
+      const b = el('button');
+      b.type = 'button';
+      b.title = `:${e.name}:`;
+      const img = el('img', 'cemoji');
+      img.dataset.file = e.file;
+      img.dataset.owner = e.by;
+      img.alt = `:${e.name}:`;
+      b.append(img);
+      b.onclick = () => {
+        pick(`:${e.name}:`);
+        pop.hidden = true;
+      };
+      cg.append(b);
+    }
+    wrap.append(hydrateEmojis(cg), el('div', 'emoji-sec', 'Emojis'));
+  }
   const grid = el('div', 'emoji-grid');
   for (const e of EMOJIS) {
     const b = el('button', '', e);
@@ -3574,7 +3812,8 @@ function openEmoji(anchor, pick) {
     };
     grid.append(b);
   }
-  openPopover(anchor, grid);
+  wrap.append(grid);
+  openPopover(anchor, wrap);
 }
 // ----- cartão de perfil (clicar em alguém) -----
 // user: { id, name, color }; prof: perfil a mostrar (a prévia do editor passa o rascunho)
@@ -3601,6 +3840,15 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
   const body = el('div', 'pc-body');
   const nameRow = el('div', 'pc-name-row');
   nameRow.append(opts.nameEl || nameEl(user.name, user.color, user.id, 'pc-uname'));
+  if (!opts.preview)
+    for (const [ic, title] of badgesOf(user.id)) {
+      const b = icon(ic, 'pc-badge');
+      b.setAttribute('aria-label', title);
+      const wrapB = el('span', 'pc-badge-wrap');
+      wrapB.title = title;
+      wrapB.append(b);
+      nameRow.append(wrapB);
+    }
   const g = googleOf(user.id);
   if (g && !opts.preview) {
     const b = icon('badge-check', 'g-badge');
@@ -3615,7 +3863,7 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
     body.append(el('div', 'pc-sec', 'Sobre mim'));
     const bio = el('div', 'pc-bio');
     bio.innerHTML = format(prof.bio);
-    body.append(bio);
+    body.append(hydrateEmojis(bio));
   }
   const live = [...peers.values()].find((p) => p.user?.id === user.id && p.voice?.ch);
   const vch = user.id === me.id ? C.ch : live?.voice.ch;
@@ -4502,6 +4750,7 @@ function openView(id) {
     markRead(c.id);
   }
   $('#btnChatSearch').hidden = !text;
+  if ($('#btnPins')) $('#btnPins').hidden = !text;
 }
 addEventListener('focus', () => textChatCh() && markRead(textChatCh()));
 
@@ -4583,6 +4832,7 @@ let srvDraft = null;
 const srvUrls = {};
 function openServerDialog() {
   if (!R) return;
+  renderEmojiAdmin();
   const g = grpRec();
   srvDraft = { name: g.name || 'Grupo', desc: g.desc || '', icon: g.icon || '', banner: g.banner || '', color: cleanHex(g.color) || '#ff7a1a' };
   $('#srvName').value = srvDraft.name;
@@ -4648,6 +4898,98 @@ $('#srvSave').onclick = () => {
   toast('Perfil do servidor salvo');
 };
 $('#groupName').onclick = $('#groupAvatar').onclick = $('#btnServer').onclick = openServerDialog;
+
+// ----- emojis do grupo: qualquer um adiciona; quem adicionou apaga -----
+function renderEmojiAdmin() {
+  const list = $('#srvEmojis');
+  if (!list) return;
+  const items = [...emojiMap().values()].sort((a, b) => a.name.localeCompare(b.name));
+  list.replaceChildren(
+    ...items.map((e) => {
+      const row = el('div', 'emo-row');
+      const img = el('img', 'cemoji');
+      img.dataset.file = e.file;
+      img.dataset.owner = e.by;
+      row.append(img, el('code', '', `:${e.name}:`), el('span', 'muted small', 'por ' + (e.addedBy || '?')));
+      if (e.by === me.id) {
+        const del = el('button', 'icon-btn sm danger');
+        del.type = 'button';
+        del.title = 'Apagar emoji';
+        del.append(icon('trash-2', 'sm'));
+        del.onclick = () => put({ ...e, del: true });
+        row.append(del);
+      }
+      return row;
+    }),
+  );
+  if (!items.length) list.append(el('p', 'muted small', 'Nenhum emoji ainda. Use :nome: no chat depois de adicionar.'));
+  hydrateEmojis(list);
+}
+$('#srvEmoAdd').onclick = () => {
+  const name = $('#srvEmoName').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (!EMO_NAME.test(name)) return toast('Nome do emoji: 2 a 32 letras, números ou _');
+  if (emojiMap().has(name)) return toast(`Já existe :${name}:`);
+  $('#srvEmoFile').click();
+};
+$('#srvEmoFile').onchange = async () => {
+  const file = $('#srvEmoFile').files[0];
+  $('#srvEmoFile').value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) return toast('Escolha uma imagem (PNG, GIF ou WebP)');
+  if (file.size > 512 * 1024) return toast('O emoji passa de 512 KB');
+  const name = $('#srvEmoName').value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const id = 'f:' + randId(12);
+  await blobPut(id, file);
+  put({ k: 'emo', id: 'e:' + randId(), name, file: id, addedBy: me.name, at: Date.now() });
+  $('#srvEmoName').value = '';
+  toast(`Emoji :${name}: adicionado`);
+};
+
+// ----- mensagens fixadas do canal (botão no topo) -----
+function openPins(anchor) {
+  const ch = S.view;
+  const list = all('pin')
+    .filter((p) => p.ch === ch && recs.get(p.msg) && !recs.get(p.msg).del)
+    .sort((a, b) => b.at - a.at);
+  const box = el('div', 'pins-pop');
+  box.append(el('div', 'pins-head', `Fixadas em #${channel(ch)?.name || ''}`));
+  if (!list.length) box.append(el('p', 'muted small', 'Nenhuma mensagem fixada. Passe o mouse numa mensagem e clique no alfinete.'));
+  for (const p of list) {
+    const m = recs.get(p.msg);
+    const row = el('div', 'pin-row');
+    const top = el('div', 'pin-top');
+    top.append(nameEl(m.bot ? 'DJ' : m.name, m.color, m.bot ? null : m.uid), el('time', 'muted small', fullTime.format(m.ts)));
+    const text = el('div', 'pin-text');
+    text.innerHTML = format(String(m.text || (m.att?.length ? '[anexo]' : '')).slice(0, 300));
+    hydrateEmojis(text);
+    const go = el('button', 'ghost sm', 'Ir até ela');
+    go.type = 'button';
+    go.onclick = () => {
+      pop.hidden = true;
+      jumpTo(m.id);
+    };
+    const un = el('button', 'icon-btn sm');
+    un.type = 'button';
+    un.title = 'Desafixar';
+    un.append(icon('pin-off', 'sm'));
+    un.onclick = () => {
+      put({ ...p, del: true });
+      row.remove();
+    };
+    row.append(top, text, wrapEl('div', 'pin-actions', go, un));
+    box.append(row);
+  }
+  openPopover(anchor, box);
+}
+{
+  const b = el('button', 'icon-btn');
+  b.type = 'button';
+  b.id = 'btnPins';
+  b.title = 'Mensagens fixadas';
+  b.append(icon('pin'));
+  b.onclick = () => openPins(b);
+  $('#btnChatSearch').before(b);
+}
 
 const inviteCode = () => 'JANJA-' + R.key.match(/.{1,4}/g).join('-');
 // o código vai depois do #: a página do convite nunca o envia a nenhum servidor
@@ -5938,7 +6280,7 @@ function toggleReaction(m, emoji) {
   const id = `rx:${m.id}:${me.id.slice(0, 16)}:${emojiKey(emoji)}`.slice(0, 80);
   const cur = recs.get(id);
   if (cur && !cur.del) put({ ...cur, del: true });
-  else put({ k: 'rx', id, msg: m.id, ch: m.ch, emoji: String(emoji).slice(0, 16), uid: me.id, name: me.name, at: Date.now() });
+  else put({ k: 'rx', id, msg: m.id, ch: m.ch, emoji: String(emoji).slice(0, /^:[a-z0-9_]{2,32}:$/.test(emoji) ? 34 : 16), uid: me.id, name: me.name, at: Date.now() });
 }
 function reactionsEl(m) {
   const box = el('div', 'reactions');
@@ -5953,7 +6295,18 @@ function reactionsEl(m) {
     const b = el('button', 'rx' + (mine ? ' mine' : ''));
     b.type = 'button';
     b.title = list.map((r) => r.name).join(', ');
-    b.append(el('span', 'rx-e', emoji), el('span', 'rx-n', String(list.length)));
+    const ce = /^:([a-z0-9_]{2,32}):$/.exec(emoji);
+    const e = ce && emojiMap().get(ce[1]);
+    const face = el('span', 'rx-e', e ? '' : emoji);
+    if (e) {
+      const img = el('img', 'cemoji');
+      img.dataset.file = e.file;
+      img.dataset.owner = e.by;
+      img.alt = emoji;
+      face.append(img);
+      hydrateEmojis(face);
+    }
+    b.append(face, el('span', 'rx-n', String(list.length)));
     b.onclick = () => toggleReaction(m, emoji);
     box.append(b);
   }
