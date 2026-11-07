@@ -55,6 +55,8 @@
         <ul id="textList" class="ch-list"></ul>
         <div class="ch-head"><span>Canais de voz</span><button class="icon-btn sm" data-add="voice" title="Criar canal de voz"><i data-icon="plus"></i></button></div>
         <ul id="voiceList" class="ch-list"></ul>
+        <div id="catList"></div>
+        <button type="button" class="ghost sm add-cat" id="btnAddCat"><i data-icon="plus"></i>Nova categoria</button>
       </nav>
 
       <div id="voiceBar" hidden>
@@ -277,12 +279,14 @@
     <div class="emo-add"><input id="srvEmoName" maxlength="32" placeholder="nome_do_emoji"><button type="button" class="ghost sm" id="srvEmoAdd"><i data-icon="plus"></i>Escolher imagem</button></div>
     <input type="file" id="srvEmoFile" accept="image/png,image/gif,image/webp,image/jpeg" hidden>
     <div class="emo-list" id="srvEmojis"></div>
+    <div id="srvAdmin"></div>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="srvSave">Salvar</button></menu>
   </dialog>
 
   <dialog id="channelDlg">
     <h2 id="chDlgTitle">Criar canal</h2>
-    <label>Nome do canal<input id="chDlgName" maxlength="40"></label>
+    <label>Nome<input id="chDlgName" maxlength="40"></label>
+    <label id="chDlgCatWrap">Categoria<select id="chDlgCat"></select></label>
     <menu>
       <button class="ghost danger-text" id="chDlgDelete" hidden>Apagar canal</button>
       <span class="grow"></span>

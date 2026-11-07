@@ -76,6 +76,11 @@ import {
   Sprout,
   PinOff,
   CornerUpLeft,
+  ChevronDown,
+  ChevronRight,
+  Shield,
+  Ban,
+  UserMinus,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -174,6 +179,11 @@ const ICONS = {
   crown: Crown,
   sprout: Sprout,
   'corner-up-left': CornerUpLeft,
+  'chevron-down': ChevronDown,
+  'chevron-right': ChevronRight,
+  shield: Shield,
+  ban: Ban,
+  'user-minus': UserMinus,
   shuffle: Shuffle,
   infinity: InfinityIcon,
   palette: Palette,
@@ -282,7 +292,7 @@ function avatar(name, color, cls = '', uid) {
 function nameEl(name, color, uid, cls = '') {
   const s = el('span', ('uname ' + cls).trim(), name);
   const prof = uid ? profileOf(uid) : {};
-  s.style.color = cleanColor(color);
+  s.style.color = cleanColor((uid && roleColorOf(uid)) || color);
   if (prof.font) s.classList.add('nf-' + prof.font);
   if (prof.grad) {
     s.classList.add('name-grad');
@@ -498,7 +508,7 @@ const sfx = {
 //   grp  nome do grupo            ch  canal (texto/voz)       msg  mensagem
 //   q    música na fila de um canal de voz                   pb   o que está tocando num canal de voz
 //   snd  som do soundboard (o áudio em si vai pelo armazenamento de arquivos)
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban']);
 const recs = new Map();
 let clock = 0;
 const tick = () => (clock = Math.max(Date.now(), clock + 1));
@@ -532,6 +542,7 @@ function put(rec) {
   rec.pk = me.pk;
   delete rec.sig;
   merge([rec]);
+  if (recs.get(rec.id) !== rec) return toast('Você não tem permissão para isso neste grupo');
   // assina e só então manda (a assinatura cobre o registro inteiro)
   ident.signRecord(rec).then(() => {
     if (recs.get(rec.id) === rec) persist();
@@ -553,7 +564,7 @@ async function acceptRemote(list) {
         rejectedRecs++;
         return;
       }
-      if (AUTHORED.has(r.k) && r.uid && r.uid !== r.by) {
+      if (AUTHORED.has(r.k) && r.uid && r.uid !== r.by && !(r.k === 'msg' && r.del)) {
         rejectedRecs++;
         return;
       }
@@ -572,13 +583,145 @@ async function initIdentity() {
   await ident.bindKey(me.id, me.pk);
   hiSig = await ident.signText(`janja-hi:${me.id}:${selfId}`);
 }
+// ============================================================ cargos e permissões (nomes do Stoat)
+// O grupo tem um dono; cargos dão permissões; "todos" (@everyone) tem as permissões básicas. Cada PC confere
+// as permissões de quem assinou o registro antes de aceitar (no P2P não há servidor para barrar).
+// Grupo sem dono (os antigos, até alguém reivindicar) funciona como antes: todo mundo pode tudo.
+const P = {
+  ManageChannel: 1,
+  ManageServer: 2,
+  ManagePermissions: 4,
+  ManageRole: 8,
+  ManageCustomisation: 16,
+  KickMembers: 32,
+  BanMembers: 64,
+  ManageMessages: 128,
+  SendMessage: 256,
+  React: 512,
+  Connect: 1024,
+  Speak: 2048,
+  Video: 4096,
+  Stream: 8192,
+  MuteMembers: 16384,
+  MoveMembers: 32768,
+};
+const PERM_LABELS = [
+  [P.SendMessage, 'Mandar mensagens'],
+  [P.React, 'Reagir'],
+  [P.Connect, 'Entrar nas calls'],
+  [P.Speak, 'Falar'],
+  [P.Video, 'Câmera'],
+  [P.Stream, 'Transmitir a tela'],
+  [P.ManageChannel, 'Gerenciar canais e categorias'],
+  [P.ManageCustomisation, 'Gerenciar emojis'],
+  [P.ManageMessages, 'Gerenciar mensagens (apagar de outros, fixar)'],
+  [P.MoveMembers, 'Mover pessoas de canal'],
+  [P.MuteMembers, 'Silenciar pessoas'],
+  [P.KickMembers, 'Expulsar'],
+  [P.BanMembers, 'Banir'],
+  [P.ManageRole, 'Gerenciar cargos'],
+  [P.ManagePermissions, 'Gerenciar permissões de todos'],
+  [P.ManageServer, 'Gerenciar o perfil do grupo'],
+];
+const ALL_PERMS = Object.values(P).reduce((a, b) => a | b, 0);
+// o que todo mundo podia fazer até agora continua liberado por padrão
+const EVERYONE_DEFAULT = P.SendMessage | P.React | P.Connect | P.Speak | P.Video | P.Stream | P.ManageChannel | P.ManageCustomisation | P.MoveMembers;
+let deniedRecs = 0;
+const groupOwner = () => recs.get('grp')?.owner || null;
+const everyonePerms = () => {
+  const p = recs.get('grp')?.perms;
+  return Number.isInteger(p) ? p : EVERYONE_DEFAULT;
+};
+const roleList = () => all('role').sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+function rolesOf(uid) {
+  const m = recs.get('mem:' + uid);
+  const ids = new Set(m && !m.del && Array.isArray(m.roles) ? m.roles : []);
+  return roleList().filter((r) => ids.has(r.id));
+}
+function banOf(uid) {
+  const b = recs.get('ban:' + uid);
+  return b && !b.del && (!b.until || b.until > Date.now()) ? b : null;
+}
+function permsOf(uid) {
+  const owner = groupOwner();
+  if (!owner || uid === owner) return ALL_PERMS;
+  if (banOf(uid)) return 0;
+  let p = everyonePerms();
+  for (const r of rolesOf(uid)) p |= r.perms | 0;
+  return p;
+}
+const can = (uid, perm) => (permsOf(uid) & perm) === perm;
+const iCan = (perm) => can(me.id, perm);
+// posição na hierarquia: dono acima de todos; depois o cargo mais alto (menor "order")
+const rankOf = (uid) => (uid === groupOwner() ? -1 : Math.min(Infinity, ...rolesOf(uid).map((r) => r.order ?? 0)));
+const outranks = (a, b) => rankOf(a) < rankOf(b);
+const roleColorOf = (uid) => rolesOf(uid).find((r) => cleanHex(r.color))?.color || '';
+const canClaimOwner = (uid) => !all('msg').some((m) => !m.bot) || badgesOf(uid).some(([ic]) => ic === 'sprout');
+
+// pode aceitar este registro de quem assinou? (cur = a versão que tenho agora)
+function permitted(r, cur) {
+  const by = r.by;
+  if (r.k === 'grp') {
+    const before = cur?.owner || null;
+    const after = r.owner || null;
+    if (before !== after) return before ? by === before : by === after && canClaimOwner(after); // só o dono passa a coroa
+    if (!before) return true;
+    const permsChanged = (Number.isInteger(cur?.perms) ? cur.perms : EVERYONE_DEFAULT) !== (Number.isInteger(r.perms) ? r.perms : EVERYONE_DEFAULT);
+    return can(by, permsChanged ? P.ManagePermissions : P.ManageServer);
+  }
+  if (!groupOwner()) return true; // grupo sem dono: como antes
+  if (banOf(by)) return false;
+  switch (r.k) {
+    case 'ch':
+    case 'cat':
+      return can(by, P.ManageChannel);
+    case 'emo':
+      return can(by, P.ManageCustomisation) || (!!r.del && cur?.by === by);
+    case 'pin':
+      return can(by, P.ManageMessages);
+    case 'rx':
+      return !!r.del || can(by, P.React);
+    case 'msg':
+      if (!cur) return r.del || can(by, P.SendMessage);
+      if (by === cur.uid) return true;
+      return !!r.del && can(by, P.ManageMessages) && outranks(by, cur.uid);
+    case 'role': {
+      if (!can(by, P.ManageRole)) return false;
+      if (by === groupOwner()) return true;
+      const mine = rankOf(by);
+      return mine < (r.order ?? 0) && (!cur || mine < (cur.order ?? 0)) && ((r.perms | 0) & ~permsOf(by)) === 0;
+    }
+    case 'mem': {
+      if (!can(by, P.ManageRole)) return false;
+      if (by === groupOwner()) return true;
+      if (r.uid !== by && !outranks(by, r.uid)) return false;
+      const a = new Set(cur?.roles || []);
+      const b = new Set(r.del ? [] : r.roles || []);
+      const changed = [...a, ...b].filter((x) => a.has(x) !== b.has(x));
+      return changed.every((id) => (recs.get(id)?.order ?? -Infinity) > rankOf(by));
+    }
+    case 'ban':
+      if (r.uid === groupOwner()) return false;
+      if (r.del) return can(by, P.BanMembers) || can(by, P.KickMembers);
+      return can(by, r.until ? P.KickMembers : P.BanMembers) && outranks(by, r.uid);
+    case 'q':
+    case 'pb':
+      return can(by, P.Connect);
+  }
+  return true;
+}
+
 function merge(list, quiet) {
   const changed = [];
   for (const r of list) {
     if (!validRec(r)) continue;
     const cur = recs.get(r.id);
     if (!newer(r, cur)) continue;
-    if (cur?.k === 'msg' && cur.uid !== r.uid) continue; // só o autor muda a própria mensagem
+    if (cur?.k === 'msg' && cur.uid !== r.uid) continue; // a mensagem continua sendo de quem escreveu
+    if (r.by && !permitted(r, cur)) {
+      deniedRecs++;
+      continue;
+    }
     if (cur?.k === 'msg' && !cur.del && plug('messageLogger')) logMessageChange(cur, r);
     recs.set(r.id, r);
     clock = Math.max(clock, Math.min(r.v, Date.now() + 60_000));
@@ -635,6 +778,13 @@ function onRecsChanged(list) {
   if (kinds.has('emo')) {
     emojiMapCache = null;
     renderEmojiAdmin();
+  }
+  if (kinds.has('role') || kinds.has('mem') || kinds.has('ban') || kinds.has('grp') || kinds.has('cat')) {
+    checkBanned();
+    renderSidebar();
+    renderPresence();
+    for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
+    if ($('#serverDlg').open) renderAdmin();
   }
   if (kinds.has('emo') || kinds.has('pin')) for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
   if (kinds.has('rx')) refreshReactions(new Set(list.filter((r) => r.k === 'rx').map((r) => r.msg)));
@@ -1103,6 +1253,7 @@ async function getMic(deviceId = settings.mic, opts = settings) {
 
 async function joinVoice(ch) {
   if (C.ch === ch) return;
+  if (!iCan(P.Connect)) return toast('Você não tem permissão para entrar nas calls deste grupo');
   if (C.ch) leaveVoice(true);
   try {
     const m = await getMic();
@@ -1393,6 +1544,9 @@ function onPeerStream(stream, pid, meta) {
   const p = ensurePeer(pid);
   const kind = meta?.kind === 'screen' || meta?.kind === 'cam' ? meta.kind : 'mic';
   if (kind === 'screen' && !C.watching.has(pid)) return;
+  // sem permissão (ou banido): o áudio/vídeo dessa pessoa não toca aqui
+  const uid = peers.get(pid)?.user?.id;
+  if (uid && (!can(uid, P.Connect) || !can(uid, { mic: P.Speak, cam: P.Video, screen: P.Stream }[kind]))) return;
   p.media[kind] = stream;
   if (stream.getAudioTracks().length) attachAudio(p, kind, stream);
   if (kind === 'mic') meter(pid, stream);
@@ -1650,6 +1804,7 @@ async function loadSources() {
 }
 async function openStreamPicker() {
   if (C.screen) return stopStream(true);
+  if (!iCan(P.Stream)) return toast('Você não tem permissão para transmitir neste grupo');
   if (!C.ch) return toast('Entre em um canal de voz para transmitir');
   openStreamDlg('new');
   loadSources();
@@ -3128,6 +3283,7 @@ function previewEl(url) {
 // selos do perfil (como no Stoat): fundador = escreveu na primeira semana do grupo
 function badgesOf(uid) {
   const out = [];
+  if (uid === recs.get('grp')?.owner) out.push(['crown', 'Dono do grupo']);
   const msgs = all('msg').filter((m) => !m.bot);
   if (msgs.length) {
     let start = Infinity;
@@ -3212,7 +3368,9 @@ function messageEl(m, prev) {
   };
   if (!m.ghost) action('face-slightly-smiling-plus', 'Reagir', (e, b) => openEmoji(b, (emoji) => toggleReaction(m, emoji)));
   if (!m.ghost) action('reply', 'Responder', () => replyTo(m, d));
-  if (!m.ghost) action(pinned ? 'pin-off' : 'pin', pinned ? 'Desafixar' : 'Fixar no canal', () => togglePin(m));
+  if (!m.ghost && iCan(P.ManageMessages)) action(pinned ? 'pin-off' : 'pin', pinned ? 'Desafixar' : 'Fixar no canal', () => togglePin(m));
+  if (!m.ghost && !m.bot && m.uid !== me.id && iCan(P.ManageMessages) && outranks(me.id, m.uid))
+    action('trash-2', 'Apagar mensagem (moderação)', (e) => deleteMessage(m, e.shiftKey), 'danger');
   if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
   if (m.uid === me.id && !m.bot && !m.ghost) {
     if (m.text) action('pencil', 'Editar (ou seta para cima no campo vazio)', () => startEdit(m, d));
@@ -3458,7 +3616,7 @@ function editLast(field, box, e) {
 }
 
 async function deleteMessage(m, skipConfirm) {
-  if (m.uid !== me.id) return;
+  if (m.uid !== me.id && !(iCan(P.ManageMessages) && outranks(me.id, m.uid))) return;
   if (!skipConfirm && !confirm('Apagar esta mensagem para todo mundo?')) return;
   for (const n of $$(`.msg[data-id="${m.id}"]`)) animate(n, { opacity: 0, x: -12 }, { duration: 0.15 });
   await new Promise((r) => setTimeout(r, 160));
@@ -3929,6 +4087,36 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
   const live = [...peers.values()].find((p) => p.user?.id === user.id && p.voice?.ch);
   const vch = user.id === me.id ? C.ch : live?.voice.ch;
   if (vch && channel(vch)) body.append(el('div', 'pc-sec', 'Na call'), el('div', 'pc-call', channel(vch).name));
+  // cargos (e, para quem pode, botões de moderação)
+  const userRoles = rolesOf(user.id);
+  if (userRoles.length && !opts.preview) {
+    body.append(el('div', 'pc-sec', 'Cargos'));
+    const chips = el('div', 'role-chips');
+    for (const r of userRoles) {
+      const chip = el('span', 'role-chip', r.name);
+      chip.style.setProperty('--rc', cleanHex(r.color) || '#8a8f98');
+      chips.append(chip);
+    }
+    body.append(chips);
+  }
+  if (!opts.preview && user.id !== me.id && groupOwner() && outranks(me.id, user.id) && (iCan(P.KickMembers) || iCan(P.BanMembers))) {
+    const mod = el('div', 'pc-mod');
+    if (iCan(P.KickMembers)) {
+      const k = el('button', 'ghost sm');
+      k.type = 'button';
+      k.append(icon('user-minus', 'sm'), document.createTextNode('Expulsar (10 min)'));
+      k.onclick = () => confirm(`Expulsar ${user.name} por 10 minutos?`) && banUser(user, 10 * 60_000);
+      mod.append(k);
+    }
+    if (iCan(P.BanMembers)) {
+      const b = el('button', 'ghost sm danger-text');
+      b.type = 'button';
+      b.append(icon('ban', 'sm'), document.createTextNode('Banir'));
+      b.onclick = () => confirm(`Banir ${user.name} do grupo?`) && banUser(user);
+      mod.append(b);
+    }
+    body.append(mod);
+  }
   if (!opts.preview && user.id !== me.id) {
     const max = plug('volumeBoost') ? 300 : 100;
     const label = el('label', 'pc-vol');
@@ -4032,7 +4220,7 @@ $$('.tab').forEach((t) => (t.onclick = () => selectTab(t.dataset.tab)));
 // ============================================================ renderização
 function uniquePeers(filter) {
   const byUser = new Map();
-  for (const p of peers.values()) if (p.user && p.user.id !== me.id && filter(p)) byUser.set(p.user.id, p);
+  for (const p of peers.values()) if (p.user && p.user.id !== me.id && !banOf(p.user.id) && filter(p)) byUser.set(p.user.id, p);
   return [...byUser.values()].sort((a, b) => a.user.name.localeCompare(b.user.name));
 }
 function voiceMembers(ch) {
@@ -4100,8 +4288,9 @@ function renderSidebar() {
   renderMobileNav();
   const rows = [];
   const textList = $('#textList');
-  textList.replaceChildren(
-    ...channels('text').map((c) => {
+  const cats = all('cat').sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const catIds = new Set(cats.map((c) => c.id));
+  const textRow = (c) => {
       const li = el('li');
       const row = el('div', 'ch' + (S.view === c.id ? ' active' : '') + (S.unread.has(c.id) && S.view !== c.id ? ' unread' : '') + (settings.mutedCh[c.id] ? ' muted-ch' : ''));
       row.dataset.chid = c.id;
@@ -4109,14 +4298,14 @@ function renderSidebar() {
       if (S.unread.has(c.id) && S.view !== c.id) row.append(el('span', 'unread-dot'));
       row.append(editBtn(c));
       row.onclick = () => openView(c.id);
+      dragChannel(row, c);
       li.append(row);
       rows.push([c.id, li]);
       return li;
-    }),
-  );
+  };
+  textList.replaceChildren(...channels('text').filter((c) => !catIds.has(c.cat)).map(textRow));
   const voiceList = $('#voiceList');
-  voiceList.replaceChildren(
-    ...channels('voice').map((c) => {
+  const voiceRow = (c) => {
       const li = el('li');
       const members = voiceMembers(c.id);
       const row = el('div', 'ch' + (S.view === c.id ? ' active' : ''));
@@ -4129,13 +4318,14 @@ function renderSidebar() {
         if (C.ch !== c.id) joinVoice(c.id);
       };
       // soltar um amigo arrastado aqui move ele para este canal; soltar você mesmo troca de canal
-      row.ondragover = (e) => {
+      dragChannel(row, c);
+      row.addEventListener('dragover', (e) => {
         if (!e.dataTransfer.types.includes('janja/uid')) return;
         e.preventDefault();
         row.classList.add('drop-here');
-      };
-      row.ondragleave = () => row.classList.remove('drop-here');
-      row.ondrop = (e) => {
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-here'));
+      row.addEventListener('drop', (e) => {
         row.classList.remove('drop-here');
         const uid = e.dataTransfer.getData('janja/uid');
         if (!uid) return;
@@ -4143,7 +4333,7 @@ function renderSidebar() {
         if (uid === me.id) return C.ch !== c.id && (openView(c.id), joinVoice(c.id));
         const u = userFromUid(uid);
         if (u) moveUser(u, c.id);
-      };
+      });
       li.append(row);
       if (members.length) {
         const ul = el('ul', 'voice-users');
@@ -4152,11 +4342,15 @@ function renderSidebar() {
           u.dataset.speak = m.key;
           u.dataset.uid = m.user.id;
           u.classList.toggle('speaking', C.speaking.has(m.key));
-          u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), el('span', 'pname', m.user.name));
+          const pn = el('span', 'pname', m.user.name);
+          const rc = !m.dj && roleColorOf(m.user.id);
+          if (rc) pn.style.color = rc;
+          u.append(avatar(m.user.name, m.user.color, 'xs', m.user.id), pn);
+          if (!m.dj && m.user.id === groupOwner()) u.append(icon('crown', 'owner-crown'));
           if (m.dj) u.append(el('span', 'bot-tag', 'BOT'));
           u.append(flagsEl(m.voice, m.key));
           if (m.peer) u.append(pingEl(m.key));
-          if (!m.dj) {
+          if (!m.dj && iCan(P.MoveMembers)) {
             u.draggable = true;
             u.ondragstart = (e) => {
               e.dataTransfer.setData('janja/uid', m.user.id);
@@ -4171,8 +4365,62 @@ function renderSidebar() {
       }
       rows.push([c.id, li]);
       return li;
+  };
+  voiceList.replaceChildren(...channels('voice').filter((c) => !catIds.has(c.cat)).map(voiceRow));
+  // categorias (como no Stoat): clique no nome recolhe; arraste canais para dentro e para fora
+  $('#catList').replaceChildren(
+    ...cats.map((cat) => {
+      const box = el('div', 'cat' + (settings.collapsedCats?.[cat.id] ? ' collapsed' : ''));
+      const head = el('div', 'cat-head');
+      head.append(icon(settings.collapsedCats?.[cat.id] ? 'chevron-right' : 'chevron-down', 'sm'), el('span', 'label', cat.name));
+      if (iCan(P.ManageChannel)) {
+        const add = el('button', 'icon-btn sm');
+        add.title = 'Criar canal nesta categoria';
+        add.append(icon('plus', 'sm'));
+        add.onclick = (e) => {
+          e.stopPropagation();
+          const menu = el('div', 'menu');
+          for (const [type, label] of [['text', 'Canal de texto'], ['voice', 'Canal de voz']]) {
+            const b = el('button', 'menu-item', label);
+            b.type = 'button';
+            b.onclick = () => {
+              pop.hidden = true;
+              openChannelDialog(type, null, cat.id);
+            };
+            menu.append(b);
+          }
+          openPopover(add, menu);
+        };
+        const edit = el('button', 'icon-btn sm ch-edit');
+        edit.title = 'Editar categoria';
+        edit.append(icon('pencil', 'sm'));
+        edit.onclick = (e) => {
+          e.stopPropagation();
+          openChannelDialog('cat', cat);
+        };
+        head.append(add, edit);
+      }
+      head.onclick = () => {
+        settings.collapsedCats = { ...settings.collapsedCats, [cat.id]: !settings.collapsedCats?.[cat.id] };
+        saveSettings();
+        renderSidebar();
+      };
+      dropZone(head, cat.id);
+      const ul = el('ul', 'ch-list');
+      if (!settings.collapsedCats?.[cat.id])
+        ul.append(
+          ...all('ch')
+            .filter((c) => c.cat === cat.id)
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name))
+            .map((c) => (c.type === 'voice' ? voiceRow(c) : textRow(c))),
+        );
+      box.append(head, ul);
+      rows.push([cat.id, box]);
+      return box;
     }),
   );
+  for (const b of $$('[data-add]')) b.hidden = !iCan(P.ManageChannel);
+  $('#btnAddCat').hidden = !iCan(P.ManageChannel);
   // anima só o que apareceu agora
   const fresh = rows.filter(([k]) => !seenRows.has(k)).map(([, e]) => e);
   if (fresh.length) S.firstRender ? animate(fresh, { opacity: [0, 1], x: [-10, 0] }, { delay: stagger(0.03), duration: 0.25, ease: EASE }) : popIn(fresh);
@@ -4200,8 +4448,49 @@ function renderSidebar() {
   $('.group-card').title = g.desc || '';
   $('#tbGroup').textContent = gname;
 }
+// arrastar canais: soltar em cima de outro canal põe antes dele (na mesma categoria); na categoria, no fim dela
+function dragChannel(row, c) {
+  if (!iCan(P.ManageChannel)) return;
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('janja/ch', c.id);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  row.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('janja/ch')) return;
+    e.preventDefault();
+    row.classList.add('drop-before');
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drop-before'));
+  row.addEventListener('drop', (e) => {
+    row.classList.remove('drop-before');
+    const id = e.dataTransfer.getData('janja/ch');
+    const moved = channel(id);
+    if (!moved || id === c.id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    put({ ...moved, cat: channel(c.id)?.cat || null, order: (c.order ?? 0) - 0.5 });
+  });
+}
+function dropZone(node, catId) {
+  node.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('janja/ch')) return;
+    e.preventDefault();
+    node.classList.add('drop-here');
+  });
+  node.addEventListener('dragleave', () => node.classList.remove('drop-here'));
+  node.addEventListener('drop', (e) => {
+    node.classList.remove('drop-here');
+    const moved = channel(e.dataTransfer.getData('janja/ch'));
+    if (!moved) return;
+    e.preventDefault();
+    const order = Math.max(0, ...all('ch').filter((c) => (c.cat || null) === catId).map((c) => c.order ?? 0)) + 1;
+    put({ ...moved, cat: catId, order });
+  });
+}
 function editBtn(c) {
   const b = el('button', 'icon-btn sm ch-edit');
+  if (!iCan(P.ManageChannel)) b.hidden = true;
   b.title = 'Editar canal';
   b.append(icon('pencil', 'sm'));
   b.onclick = (e) => {
@@ -4214,15 +4503,35 @@ function editBtn(c) {
 function renderPeopleList() {
   const list = $('#peopleList');
   const everyone = [{ key: 'me', user: me, voice: myVoice() }, ...uniquePeers(() => true).map((p) => ({ key: p.pid, user: p.user, voice: p.voice }))];
+  // quem tem cargo "separado na lista" aparece embaixo do nome do cargo, do mais alto para o mais baixo
+  const hoistOf = (uid) => rolesOf(uid).find((r) => r.hoist) || null;
+  everyone.sort((a, b) => (hoistOf(a.user.id)?.order ?? Infinity) - (hoistOf(b.user.id)?.order ?? Infinity) || a.user.name.localeCompare(b.user.name));
   const prev = new Set([...list.children].map((li) => li.dataset.uid));
+  let lastGroup;
+  const withHeads = [];
+  for (const m of everyone) {
+    const h = hoistOf(m.user.id);
+    const key = h?.id || '@all';
+    if (key !== lastGroup) {
+      lastGroup = key;
+      const n = everyone.filter((x) => (hoistOf(x.user.id)?.id || '@all') === key).length;
+      const head = el('li', 'role-head', `${h ? h.name : 'Online'} — ${n}`);
+      head.dataset.uid = 'head:' + key;
+      if (h?.color) head.style.color = h.color;
+      withHeads.push({ head });
+    }
+    withHeads.push(m);
+  }
   list.replaceChildren(
-    ...everyone.map((m) => {
+    ...withHeads.map((m) => {
+      if (m.head) return m.head;
       const li = el('li', 'st-' + statusOf(m.user.id));
       li.dataset.uid = m.user.id;
       if (settings.localMute[m.user.id]) li.classList.add('lmuted');
       const who = el('div', 'who');
       const pname = el('div', 'pname');
       pname.append(nameEl(m.user.name, m.user.color, m.user.id));
+      if (m.user.id === groupOwner()) pname.append(icon('crown', 'owner-crown'));
       if (m.key === 'me') pname.append(el('span', 'muted', ' (você)'));
       const g = googleOf(m.user.id);
       if (g) {
@@ -4817,9 +5126,15 @@ addEventListener('focus', () => textChatCh() && markRead(textChatCh()));
 
 // ============================================================ canais
 let chDlgState = null;
-function openChannelDialog(type, existing) {
+function openChannelDialog(type, existing, catId) {
+  if (!iCan(P.ManageChannel)) return toast('Você não tem permissão para mexer nos canais');
   chDlgState = { type, existing };
-  $('#chDlgTitle').textContent = existing ? 'Editar canal' : type === 'text' ? 'Novo canal de texto' : 'Novo canal de voz';
+  $('#chDlgTitle').textContent = type === 'cat' ? (existing ? 'Editar categoria' : 'Nova categoria') : existing ? 'Editar canal' : type === 'text' ? 'Novo canal de texto' : 'Novo canal de voz';
+  const sel = $('#chDlgCat');
+  sel.replaceChildren(new Option('Sem categoria', ''), ...all('cat').sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((c) => new Option(c.name, c.id)));
+  sel.value = (existing ? existing.cat : catId) || '';
+  if (sel.selectedIndex < 0) sel.value = '';
+  $('#chDlgCatWrap').hidden = type === 'cat';
   $('#chDlgName').value = existing?.name || '';
   $('#chDlgName').placeholder = type === 'text' ? 'ex.: memes' : 'ex.: Jogatina';
   $('#chDlgSave').textContent = existing ? 'Salvar' : 'Criar';
@@ -4828,6 +5143,9 @@ function openChannelDialog(type, existing) {
   $('#chDlgName').focus();
 }
 $$('[data-add]').forEach((b) => (b.onclick = () => openChannelDialog(b.dataset.add)));
+$('#btnAddCat').onclick = () => openChannelDialog('cat');
+// soltar um canal no título "Canais de texto/voz" tira ele da categoria
+for (const h of $$('#channels > .ch-head')) dropZone(h, null);
 // renomear o canal aberto: clicando no nome lá em cima ou no lápis
 $('#viewTitle').onclick = $('#btnRenameCh').onclick = () => {
   const c = channel(S.view);
@@ -4838,11 +5156,15 @@ $('#chDlgSave').onclick = () => {
   const name = cleanName($('#chDlgName').value.slice(0, 40));
   if (!name) return $('#chDlgName').focus();
   const { type, existing } = chDlgState;
-  if (existing) put({ ...existing, name: fixName(type, name) });
+  const cat = $('#chDlgCat').value || null;
+  if (type === 'cat') {
+    if (existing) put({ ...existing, name: name.slice(0, 40) });
+    else put({ k: 'cat', id: 'cat:' + randId(), name: name.slice(0, 40), order: Math.max(0, ...all('cat').map((c) => c.order ?? 0)) + 1 });
+  } else if (existing) put({ ...existing, name: fixName(type, name), cat });
   else {
     const order = Math.max(0, ...all('ch').map((c) => c.order)) + 1;
     const id = 'c:' + randId();
-    put({ k: 'ch', id, name: fixName(type, name), type, order });
+    put({ k: 'ch', id, name: fixName(type, name), type, order, cat });
     if (type === 'text') openView(id);
   }
   closeDialog($('#channelDlg'));
@@ -4853,6 +5175,11 @@ $('#chDlgName').onkeydown = (e) => {
 };
 $('#chDlgDelete').onclick = () => {
   const c = chDlgState.existing;
+  if (chDlgState.type === 'cat') {
+    if (!confirm(`Apagar a categoria "${c.name}"? Os canais dela continuam, sem categoria.`)) return;
+    put({ ...c, del: true });
+    return closeDialog($('#channelDlg'));
+  }
   if (c.type === 'text' && channels('text').length <= 1) return toast('O grupo precisa de pelo menos um canal de texto');
   if (c.type === 'voice' && voiceMembers(c.id).some((m) => m.key !== 'dj')) return toast('Tem gente nesse canal de voz');
   if (!confirm(`Apagar "${c.name}"?`)) return;
@@ -4894,6 +5221,7 @@ const srvUrls = {};
 function openServerDialog() {
   if (!R) return;
   renderEmojiAdmin();
+  renderAdmin();
   const g = grpRec();
   srvDraft = { name: g.name || 'Grupo', desc: g.desc || '', icon: g.icon || '', banner: g.banner || '', color: cleanHex(g.color) || '#ff7a1a' };
   $('#srvName').value = srvDraft.name;
@@ -4952,6 +5280,7 @@ $('#srvFile').onchange = async () => {
   renderServerPreview();
 };
 $('#srvSave').onclick = () => {
+  if (!iCan(P.ManageServer)) return toast('Você não tem permissão para mudar o perfil do grupo');
   renderServerPreview();
   const g = grpRec();
   put({ ...g, k: 'grp', id: 'grp', name: srvDraft.name, desc: srvDraft.desc, icon: srvDraft.icon, banner: srvDraft.banner, color: srvDraft.color });
@@ -4960,10 +5289,233 @@ $('#srvSave').onclick = () => {
 };
 $('#groupName').onclick = $('#groupAvatar').onclick = $('#btnServer').onclick = openServerDialog;
 
+// ----- moderação: expulsar (banimento com prazo) e banir -----
+function banUser(user, ms) {
+  put({ k: 'ban', id: 'ban:' + user.id, uid: user.id, name: user.name, ...(ms ? { until: Date.now() + ms } : {}), at: Date.now() });
+  toast(ms ? `${user.name} foi expulso por 10 minutos` : `${user.name} foi banido`);
+}
+// fui banido/expulso: sai da call e mostra o aviso (os outros já ignoram o que eu mandar)
+let bannedShown = false;
+function checkBanned() {
+  const b = banOf(me.id);
+  if (!b || bannedShown) return;
+  bannedShown = true;
+  if (C.ch) leaveVoice();
+  const box = el('div', 'banned-overlay');
+  const card = el('div', 'banned-card');
+  card.append(icon('ban'), el('h2', '', b.until ? 'Você foi expulso do grupo' : 'Você foi banido do grupo'));
+  card.append(el('p', 'muted', b.until ? `Dá para voltar às ${hhmm.format(b.until)}.` : 'Quem tem permissão no grupo te baniu. Peça para alguém de lá se achar que foi engano.'));
+  const leave = el('button', 'primary', 'Sair deste grupo');
+  leave.onclick = () => $('#btnLeaveGroup').click();
+  card.append(leave);
+  if (b.until) setTimeout(() => location.reload(), Math.max(1000, b.until - Date.now() + 1000));
+  box.append(card);
+  document.body.append(box);
+}
+// quem já apareceu no grupo (online agora ou que escreveu): para a lista de membros da administração
+function knownUsers() {
+  const map = new Map();
+  for (const m of all('msg')) if (!m.bot && m.uid && !map.has(m.uid)) map.set(m.uid, { id: m.uid, name: m.name, color: m.color });
+  for (const m of all('msg').sort((a, b) => a.ts - b.ts)) if (!m.bot && m.uid) map.set(m.uid, { id: m.uid, name: m.name, color: m.color });
+  for (const p of peers.values()) if (p.user && !p.user.fake) map.set(p.user.id, { id: p.user.id, name: p.user.name, color: p.user.color });
+  map.set(me.id, { id: me.id, name: me.name, color: me.color });
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+let roleEditing = null;
+function renderAdmin() {
+  const box = $('#srvAdmin');
+  if (!box) return;
+  const owner = groupOwner();
+  const ownerName = owner && knownUsers().find((u) => u.id === owner)?.name;
+  const parts = [];
+  const sec = (title, hint) => {
+    const s = el('div', 'adm-sec');
+    s.append(el('h3', 'srv-sec', title));
+    if (hint) s.append(el('p', 'muted small', hint));
+    parts.push(s);
+    return s;
+  };
+  // dono
+  const so = sec('Dono do grupo', owner ? '' : 'Este grupo ainda não tem dono: todo mundo pode tudo, como antes. Quem está no grupo desde a primeira semana pode reivindicar.');
+  if (owner) {
+    so.append(el('p', '', `Dono: ${ownerName || 'alguém fora do ar'}`));
+    if (owner === me.id) {
+      const sel = el('select');
+      sel.append(new Option('Passar a coroa para…', ''), ...knownUsers().filter((u) => u.id !== me.id).map((u) => new Option(u.name, u.id)));
+      sel.onchange = () => {
+        const u = knownUsers().find((x) => x.id === sel.value);
+        if (u && confirm(`Passar o grupo para ${u.name}? Você deixa de ser o dono.`)) put({ ...grpRec(), owner: u.id });
+        sel.value = '';
+      };
+      so.append(sel);
+    }
+  } else if (canClaimOwner(me.id)) {
+    const b = el('button', 'primary sm');
+    b.type = 'button';
+    b.append(icon('crown', 'sm'), document.createTextNode('Reivindicar o grupo'));
+    b.onclick = () => confirm('Virar o dono deste grupo? Depois disso só quem tiver permissão pode mexer em canais, cargos etc.') && put({ ...grpRec(), owner: me.id });
+    so.append(b);
+  }
+  if (!owner) {
+    box.replaceChildren(...parts);
+    return;
+  }
+  // permissões de todos
+  const se = sec('Permissões de todos', 'O que qualquer pessoa do grupo pode fazer (os cargos somam a isso).');
+  const evPerms = everyonePerms();
+  const canPerm = iCan(P.ManagePermissions);
+  const grid = el('div', 'perm-grid');
+  for (const [bit, label] of PERM_LABELS) {
+    if ([P.ManageRole, P.ManagePermissions, P.ManageServer, P.BanMembers, P.KickMembers].includes(bit)) continue;
+    const l = el('label', 'check');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = (evPerms & bit) === bit;
+    cb.disabled = !canPerm;
+    cb.onchange = () => put({ ...grpRec(), perms: cb.checked ? everyonePerms() | bit : everyonePerms() & ~bit });
+    l.append(cb, document.createTextNode(' ' + label));
+    grid.append(l);
+  }
+  se.append(grid);
+  // cargos
+  const sr = sec('Cargos', 'Do mais alto para o mais baixo. Quem tem um cargo só mexe nos cargos abaixo do seu.');
+  const canRoles = iCan(P.ManageRole);
+  for (const r of roleList()) {
+    const row = el('div', 'role-row');
+    const dot = el('span', 'role-dot');
+    dot.style.background = cleanHex(r.color) || '#8a8f98';
+    const count = all('mem').filter((m) => Array.isArray(m.roles) && m.roles.includes(r.id)).length;
+    row.append(dot, el('b', '', r.name), el('span', 'muted small', `${count} ${count === 1 ? 'pessoa' : 'pessoas'}`));
+    if (canRoles && (owner === me.id || rankOf(me.id) < (r.order ?? 0))) {
+      const ed = el('button', 'ghost sm', roleEditing === r.id ? 'Fechar' : 'Editar');
+      ed.type = 'button';
+      ed.onclick = () => {
+        roleEditing = roleEditing === r.id ? null : r.id;
+        renderAdmin();
+      };
+      row.append(ed);
+    }
+    sr.append(row);
+    if (roleEditing === r.id) sr.append(roleEditor(r));
+  }
+  if (canRoles) {
+    const add = el('button', 'ghost sm');
+    add.type = 'button';
+    add.append(icon('plus', 'sm'), document.createTextNode('Novo cargo'));
+    add.onclick = () => {
+      const order = Math.max(rankOf(me.id) + 1, ...all('role').map((r) => (r.order ?? 0) + 1));
+      const id = 'role:' + randId(6);
+      put({ k: 'role', id, name: 'Novo cargo', color: '#3aa8f0', perms: 0, order, hoist: true });
+      roleEditing = id;
+    };
+    sr.append(add);
+  }
+  // membros
+  const sm = sec('Membros', 'Marque os cargos de cada um. Quem tem permissão também expulsa ou bane pelo perfil da pessoa.');
+  for (const u of knownUsers()) {
+    if (banOf(u.id)) continue;
+    const row = el('div', 'mem-row');
+    row.append(avatar(u.name, u.color, 'xs', u.id), nameEl(u.name, u.color, u.id));
+    if (u.id === owner) row.append(icon('crown', 'owner-crown'));
+    const chips = el('div', 'mem-roles');
+    const cur = recs.get('mem:' + u.id);
+    const have = new Set(cur && !cur.del ? cur.roles || [] : []);
+    for (const r of roleList()) {
+      const can2 = canRoles && (owner === me.id || rankOf(me.id) < (r.order ?? 0)) && (u.id === me.id || outranks(me.id, u.id));
+      const l = el('label', 'role-toggle');
+      l.style.setProperty('--rc', cleanHex(r.color) || '#8a8f98');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = have.has(r.id);
+      cb.disabled = !can2;
+      cb.onchange = () => {
+        const next = new Set(have);
+        cb.checked ? next.add(r.id) : next.delete(r.id);
+        put({ k: 'mem', id: 'mem:' + u.id, uid: u.id, roles: [...next] });
+      };
+      l.append(cb, document.createTextNode(' ' + r.name));
+      chips.append(l);
+    }
+    row.append(chips);
+    sm.append(row);
+  }
+  // banidos
+  const bans = all('ban').filter((b) => !b.until || b.until > Date.now());
+  if (bans.length) {
+    const sb = sec('Banidos e expulsos');
+    for (const b of bans) {
+      const row = el('div', 'mem-row');
+      row.append(el('span', '', b.name || b.uid), el('span', 'muted small', b.until ? `expulso até ${hhmm.format(b.until)}` : 'banido'));
+      if (iCan(P.BanMembers) || (b.until && iCan(P.KickMembers))) {
+        const un = el('button', 'ghost sm', 'Desfazer');
+        un.type = 'button';
+        un.onclick = () => put({ ...b, del: true });
+        row.append(un);
+      }
+      sb.append(row);
+    }
+  }
+  box.replaceChildren(...parts);
+}
+function roleEditor(r) {
+  const box = el('div', 'role-editor');
+  const name = el('input');
+  name.value = r.name;
+  name.maxLength = 32;
+  const color = el('input');
+  color.type = 'color';
+  color.value = cleanHex(r.color) || '#3aa8f0';
+  const hoist = el('label', 'check');
+  const hcb = el('input');
+  hcb.type = 'checkbox';
+  hcb.checked = !!r.hoist;
+  hoist.append(hcb, document.createTextNode(' Separar na lista de pessoas'));
+  const grid = el('div', 'perm-grid');
+  const boxes = PERM_LABELS.map(([bit, label]) => {
+    const l = el('label', 'check');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = ((r.perms | 0) & bit) === bit;
+    cb.disabled = groupOwner() !== me.id && !iCan(bit); // não dá para dar o que você não tem
+    l.append(cb, document.createTextNode(' ' + label));
+    grid.append(l);
+    return [bit, cb];
+  });
+  const save = el('button', 'primary sm', 'Salvar cargo');
+  save.type = 'button';
+  save.onclick = () => {
+    const perms = boxes.reduce((p, [bit, cb]) => (cb.checked ? p | bit : p), 0);
+    put({ ...r, name: cleanName(name.value) || r.name, color: color.value, hoist: hcb.checked, perms });
+    roleEditing = null;
+    renderAdmin();
+  };
+  const up = el('button', 'ghost sm', '↑ Subir');
+  up.type = 'button';
+  up.onclick = () => {
+    const list = roleList();
+    const i = list.findIndex((x) => x.id === r.id);
+    const above = list[i - 1];
+    if (above && (groupOwner() === me.id || rankOf(me.id) < (above.order ?? 0))) {
+      put({ ...above, order: r.order });
+      put({ ...r, order: above.order });
+    }
+  };
+  const del = el('button', 'ghost sm danger-text', 'Apagar cargo');
+  del.type = 'button';
+  del.onclick = () => {
+    if (!confirm(`Apagar o cargo "${r.name}"?`)) return;
+    put({ ...r, del: true });
+    roleEditing = null;
+  };
+  box.append(wrapEl('div', 'role-ed-row', name, color), hoist, grid, wrapEl('div', 'role-ed-row', save, up, del));
+  return box;
+}
+
 // ----- emojis do grupo: qualquer um adiciona; quem adicionou apaga -----
 function renderEmojiAdmin() {
   const list = $('#srvEmojis');
   if (!list) return;
+  $('#srvEmoAdd').disabled = !iCan(P.ManageCustomisation);
   const items = [...emojiMap().values()].sort((a, b) => a.name.localeCompare(b.name));
   list.replaceChildren(
     ...items.map((e) => {
@@ -6686,7 +7238,7 @@ $('#setupForm').onsubmit = async (e) => {
   $('#setup').hidden = true;
   start();
   if (!join) {
-    put({ k: 'grp', id: 'grp', name: cleanName($('#suGroup').value) || `Grupo de ${name}` });
+    put({ k: 'grp', id: 'grp', name: cleanName($('#suGroup').value) || `Grupo de ${name}`, owner: me.id });
     $('#btnInvite').click();
   }
 };
@@ -6884,6 +7436,7 @@ function onPoke(d, pid) {
 
 // ----- mover amigos de canal (arrastar, como no TeamSpeak) -----
 function moveUser(user, ch) {
+  if (!iCan(P.MoveMembers)) return toast('Você não tem permissão para mover pessoas');
   const peer = [...peers.values()].find((p) => p.user?.id === user.id);
   if (!peer?.voice || peer.voice.ch === ch) return;
   A.move.send({ ch }, { target: peer.pid });
@@ -6893,6 +7446,7 @@ function onMove(d, pid) {
   const p = peers.get(pid);
   const c = channel(d?.ch);
   if (!p?.user || !c || c.type !== 'voice' || !C.ch || C.ch === c.id) return; // só quem já está numa call
+  if (!p.user.verified || !can(p.user.id, P.MoveMembers)) return; // só quem pode mover (e é quem diz ser)
   joinVoice(c.id);
   openView(c.id);
   toast(`${p.user.name} moveu você para ${c.name}`);
@@ -6932,6 +7486,7 @@ function camVideo(stream, mirror) {
 }
 async function toggleCam() {
   if (C.cam) return stopCam(true);
+  if (!iCan(P.Video)) return toast('Você não tem permissão para ligar a câmera neste grupo');
   if (!C.ch) return toast('Entre em um canal de voz para ligar a câmera');
   // No celular: câmera da frente e 640x480 (o 720p esquenta e trava em muito Android).
   // Se a câmera escolhida sumiu ou não aceita o formato, tenta de novo com qualquer câmera.

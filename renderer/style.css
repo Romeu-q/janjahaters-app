@@ -1071,3 +1071,43 @@ img.cemoji { width: 22px; height: 22px; object-fit: contain; vertical-align: -5p
 .pin-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .pc-badge-wrap { display: inline-flex; margin-left: 4px; color: #4fd18b; }
 .pc-badge { width: 16px; height: 16px; }
+
+/* ===== categorias, cargos e moderação ===== */
+#catList { display: flex; flex-direction: column; }
+.cat-head { display: flex; align-items: center; gap: 4px; padding: 14px 8px 4px 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); cursor: pointer; user-select: none; border-radius: 6px; }
+.cat-head:hover { color: var(--text); }
+.cat-head .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-head .icon-btn { opacity: 0; }
+.cat-head:hover .icon-btn { opacity: 1; }
+.cat.collapsed > .ch-list { display: none; }
+.add-cat { margin: 10px 8px 4px; align-self: flex-start; opacity: .7; }
+.add-cat:hover { opacity: 1; }
+.ch.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.cat-head.drop-here, .ch-head.drop-here { background: var(--accent-soft); color: var(--text); }
+.menu { display: flex; flex-direction: column; min-width: 160px; }
+.menu-item { text-align: left; background: none; border: 0; padding: 8px 10px; border-radius: 6px; color: var(--text); }
+.menu-item:hover { background: var(--panel-3); }
+.owner-crown { width: 13px; height: 13px; color: #f2c94c; margin-left: 4px; flex: none; }
+.role-head { list-style: none; padding: 12px 8px 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); cursor: default; }
+.role-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.role-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; background: var(--panel-3); font-size: 12px; }
+.role-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rc); }
+.pc-mod { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.adm-sec { margin-top: 6px; }
+.perm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 13px; margin: 6px 0; }
+.role-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); margin-bottom: 4px; }
+.role-row .muted { flex: 1; }
+.role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.role-editor { padding: 10px; border-radius: 10px; background: var(--panel-2); margin: 0 0 8px; display: flex; flex-direction: column; gap: 8px; }
+.role-ed-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.role-ed-row input:not([type]) { flex: 1; }
+.mem-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.mem-roles { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-left: auto; font-size: 12px; }
+.role-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--rc); }
+.banned-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0, 0, 0, .78); display: grid; place-items: center; }
+.banned-card { background: var(--panel); border-radius: 18px; padding: 28px 32px; max-width: 380px; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.banned-card svg.lucide { width: 40px; height: 40px; color: var(--red); }
+/* botões com ícone + texto: lado a lado (o ícone não vai para cima) */
+button.ghost.sm, button.primary.sm, .add-cat, #srvEmoAdd { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; white-space: nowrap; }
+.people .pname { display: flex; align-items: center; gap: 2px; min-width: 0; white-space: nowrap; }
+.people .pname .uname { overflow: hidden; text-overflow: ellipsis; }
