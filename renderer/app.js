@@ -3,6 +3,7 @@ import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
 import * as ident from './identity.js';
+import { initDM } from './dm.js';
 import {
   createElement,
   ArrowDown,
@@ -525,7 +526,7 @@ const sfx = {
 //   grp  nome do grupo            ch  canal (texto/voz)       msg  mensagem
 //   q    música na fila de um canal de voz                   pb   o que está tocando num canal de voz
 //   snd  som do soundboard (o áudio em si vai pelo armazenamento de arquivos)
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban', 'rekey']);
 const recs = new Map();
 let clock = 0;
 const tick = () => (clock = Math.max(Date.now(), clock + 1));
@@ -599,7 +600,17 @@ async function initIdentity() {
   if (freshProfile) me.id = await ident.idFromKey(me.pk); // quem é novo: o id sai da chave
   await ident.bindKey(me.id, me.pk);
   hiSig = await ident.signText(`janja-hi:${me.id}:${selfId}`);
+  dm = initDM({
+    me, store, el, icon, avatar, nameEl, toast, sfx, format, hydrateEmojis, openDialog, randId, getMic, turnServers,
+    myStatus: () => myStatus(),
+    keyOf: (uid) => ident.keyOf(uid),
+    pidsOf: (uid) => [...peers.values()].filter((p) => p.user?.id === uid && p.user.verified).map((p) => p.pid),
+    sendFrq: (body, pid) => A?.frq?.send(body, { target: pid }),
+    speaker: () => settings.speaker || '',
+  });
+  await dm.start();
 }
+let dm = null;
 // ============================================================ cargos e permissões (nomes do Stoat)
 // O grupo tem um dono; cargos dão permissões; "todos" (@everyone) tem as permissões básicas. Cada PC confere
 // as permissões de quem assinou o registro antes de aceitar (no P2P não há servidor para barrar).
@@ -724,6 +735,8 @@ function permitted(r, cur) {
     case 'q':
     case 'pb':
       return can(by, P.Connect);
+    case 'rekey':
+      return can(by, P.BanMembers);
   }
   return true;
 }
@@ -803,6 +816,7 @@ function onRecsChanged(list) {
     for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
     if ($('#serverDlg').open) renderAdmin();
   }
+  if (kinds.has('rekey')) onRekey(list.find((r) => r.k === 'rekey'));
   if (kinds.has('emo') || kinds.has('pin')) for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
   if (kinds.has('rx')) refreshReactions(new Set(list.filter((r) => r.k === 'rx').map((r) => r.msg)));
   if (kinds.has('msg')) {
@@ -862,7 +876,7 @@ function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -950,7 +964,10 @@ function connectRoom() {
     sndp: room.makeAction('sndp'), // tocar som do soundboard
     poke: room.makeAction('poke'), // cutucar
     move: room.makeAction('move'), // "vai para o canal X" (arrastaram você)
+    frq: room.makeAction('frq'), // pedido de amizade (assinado)
   };
+  A.frq.onMessage = (d, { peerId }) => dm?.onFriendMsg(d, peerId);
+  listenOldRooms();
   A.poke.onMessage = (d, { peerId }) => onPoke(d, peerId);
   A.move.onMessage = (d, { peerId }) => onMove(d, peerId);
   room.onPeerJoin = (pid) => {
@@ -1002,6 +1019,7 @@ async function verifyHi(p, u) {
   const fake = !ok && !!ident.keyOf(uid);
   if (p.user?.id !== uid) return;
   p.user.verified = ok;
+  if (ok) dm?.onGroupHi(uid, u, p.pid);
   if (fake && !p.user.fake) {
     p.user.fake = true;
     p.user.name = p.user.name + ' (não verificado)';
@@ -4137,6 +4155,14 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
     }
     body.append(mod);
   }
+  if (!opts.preview && user.id !== me.id && dm) {
+    const fb = dm.profileButtons({ ...user, bot: user.bot || [...peers.values()].some((p) => p.user?.id === user.id && p.user.bot) });
+    if (fb) {
+      const row = el('div', 'pc-mod pc-friend');
+      row.append(fb);
+      body.append(row);
+    }
+  }
   if (!opts.preview && user.id !== me.id) {
     const max = plug('volumeBoost') ? 300 : 100;
     const label = el('label', 'pc-vol');
@@ -5043,6 +5069,7 @@ if (!isMobile) {
   $('#toolbar').prepend(...$('#controls').children); // os botões da call viram ferramentas
   $('#statusBar').prepend($('.tb-status'));
   $('#tbInvite').onclick = () => $('#btnInvite').click();
+  $('#tbFriends').onclick = () => dm?.open();
   $('#tbServer').onclick = () => $('#btnServer').click();
   $('#tbSettings').onclick = () => $('#btnSettings').click();
   $('#tbAway').onclick = () => setStatus(myStatus() === 'idle' ? 'online' : 'idle');
@@ -5311,6 +5338,58 @@ $('#srvSave').onclick = () => {
 $('#groupName').onclick = $('#groupAvatar').onclick = $('#btnServer').onclick = openServerDialog;
 
 // ----- moderação: expulsar (banimento com prazo) e banir -----
+// ============================================================ trocar o código do grupo (ban de verdade)
+// Quem pode banir sorteia um código novo e manda, cifrado com a chave X25519 de cada um, para quem não está
+// banido. Cada PC abre a sua parte e muda de sala. O banido recebe o registro mas não consegue abrir.
+// A sala antiga fica "escutando" por 14 dias só para entregar o aviso a quem estava offline.
+async function rekeyGroup() {
+  const users = knownUsers().filter((u) => u.id !== me.id && !banOf(u.id));
+  const ok = users.filter((u) => dm?.dhOf(u.id));
+  const left = users.filter((u) => !dm?.dhOf(u.id));
+  const msg =
+    `Trocar o código do grupo?\n\n${ok.length} pessoa(s) recebem o código novo automaticamente.` +
+    (left.length ? `\n\nSem a versão nova (vão precisar de um convite novo): ${left.map((u) => u.name).join(', ')}` : '') +
+    '\n\nQuem está banido fica de fora. O convite antigo para de funcionar.';
+  if (!confirm(msg)) return;
+  const key = newKey();
+  const keys = {};
+  for (const u of ok) keys[u.id] = await ident.seal(dm.dhOf(u.id), key);
+  keys[me.id] = await ident.seal(ident.dhPublic, key);
+  put({ k: 'rekey', id: 'rekey', keys, dh: ident.dhPublic, at: Date.now() });
+}
+let rekeying = false;
+async function onRekey(r) {
+  if (!r || r.del || rekeying || !r.keys?.[me.id] || typeof r.dh !== 'string') return;
+  if (store.get('rekeyDone', {})[r.v]) return;
+  const key = await ident.unseal(r.dh, r.keys[me.id]);
+  if (!key || !parseCode(key) || key === R.key) return;
+  rekeying = true;
+  const done = store.get('rekeyDone', {});
+  done[r.v] = 1;
+  store.set('rekeyDone', done);
+  const hash = (await sha256('toca-room:' + key)).slice(0, 40);
+  store.set('recs:' + hash, [...recs.values()].filter((x) => x.k !== 'rekey'));
+  store.set('view:' + hash, S.view);
+  const olds = store.get('oldRooms', []).filter((o) => o.until > Date.now() && o.hash !== R.hash);
+  olds.push({ key: R.key, hash: R.hash, rec: r, until: Date.now() + 14 * 864e5 });
+  store.set('oldRooms', olds);
+  R = { key, hash };
+  store.set('room', R);
+  if (C.ch) leaveVoice();
+  toast('O grupo trocou de código. Reconectando…');
+  setTimeout(() => location.reload(), 1500);
+}
+// sala antiga: só entrega o aviso do código novo para quem chega nela
+function listenOldRooms() {
+  const olds = store.get('oldRooms', []).filter((o) => o.until > Date.now());
+  store.set('oldRooms', olds);
+  for (const o of olds) {
+    const r = joinRoom({ appId: 'toca-voice-p2p-v2', password: o.key, turnConfig: turnServers }, o.hash);
+    const rc = r.makeAction('recs');
+    r.makeAction('sum');
+    r.onPeerJoin = (pid) => rc.send([o.rec], { target: pid });
+  }
+}
 function banUser(user, ms) {
   put({ k: 'ban', id: 'ban:' + user.id, uid: user.id, name: user.name, ...(ms ? { until: Date.now() + ms } : {}), at: Date.now() });
   toast(ms ? `${user.name} foi expulso por 10 minutos` : `${user.name} foi banido`);
@@ -5464,6 +5543,14 @@ function renderAdmin() {
   const bans = all('ban').filter((b) => !b.until || b.until > Date.now());
   if (bans.length) {
     const sb = sec('Banidos e expulsos');
+    if (iCan(P.BanMembers) && bans.some((b) => !b.until)) {
+      const p = el('p', 'muted small', 'No P2P, quem tem o código do grupo ainda consegue entrar na sala (só não vê nada do que vocês fazem). Para tirar de vez, troque o código: quem não está banido recebe o novo sozinho.');
+      const rk = el('button', 'ghost sm danger-text');
+      rk.type = 'button';
+      rk.append(icon('refresh', 'sm'), document.createTextNode('Trocar o código do grupo'));
+      rk.onclick = rekeyGroup;
+      sb.append(p, rk);
+    }
     for (const b of bans) {
       const row = el('div', 'mem-row');
       row.append(el('span', '', b.name || b.uid), el('span', 'muted small', b.until ? `expulso até ${hhmm.format(b.until)}` : 'banido'));
@@ -5643,6 +5730,7 @@ $('#btnCopyCode').onclick = async () => {
   toast('Código copiado');
 };
 $$('[data-close]').forEach((b) => (b.onclick = () => closeDialog(b.closest('dialog'))));
+$('#btnFriends').onclick = () => dm?.open();
 
 function colorPicker(box, current, onPick) {
   box.replaceChildren();
@@ -7569,4 +7657,5 @@ function stopCam(notify) {
   }
 }
 $('#ctlCam').onclick = toggleCam;
+
 

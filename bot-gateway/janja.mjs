@@ -7,7 +7,7 @@ import { RTCPeerConnection } from 'node-datachannel/polyfill';
 import * as ident from './identity.js';
 
 export const APP_ID = 'toca-voice-p2p-v2';
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban', 'rekey']);
 const AUTHORED = new Set(['msg', 'rx', 'pin']);
 const SIGNED_SINCE = Date.UTC(2026, 10, 8, 12);
 

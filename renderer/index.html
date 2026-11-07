@@ -25,6 +25,7 @@
     <span class="tool-sep" id="toolSepEnd"></span>
     <button type="button" class="tool" id="tbAway" title="Ficar ausente"><i data-icon="moon"></i><span>Ausente</span></button>
     <span class="grow"></span>
+    <button type="button" class="tool" id="tbFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span>Amigos</span><span class="badge" data-friends-badge hidden></span></button>
     <button type="button" class="tool" id="tbInvite" title="Convidar amigos"><i data-icon="user-plus"></i><span>Convidar</span></button>
     <button type="button" class="tool" id="tbServer" title="Perfil do servidor"><i data-icon="server"></i><span>Servidor</span></button>
     <button type="button" class="tool" id="tbSettings" title="Configurações (Ctrl+,)"><i data-icon="settings"></i><span>Opções</span></button>
@@ -46,6 +47,7 @@
           <div class="group-sub" id="groupSub">1 online</div>
           <div class="group-desc" id="groupDesc" hidden></div>
         </div>
+        <button class="icon-btn" id="btnFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span class="badge dot-badge" data-friends-badge hidden></span></button>
         <button class="icon-btn" id="btnServer" title="Perfil do servidor"><i data-icon="settings"></i></button>
         <button class="icon-btn" id="btnInvite" title="Convidar amigos"><i data-icon="user-plus"></i></button>
       </div>
@@ -251,6 +253,28 @@
   </div>
 
   <!-- ===== modais ===== -->
+  <dialog id="dmDlg" class="dm-dlg">
+    <div class="dm-wrap">
+      <aside class="dm-side">
+        <div class="dm-side-head">
+          <h2>Amigos</h2>
+          <button type="button" class="icon-btn sm" id="dmNewGroup" title="Novo grupo de DM"><i data-icon="plus"></i></button>
+          <button type="button" class="icon-btn sm" data-close title="Fechar"><i data-icon="x"></i></button>
+        </div>
+        <div id="dmList" class="dm-list"></div>
+      </aside>
+      <section class="dm-main">
+        <div class="dm-head-row">
+          <button type="button" class="icon-btn sm" id="dmBack" title="Conversas"><i data-icon="chevron-right" class="flip"></i></button>
+          <header id="dmHead" class="dm-head"></header>
+        </div>
+        <div id="dmMsgs" class="dm-msgs"></div>
+        <div id="dmTyping" class="dm-typing muted small"></div>
+        <form id="dmForm" class="dm-form"><input id="dmInput" maxlength="2000" autocomplete="off" placeholder="Escolha uma conversa" disabled></form>
+      </section>
+    </div>
+  </dialog>
+
   <dialog id="inviteDlg">
     <h2>Convidar amigos</h2>
     <p class="muted">Mande o app janjahaters e este código. Quem tiver o código entra no grupo, então mande só para quem você confia.</p>
