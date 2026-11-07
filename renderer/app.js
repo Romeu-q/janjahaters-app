@@ -2,6 +2,7 @@ import { joinRoom, selfId } from 'trystero';
 import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
+import * as ident from './identity.js';
 import {
   createElement,
   ArrowDown,
@@ -307,6 +308,7 @@ function toast(msg) {
 }
 
 // ============================================================ estado local
+const freshProfile = !store.get('profile', null);
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
   { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
@@ -516,14 +518,59 @@ function seed() {
     true,
   );
 }
+// Depois desta data, registro sem assinatura não vale (até lá, quem ainda não atualizou continua aparecendo).
+const SIGNED_SINCE = Date.UTC(2026, 10, 8, 12);
+// tipos em que o "uid" do registro é o autor: tem que ser quem assinou
+const AUTHORED = new Set(['msg', 'rx', 'pin']);
+let rejectedRecs = 0;
 function put(rec) {
   // a minha mudança sempre vence a versão que tenho agora, mesmo que o relógio de um amigo esteja
   // adiantado (senão renomear um canal criado por ele era descartado sem aviso)
   rec.v = Math.max(tick(), (recs.get(rec.id)?.v || 0) + 1);
   clock = Math.max(clock, rec.v);
   rec.by = me.id;
+  rec.pk = me.pk;
+  delete rec.sig;
   merge([rec]);
-  A.recs?.send([rec]);
+  // assina e só então manda (a assinatura cobre o registro inteiro)
+  ident.signRecord(rec).then(() => {
+    if (recs.get(rec.id) === rec) persist();
+    A.recs?.send([rec]);
+  });
+}
+// registros que chegaram de outro PC: só entra o que tem assinatura válida de quem diz ter escrito
+async function acceptRemote(list) {
+  const out = [];
+  await Promise.all(
+    list.map(async (r) => {
+      if (!validRec(r)) return;
+      if (!r.sig) {
+        if (r.v < SIGNED_SINCE) out.push(r); // antigo, de antes das assinaturas
+        else rejectedRecs++;
+        return;
+      }
+      if (typeof r.by !== 'string' || !(await ident.bindKey(r.by, r.pk)) || !(await ident.verifyRecord(r))) {
+        rejectedRecs++;
+        return;
+      }
+      if (AUTHORED.has(r.k) && r.uid && r.uid !== r.by) {
+        rejectedRecs++;
+        return;
+      }
+      out.push(r);
+    }),
+  );
+  return out;
+}
+// chaves deste PC e a prova do "hi" (ligada ao id da conexão: não dá para copiar o "hi" de outra pessoa)
+let hiSig = '';
+async function initIdentity() {
+  ident.initBindings(store);
+  await ident.loadKeys(store);
+  me.pk = ident.publicKey;
+  if (freshProfile) me.id = await ident.idFromKey(me.pk); // quem é novo: o id sai da chave
+  await ident.bindKey(me.id, me.pk);
+  hiSig = await ident.signText(`janja-hi:${me.id}:${selfId}`);
 }
 function merge(list, quiet) {
   const changed = [];
@@ -648,7 +695,7 @@ function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus() }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -771,7 +818,7 @@ function connectRoom() {
     const out = [...recs.values()].filter((r) => !(theirs.get(r.id) >= r.v));
     if (out.length) sendRecs(out, peerId);
   };
-  A.recs.onMessage = (list) => Array.isArray(list) && merge(list);
+  A.recs.onMessage = (list) => Array.isArray(list) && acceptRemote(list.slice(0, 300)).then((ok) => ok.length && merge(ok));
   A.typing.onMessage = (d, { peerId }) => {
     const p = peers.get(peerId);
     if (!p?.user || typeof d?.ch !== 'string') return;
@@ -781,6 +828,19 @@ function connectRoom() {
   room.onPeerStream = onPeerStream;
 }
 
+// confere se quem diz ser fulano tem a chave de fulano; se o id já tem chave e a prova não bate, é impostor
+async function verifyHi(p, u) {
+  const uid = p.user?.id;
+  const ok = !!u?.pk && !!u?.hs && (await ident.verifyText(`janja-hi:${uid}:${p.pid}`, u.hs, u.pk)) && (await ident.bindKey(uid, u.pk));
+  const fake = !ok && !!ident.keyOf(uid);
+  if (p.user?.id !== uid) return;
+  p.user.verified = ok;
+  if (fake && !p.user.fake) {
+    p.user.fake = true;
+    p.user.name = p.user.name + ' (não verificado)';
+    renderPresence();
+  }
+}
 function onHi(pid, d) {
   const p = ensurePeer(pid);
   checkFriendVersion(d?.ver);
@@ -789,6 +849,7 @@ function onHi(pid, d) {
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online' };
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
+  verifyHi(p, d?.user);
   const v = d?.voice;
   p.voice =
     v && typeof v.ch === 'string'
@@ -6679,6 +6740,7 @@ async function onInvite(code) {
 }
 
 (async () => {
+  await initIdentity();
   const code = await window.desk?.takeInvite?.();
   window.desk?.onInvite?.((c) => {
     window.desk.takeInvite(); // já tratado aqui
