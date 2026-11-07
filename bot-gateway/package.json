@@ -1,0 +1,24 @@
+{
+  "name": "janja-bot-gateway",
+  "version": "1.0.0",
+  "description": "Roda bots feitos para o Stoat (stoat.js, etc.) dentro de um grupo do janjahaters.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "janja-bot-gateway": "index.mjs"
+  },
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.32.0",
+    "trystero": "0.26.0",
+    "ws": "^8.18.0"
+  },
+  "allowScripts": {
+    "node-datachannel@0.32.3": true
+  }
+}

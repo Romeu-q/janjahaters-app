@@ -761,7 +761,7 @@ const channel = (id) => {
 };
 const messagesOf = (ch) => {
   let list = all('msg').filter((m) => m.ch === ch);
-  if (plug('hideBot')) list = list.filter((m) => !m.bot);
+  if (plug('hideBot')) list = list.filter((m) => !m.bot || m.via); // esconde o DJ, não os bots de verdade
   if (plug('messageLogger')) list = list.concat(Object.values(ghosts).filter((g) => g.ch === ch && recs.get(g.id)?.del));
   return list.sort((a, b) => a.ts - b.ts);
 };
@@ -1013,7 +1013,7 @@ function onHi(pid, d) {
   checkFriendVersion(d?.ver);
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
-  p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online' };
+  p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
   verifyHi(p, d?.user);
@@ -3326,7 +3326,9 @@ function messageEl(m, prev) {
     d.classList.add('bot');
     d.dataset.bot = '1';
   }
-  const uid = m.bot ? null : m.uid; // o DJ não usa o perfil de quem chamou o comando
+  // o DJ não usa o perfil de quem chamou o comando; bot do gateway (via: 'stoat') tem perfil próprio
+  const isDJ = (x) => x.bot && !x.via;
+  const uid = isDJ(m) ? null : m.uid;
   const who = { id: m.uid, name: m.name, color: m.color };
   const av = avatar(m.name, m.color, '', uid);
   if (uid) av.onclick = () => openProfile(who, av);
@@ -3362,7 +3364,7 @@ function messageEl(m, prev) {
     const r = el('div', 'reply-ref');
     r.append(icon('corner-up-left', 'sm'));
     if (ref && !ref.del) {
-      r.append(nameEl(ref.bot ? 'DJ' : ref.name, ref.color, ref.bot ? null : ref.uid, 'reply-name'));
+      r.append(nameEl(ref.bot && !ref.via ? 'DJ' : ref.name, ref.color, ref.bot && !ref.via ? null : ref.uid, 'reply-name'));
       const snip = el('span', 'reply-text');
       snip.innerHTML = format(String(ref.text || (ref.att?.length ? '[anexo]' : '')).replace(/\s+/g, ' ').slice(0, 120));
       r.append(hydrateEmojis(snip));
@@ -3563,7 +3565,7 @@ function renderReplyBars() {
       renderReplyBars();
     };
     const label = el('span', 'reply-bar-text');
-    label.append(document.createTextNode('Respondendo a '), nameEl(m.bot ? 'DJ' : m.name, m.color, m.bot ? null : m.uid));
+    label.append(document.createTextNode('Respondendo a '), nameEl(m.bot && !m.via ? 'DJ' : m.name, m.color, m.bot && !m.via ? null : m.uid));
     bar.replaceChildren(icon('corner-up-left', 'sm'), label, x);
   }
 }
@@ -4550,6 +4552,7 @@ function renderPeopleList() {
       const pname = el('div', 'pname');
       pname.append(nameEl(m.user.name, m.user.color, m.user.id));
       if (m.user.id === groupOwner()) pname.append(icon('crown', 'owner-crown'));
+      if (m.user.bot) pname.append(el('span', 'bot-tag', 'BOT'));
       if (m.key === 'me') pname.append(el('span', 'muted', ' (você)'));
       const g = googleOf(m.user.id);
       if (g) {
@@ -5589,7 +5592,7 @@ function openPins(anchor) {
     const m = recs.get(p.msg);
     const row = el('div', 'pin-row');
     const top = el('div', 'pin-top');
-    top.append(nameEl(m.bot ? 'DJ' : m.name, m.color, m.bot ? null : m.uid), el('time', 'muted small', fullTime.format(m.ts)));
+    top.append(nameEl(m.bot && !m.via ? 'DJ' : m.name, m.color, m.bot && !m.via ? null : m.uid), el('time', 'muted small', fullTime.format(m.ts)));
     const text = el('div', 'pin-text');
     text.innerHTML = format(String(m.text || (m.att?.length ? '[anexo]' : '')).slice(0, 300));
     hydrateEmojis(text);
@@ -7566,3 +7569,4 @@ function stopCam(notify) {
   }
 }
 $('#ctlCam').onclick = toggleCam;
+
