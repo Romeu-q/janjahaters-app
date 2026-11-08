@@ -7633,7 +7633,7 @@ function onRoomPos(d, pid) {
 function roomBubble(m) {
   if (m.bot || typeof m.text !== 'string' || !m.text.trim()) return;
   const key = m.uid === me.id ? 'me' : [...peers.values()].find((p) => p.user?.id === m.uid)?.pid;
-  if (key) G3.ctl.bubble(key, m.text.replace(/s+/g, ' ').trim());
+  if (key) G3.ctl.bubble(key, m.text.replace(/\s+/g, ' ').trim()); // junta espaços e quebras de linha
 }
 async function openRoom(edit) {
   if (!roomOn()) return;
