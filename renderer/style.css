@@ -1317,3 +1317,14 @@ html.mobile #queue .q-grip { width: 28px; opacity: .8; }
 #queue li.q-dragging { position: relative; z-index: 2; background: var(--panel-3); box-shadow: 0 10px 28px rgba(0, 0, 0, .35); cursor: grabbing; pointer-events: none; }
 #queue li.q-drop-before { box-shadow: inset 0 3px 0 var(--accent); }
 #queue.q-drop-end li[data-qid]:last-of-type:not(.q-dragging) { box-shadow: inset 0 -3px 0 var(--accent); }
+
+/* PvP do acampamento */
+.room-hud #roomPvp.on { background: #e5484d; color: #fff; }
+.pvp-pad { position: absolute; right: 16px; bottom: 16px; display: flex; gap: 10px; }
+.pvp-pad button { width: 76px; height: 76px; border-radius: 50%; border: 0; font: inherit; font-weight: 800; font-size: 13px; color: #fff; background: rgba(20, 18, 30, .72); backdrop-filter: blur(8px); box-shadow: 0 6px 18px rgba(0, 0, 0, .35); cursor: pointer; transition: transform .12s; }
+.pvp-pad #pvpAtk { background: #e5484d; width: 92px; height: 92px; }
+.pvp-pad #pvpParry { background: #3f7fd8; align-self: flex-end; }
+.pvp-pad button:active { transform: scale(.9); }
+.fig-wpinfo { margin: 6px 0 4px; min-height: 1.2em; }
+.fig-sh { margin-top: 4px; }
+html:not(.mobile) .pvp-pad { display: none; }

@@ -136,15 +136,24 @@
         <div id="roomStage"></div>
         <div id="roomLoading" class="room-loading">Acendendo a fogueira…</div>
         <div class="room-hud">
-          <div class="room-hint"><b>WASD</b> andar · <b>Shift</b> correr · <b>E</b> sentar · <b>1</b> tchau <b>2</b> dança <b>3</b> pulo <b>4</b> sim · clique no chão para ir</div>
+          <div class="room-hint" id="roomHint"><b>WASD</b> andar · <b>Shift</b> correr · <b>E</b> sentar · <b>1</b> tchau <b>2</b> dança <b>3</b> pulo <b>4</b> sim · <b>F</b> PvP · clique no chão para ir</div>
+          <div class="room-hint" id="pvpHint" hidden><b>J</b> ou clique: atacar · <b>K</b> ou botão direito: defender (na hora certa é parry) · <b>F</b> sair · <b id="pvpKills">0</b> nocautes · <b id="pvpMobs">0</b> monstros</div>
           <span class="grow"></span>
-          <button type="button" class="ghost sm" id="roomEdit"><i data-icon="shirt" class="sm"></i>Personalizar</button>
+          <button type="button" class="ghost sm" id="roomPvp" title="Ligar/desligar o PvP (F)"><i data-icon="swords" class="sm"></i>PvP</button>
+          <button type="button" class="ghost sm" id="roomEdit"><i data-icon="shirt" class="sm"></i>Guarda-roupa</button>
           <button type="button" class="icon-btn" id="roomClose" title="Sair do acampamento"><i data-icon="x"></i></button>
         </div>
+        <div class="pvp-pad" id="pvpPad" hidden>
+          <button type="button" id="pvpParry">Defender</button>
+          <button type="button" id="pvpAtk">Atacar</button>
+        </div>
         <aside id="figEditor" class="fig-editor" hidden>
-          <header><h3>Seu boneco</h3><button type="button" class="icon-btn sm" id="figClose" title="Fechar"><i data-icon="x"></i></button></header>
+          <header><h3>Guarda-roupa</h3><button type="button" class="icon-btn sm" id="figClose" title="Fechar"><i data-icon="x"></i></button></header>
           <div id="figPreview" class="fig-preview" title="Arraste para girar"></div>
           <div class="fig-scroll">
+            <h4>Arma (PvP)</h4><div class="fig-row" id="fig-wp"></div>
+            <p class="muted small fig-wpinfo" id="fig-wpinfo"></p>
+            <label class="check fig-sh"><input type="checkbox" id="fig-sh"> Escudo (com espada curta ou lança)</label>
             <h4>Pele</h4><div class="fig-row" id="fig-skin"></div>
             <h4>Cabelo</h4><div class="fig-row" id="fig-hair"></div>
             <h4>Cor do cabelo</h4><div class="fig-row" id="fig-hairColor"></div>

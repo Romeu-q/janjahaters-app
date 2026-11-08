@@ -7,7 +7,7 @@
 // O app chama window.JanjaRoom.mount(caixa, api) e recebe { handlePos, bubble, refresh, resendPos, destroy }.
 // api: me(), people(), sendPos(estado), tv()
 import * as THREE from 'three';
-import { FIG, cleanFig } from './figure.js';
+import { FIG, cleanFig, hasShield } from './figure.js';
 
 const V = 0.25; // tamanho do cubinho do cenário
 const U = 0.09; // tamanho do cubinho dos bonecos (mais fino, para ter rosto)
@@ -213,6 +213,143 @@ function moon() {
   return new Vox().ball(0, 0, 0, 6, pickC(['#fff6d5', '#f3e9c3', '#fff9e6']));
 }
 
+// ------------------------------------------------------------------ arsenal do PvP
+// kind: 'melee' (golpe na hora) ou 'shot' (projétil). arc: cosseno mínimo do ângulo do golpe (maior = mais reto)
+export const WEAPONS = {
+  curta: { kind: 'melee', dmg: 15, range: 1.7, arc: 0.4, cd: 0.4, anim: 'swing', info: 'Rápida e leve: dano 15, alcance curto. Aceita escudo.' },
+  longa: { kind: 'melee', dmg: 28, range: 2.4, arc: 0.15, cd: 0.85, anim: 'swing', info: 'Duas mãos: dano 28, alcance grande e golpe largo, mas lenta.' },
+  lanca: { kind: 'melee', dmg: 20, range: 2.8, arc: 0.8, cd: 0.65, anim: 'thrust', info: 'Estocada de longe, bem reta: dano 20. Aceita escudo.' },
+  machado: { kind: 'melee', dmg: 34, range: 1.8, arc: 0.3, cd: 1.05, anim: 'swing', info: 'Duas mãos: dano 34, muito lento.' },
+  arco: { kind: 'shot', dmg: 18, speed: 17, cd: 0.9, anim: 'bow', hit: 0.5, color: '#e8c38a', info: 'Flecha rápida de longe: dano 18.' },
+  fogo: { kind: 'shot', dmg: 26, speed: 9, cd: 1.4, anim: 'cast', hit: 0.8, color: '#ff8a1f', info: 'Bola de fogo lenta e forte: dano 26.' },
+  gelo: { kind: 'shot', dmg: 12, speed: 12, cd: 1.0, anim: 'cast', hit: 0.6, color: '#8fdcff', slow: 2, info: 'Dano 12 e deixa o alvo lento por 2 s.' },
+};
+const W = (w) => WEAPONS[w] || WEAPONS.curta;
+// arma na mão direita: feita "em pé" (y para cima) a partir do cabo e virada para a frente
+function weaponMesh(wp) {
+  const g = new THREE.Group();
+  const add = (v, glow) => g.add(voxMesh(v, { size: U, origin: [0.5, 0, 0.5], jitter: 0, glow }));
+  const steel = (x, y) => (y % 3 ? '#dfe6ee' : '#c4ccd6');
+  let upright = false;
+  if (wp === 'curta') add(new Vox().box(0, -2, 0, 1, 0, 1, '#5b3a22').box(-1, 0, 0, 2, 1, 1, '#c9a227').box(0, 1, 0, 1, 8, 1, steel).set(0, 8, 0, '#ffffff'));
+  else if (wp === 'longa') add(new Vox().box(0, -3, 0, 1, 0, 1, '#3b2a1e').box(-2, 0, 0, 3, 1, 1, '#c9a227').box(-1, 1, 0, 2, 13, 1, steel).set(0, 13, 0, '#ffffff').set(0, 14, 0, '#ffffff'));
+  else if (wp === 'lanca') add(new Vox().box(0, -7, 0, 1, 15, 1, '#7a5236').set(0, 14, 0, '#c9a227').box(-1, 15, 0, 2, 17, 1, '#c4ccd6').box(0, 17, 0, 1, 19, 1, '#dfe6ee'));
+  else if (wp === 'machado') add(new Vox().box(0, -3, 0, 1, 11, 1, '#7a5236').box(1, 7, 0, 5, 11, 1, (x) => (x === 4 ? '#f2f2f2' : '#9aa3ad')).box(-2, 8, 0, 0, 10, 1, '#9aa3ad'));
+  else if (wp === 'arco') {
+    // arco em pé: o meio fica na mão e as pontas voltam para quem atira; a corda liga as pontas
+    upright = true;
+    const v = new Vox();
+    for (let z = -9; z <= 9; z++) {
+      const y = Math.round(3 * (z / 9) ** 2);
+      v.set(0, y, z, Math.abs(z) <= 1 ? '#3b2a1e' : '#8b5e3c');
+      v.set(0, 3, z, '#f2efe9');
+    }
+    add(v);
+  } else {
+    // cajado com a pedra brilhando na ponta (fogo laranja, gelo azul)
+    add(new Vox().box(0, -4, 0, 1, 12, 1, '#6b4429').box(-1, 11, -1, 2, 12, 2, '#c9a227'));
+    const tones = wp === 'fogo' ? ['#ffb347', '#ff7a1a', '#ffe066'] : ['#bdf0ff', '#7fd6ff', '#e8fbff'];
+    add(new Vox().ball(0, 14, 0, 1.6, (x, y, z) => tones[Math.abs(x * 3 + y * 5 + z * 7) % 3]), true);
+  }
+  if (!upright) g.rotation.x = Math.PI / 2;
+  g.position.set(0, -4.5 * U, 0);
+  return g;
+}
+// escudo redondo no braço esquerdo, virado para a frente
+function shieldMesh() {
+  const v = new Vox();
+  for (let x = -4; x <= 4; x++)
+    for (let y = -4; y <= 4; y++) {
+      const d = Math.hypot(x, y);
+      if (d > 4.4) continue;
+      v.set(x, y, 0, d > 3.4 ? '#9aa3ad' : x === 0 || y === 0 ? '#c9a227' : '#8b5e3c');
+    }
+  v.set(0, 0, 1, '#c9a227');
+  const m = voxMesh(v, { size: U, origin: [0.5, 0.5, 0], jitter: 0.03 });
+  m.position.set(-1.4 * U, -4 * U, 1.4 * U);
+  return m;
+}
+// guarda-roupa do acampamento: portas abertas, roupas penduradas e armas do lado
+function wardrobe() {
+  const v = new Vox();
+  const wood = pickC(['#8b5e3c', '#7f5537', '#94653f']);
+  v.box(-4, 0, -2, 4, 1, 2, wood).box(-4, 12, -2, 4, 13, 2, wood); // base e topo
+  v.box(-4, 1, -2, -3, 12, 2, wood).box(3, 1, -2, 4, 12, 2, wood).box(-3, 1, -2, 3, 12, -1, wood); // laterais e fundo
+  v.box(-3, 10, 0, 3, 11, 1, '#c9a227'); // cabideiro
+  ['#ef476f', '#3f7fd8', '#06d6a0', '#ffd166', '#9b5de5'].forEach((c, i) => v.box(-3 + i + (i > 2 ? 0 : 0), 5, 0, -2 + i, 10, 1, c)); // roupas
+  v.box(-7, 1, 2, -4, 12, 3, wood).box(4, 1, 2, 7, 12, 3, wood); // portas abertas
+  v.set(-6, 7, 3, '#c9a227').set(5, 7, 3, '#c9a227'); // puxadores
+  // espada e escudo encostados do lado
+  v.box(5, 0, 4, 6, 9, 5, (x, y) => (y < 2 ? '#5b3a22' : y === 2 ? '#c9a227' : '#dfe6ee'));
+  for (let x = -7; x <= -3; x++) for (let y = 0; y <= 4; y++) if (Math.hypot(x + 5, y - 2) <= 2.6) v.set(x, y, 4, Math.hypot(x + 5, y - 2) > 1.8 ? '#9aa3ad' : '#8b5e3c');
+  return v;
+}
+
+// ------------------------------------------------------------------ monstros
+// hp: vida, dmg: dano do golpe, reach: alcance, cd: tempo entre golpes, h: altura (para a barra de vida)
+const MOBS = [
+  { name: 'Slime', hp: 30, dmg: 8, speed: 1.7, reach: 1.1, cd: 1.5, h: 1.0 },
+  { name: 'Esqueleto', hp: 50, dmg: 12, speed: 2.1, reach: 1.4, cd: 1.7, h: 2.2 },
+  { name: 'Morcego', hp: 20, dmg: 6, speed: 3.3, reach: 1.1, cd: 1.2, h: 2.3, fly: true },
+];
+const MU = 0.1; // cubinho dos monstros
+// cada monstro: lista de partes { vox, pivot } (como o boneco), para animar e para desmontar quando morre
+function mobParts(type) {
+  const parts = {};
+  if (type === 0) {
+    const greens = ['#5ad35a', '#4cc24f', '#69e06a', '#43b246'];
+    const v = new Vox().ball(0, 4, 0, 4, (x, y, z) => greens[Math.abs(x * 7 + y * 3 + z * 5) % 4], 0.8);
+    for (const x of [-2, 1]) v.set(x, 5, 3, '#14321a').set(x + 1, 5, 3, '#14321a').set(x, 4, 3, '#14321a').set(x + 1, 4, 3, '#14321a').set(x + 1, 5, 3, '#ffffff');
+    v.set(0, 2, 4, '#14321a').set(-1, 2, 4, '#14321a');
+    parts.body = { vox: v, pivot: [0, 0, 0] };
+  } else if (type === 1) {
+    const bone = (x, y, z) => ((x + y + z) % 5 ? '#ebe6d6' : '#d6d0bd');
+    for (const s of [-1, 1]) {
+      const x0 = s < 0 ? -2 : 1;
+      parts[s < 0 ? 'legL' : 'legR'] = { vox: new Vox().box(x0, 0, 0, x0 + 1, 6, 1, bone).box(x0 - 1, 0, 0, x0 + 1, 1, 2, bone), pivot: [x0 + 0.5, 6, 0.5] };
+      const ax = s < 0 ? -5 : 4;
+      parts[s < 0 ? 'armL' : 'armR'] = { vox: new Vox().box(ax, 6, 0, ax + 1, 12, 1, bone), pivot: [ax + 0.5, 12, 0.5] };
+    }
+    const torso = new Vox();
+    torso.box(0, 6, 0, 1, 13, 1, '#d6d0bd'); // coluna
+    for (let y = 8; y < 13; y += 2) torso.box(-3, y, -1, 4, y + 1, 2, bone); // costelas
+    torso.box(-2, 6, -1, 3, 7, 2, bone); // bacia
+    parts.torso = { vox: torso, pivot: [0, 0, 0] };
+    const head = new Vox().box(-3, 13, -3, 4, 20, 4, bone);
+    for (const x of [-2, 1]) head.box(x, 16, 3, x + 2, 18, 4, '#1b1b22');
+    head.set(0, 15, 3, '#3a3a40');
+    for (let x = -2; x <= 2; x++) head.set(x, 13, 3, x % 2 ? '#3a3a40' : '#ebe6d6');
+    parts.head = { vox: head, pivot: [0, 13, 0] };
+  } else {
+    const fur = (x, y, z) => ((x + y + z) % 3 ? '#3b2a4f' : '#4a3762');
+    const body = new Vox().ball(0, 0, 0, 2.2, fur);
+    body.set(-1, 0, 2, '#ff3b3b').set(1, 0, 2, '#ff3b3b'); // olhos
+    body.set(-1, 3, 0, '#3b2a4f').set(1, 3, 0, '#3b2a4f'); // orelhas
+    parts.body = { vox: body, pivot: [0, 0, 0] };
+    for (const s of [-1, 1]) {
+      const w = new Vox();
+      for (let i = 1; i <= 6; i++) for (let z = -2; z <= Math.max(-1, 2 - Math.floor(i / 2)); z++) w.set(s * (i + 1), 0, z, i % 3 === 0 ? '#2a1d38' : '#5a4378');
+      parts[s < 0 ? 'wingL' : 'wingR'] = { vox: w, pivot: [s * 1.5, 0, 0] };
+    }
+  }
+  return parts;
+}
+function buildMob(type) {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  const groups = {};
+  const parts = mobParts(type);
+  for (const [name, p] of Object.entries(parts)) {
+    const g = new THREE.Group();
+    g.position.set(p.pivot[0] * MU, p.pivot[1] * MU, p.pivot[2] * MU);
+    g.add(voxMesh(p.vox, { size: MU, origin: p.pivot, jitter: 0.03 }));
+    body.add(g);
+    groups[name] = g;
+  }
+  return { root, body, groups, parts };
+}
+
 // ------------------------------------------------------------------ boneco (em cubinhos de U)
 // Coordenadas do boneco: x para a direita dele, y para cima, z para a frente (rosto em +z).
 // Partes separadas para animar: pernas (pivô no quadril), braços (ombro), cabeça (pescoço).
@@ -314,6 +451,15 @@ function buildFigure(fig) {
   const mouth = new THREE.Mesh(new THREE.BoxGeometry(2 * U, U, 0.3 * U), new THREE.MeshLambertMaterial({ color: '#5a2330' }));
   mouth.position.set(0, (13.5 - 11) * U, 5 * U + 0.01);
   groups.head.add(mouth);
+  // arma (e escudo, se for de uma mão): só aparecem no PvP
+  const weapon = weaponMesh(fig.wp);
+  weapon.visible = false;
+  groups.armR.add(weapon);
+  const shield = hasShield(fig) ? shieldMesh() : null;
+  if (shield) {
+    shield.visible = false;
+    groups.armL.add(shield);
+  }
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.52, 32), new THREE.MeshBasicMaterial({ color: '#3ddc84', transparent: true, opacity: 0.85 }));
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;
@@ -323,7 +469,7 @@ function buildFigure(fig) {
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.02;
   root.add(shadow);
-  return { root, body, ...groups, mouth, ring, height: 22 * U };
+  return { root, body, ...groups, mouth, ring, weapon, shield, wp: fig.wp, armRz: groups.armR.position.z, height: 22 * U };
 }
 function disposeTree(o) {
   o.traverse((x) => {
@@ -501,6 +647,45 @@ function buildCamp(scene) {
   add(tent('#f28c28', '#5a2d0c'), -5.6, -5.2, { ry: 0.75, solid: 2.1 });
   add(tent('#3f7fd8', '#14305c'), 5.4, -5.6, { ry: -0.7, solid: 2.1 });
 
+  // projetor: tela no fundo da clareira (atrás da fogueira) com a live que a pessoa está assistindo
+  const SW = 5.2;
+  const SH = SW * (9 / 16);
+  const SZ = -8.4;
+  const SY = 1.0;
+  const frame = new Vox();
+  for (const x of [-11, 10]) frame.box(x, 0, 0, x + 1, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // postes
+  frame.box(-11, Math.round((SY + SH) / V), 0, 11, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // travessa
+  add(frame, 0, SZ - 0.15);
+  const screenMat = new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false });
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(SW, SH), screenMat);
+  screen.position.set(0, SY + SH / 2, SZ + 0.05);
+  scene.add(screen);
+  circles.push({ x: -2.7, z: SZ, r: 0.4 }, { x: 2.7, z: SZ, r: 0.4 }, { x: 0, z: SZ, r: 0.6 }, { x: -1.4, z: SZ, r: 0.5 }, { x: 1.4, z: SZ, r: 0.5 });
+  const proj = new Vox();
+  proj.box(-1, 0, -1, 2, 2, 2, '#6b4429'); // toco
+  proj.box(-1, 2, -1, 2, 3, 2, '#c9a06a');
+  proj.box(-1, 3, -1, 2, 5, 2, '#2b2d42'); // projetor
+  proj.box(0, 3, -2, 1, 4, -1, '#9aa3ad'); // lente
+  add(proj, 0, SZ + 3.4, { solid: 0.45 });
+  // facho de luz da lente até a tela
+  const beamLen = 3.3;
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, SW * 0.32, beamLen, 4, 1, true),
+    new THREE.MeshBasicMaterial({ color: '#cfe3ff', transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  beam.rotation.x = Math.PI / 2;
+  beam.rotation.y = Math.PI / 4;
+  beam.position.set(0, (SY + SH / 2 + 0.9) / 2, SZ + 3.4 - beamLen / 2 - 0.2);
+  scene.add(beam);
+  const projSpot = { x: 0, z: SZ + 3.4 };
+
+  // guarda-roupa (E perto dele abre o arsenal e a personalização)
+  add(wardrobe(), -8.3, 0.4, { ry: Math.PI / 2, solid: 1.1 });
+  const wardrobeSpot = { x: -8.3, z: 0.4 };
+  const wardrobeLabel = labelSprite('Guarda-roupa · E', '#ffd166');
+  wardrobeLabel.position.set(-8.3, 3.8, 0.4);
+  scene.add(wardrobeLabel);
+
   // coisas de acampamento
   add(cooler(), 2.4, -5.6, { ry: -0.4, solid: 0.55 });
   const radioMesh = add(radio(), -2.6, -5.9, { ry: 0.3, solid: 0.5 });
@@ -549,7 +734,7 @@ function buildCamp(scene) {
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
   scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: '#ffffff', size: 0.25, fog: false })));
 
-  return { circles, seats, radio: radioMesh, lanternLight };
+  return { circles, seats, radio: radioMesh, lanternLight, wardrobeSpot, screen, screenMat, beam, projSpot };
 }
 
 // chamas: cubinhos que sobem, encolhem e mudam de cor (amarelo -> laranja -> vermelho), mais faíscas
@@ -645,6 +830,98 @@ function makeFireflies(scene) {
   };
 }
 
+// ------------------------------------------------------------------ sons do PvP (feitos na hora, sem arquivos)
+function makeSfx() {
+  let ctx = null;
+  const ac = () => {
+    ctx ||= new AudioContext();
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  };
+  const env = (g, t0, a, d, v) => {
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(v, t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+  };
+  const noise = (c, dur) => {
+    const b = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate);
+    const d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource();
+    src.buffer = b;
+    return src;
+  };
+  const tone = (type, f0, f1, dur, vol, at = 0) => {
+    const c = ac();
+    const t = c.currentTime + at;
+    const o = c.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = c.createGain();
+    env(g, t, 0.005, dur, vol);
+    o.connect(g).connect(c.destination);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  };
+  return {
+    swing(vol = 1) {
+      const c = ac();
+      const t = c.currentTime;
+      const src = noise(c, 0.25);
+      const bp = c.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 2.5;
+      bp.frequency.setValueAtTime(500, t);
+      bp.frequency.exponentialRampToValueAtTime(2800, t + 0.18);
+      const g = c.createGain();
+      env(g, t, 0.03, 0.17, 0.22 * vol);
+      src.connect(bp).connect(g).connect(c.destination);
+      src.start(t);
+    },
+    clang() {
+      for (const fr of [1240, 1870, 2610, 3320]) tone('triangle', fr, fr * 0.985, 0.55, 0.09);
+    },
+    hit() {
+      tone('sine', 190, 55, 0.18, 0.35);
+      const c = ac();
+      const src = noise(c, 0.08);
+      const g = c.createGain();
+      env(g, c.currentTime, 0.002, 0.07, 0.12);
+      src.connect(g).connect(c.destination);
+      src.start();
+    },
+    shot(w, vol = 1) {
+      if (w === 'arco') {
+        tone('triangle', 260, 110, 0.16, 0.18 * vol);
+        tone('sine', 900, 400, 0.08, 0.06 * vol);
+      } else if (w === 'fogo') {
+        const c = ac();
+        const src = noise(c, 0.45);
+        const lp = c.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.setValueAtTime(300, c.currentTime);
+        lp.frequency.exponentialRampToValueAtTime(1500, c.currentTime + 0.3);
+        const g = c.createGain();
+        env(g, c.currentTime, 0.05, 0.38, 0.3 * vol);
+        src.connect(lp).connect(g).connect(c.destination);
+        src.start();
+      } else {
+        tone('sine', 1700, 2600, 0.25, 0.08 * vol);
+        tone('sine', 2300, 3400, 0.2, 0.05 * vol, 0.05);
+      }
+    },
+    ko() {
+      tone('square', 420, 70, 0.6, 0.08);
+      tone('square', 300, 50, 0.6, 0.06, 0.12);
+    },
+    close() {
+      ctx?.close().catch(() => {});
+      ctx = null;
+    },
+  };
+}
+
 // ------------------------------------------------------------------ montagem
 export function mount(box, api) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
@@ -714,6 +991,61 @@ export function mount(box, api) {
     scene.add(radioSign);
   }
 
+  // ---------------- projetor: mostra a live que a pessoa está assistindo na call
+  const video = document.createElement('video');
+  video.muted = true; // o som da live já toca pela call
+  video.playsInline = true;
+  let videoTex = null;
+  let liveKey = '';
+  let liveInfo = null;
+  const noteCanvas = document.createElement('canvas');
+  noteCanvas.width = 640;
+  noteCanvas.height = 360;
+  const noteTex = new THREE.CanvasTexture(noteCanvas);
+  noteTex.colorSpace = THREE.SRGBColorSpace;
+  function drawNote(title, sub) {
+    const g = noteCanvas.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 640, 360);
+    grad.addColorStop(0, '#1c2340');
+    grad.addColorStop(1, '#3a1c4a');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 640, 360);
+    g.textAlign = 'center';
+    g.fillStyle = '#ffffff';
+    g.font = '800 40px system-ui, sans-serif';
+    g.fillText(title, 320, 165, 600);
+    g.fillStyle = 'rgba(255,255,255,.75)';
+    g.font = '500 26px system-ui, sans-serif';
+    g.fillText(sub, 320, 215, 600);
+    noteTex.needsUpdate = true;
+  }
+  function syncProjector() {
+    liveInfo = api.live?.() || null;
+    const key = liveInfo?.stream ? 'v:' + liveInfo.key : liveInfo?.streamers?.length ? 'w:' + liveInfo.streamers.map((x) => x.key + x.name).join() : 'none';
+    if (key === liveKey) return;
+    liveKey = key;
+    if (liveInfo?.stream) {
+      video.srcObject = liveInfo.stream;
+      video.play().catch(() => {});
+      videoTex ||= new THREE.VideoTexture(video);
+      videoTex.colorSpace = THREE.SRGBColorSpace;
+      CAMP.screenMat.map = videoTex;
+      CAMP.beam.material.opacity = 0.09;
+    } else {
+      video.srcObject = null;
+      const st = liveInfo?.streamers || [];
+      if (st.length) drawNote(`${st[0].name} está ao vivo`, st.length > 1 ? `e mais ${st.length - 1} · clique na tela para assistir` : 'clique na tela para assistir');
+      else drawNote('Sem live agora', 'quando alguém transmitir a tela na call, ela aparece aqui');
+      CAMP.screenMat.map = noteTex;
+      CAMP.beam.material.opacity = 0.04;
+    }
+    CAMP.screenMat.needsUpdate = true;
+  }
+  function watchOnScreen() {
+    const st = liveInfo?.streamers || [];
+    if (!liveInfo?.stream && st.length) api.watch?.(st[0].key);
+  }
+
   const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 120);
   let zoom = 1;
   const camTarget = new THREE.Vector3(0, 0.8, 0);
@@ -727,6 +1059,922 @@ export function mount(box, api) {
   // cada um chega por um lugar diferente da trilha da frente, virado para a câmera
   const self = { x: -1.2 + (hh % 7) * 0.4, z: 6.4 + ((hh >> 4) % 3) * 0.7, r: 0, s: -1, w: false, run: false, e: '', et: 0 };
   let walkTo = null;
+
+  // ---------------- PvP: arsenal, ataque, parry e tiros
+  // Só luta quem ligou o PvP (F). Quem decide se apanhou é quem leva o golpe: o atacante avisa "ataquei daqui,
+  // virado para lá, com tal arma" (ou "atirei") e cada um confere na própria tela se estava no alcance e se
+  // defendeu a tempo. Assim o parry vale pelo que a pessoa vê, mesmo com atraso de rede.
+  const PVP = { on: false, hp: 100, kills: 0, atkAt: -9, parryAt: -9, guardAt: -9, parryCd: 0, stunUntil: 0, koUntil: 0, slowUntil: 0, shake: 0, stopUntil: 0 };
+  const hitStop = (sec) => (PVP.stopUntil = Math.max(PVP.stopUntil, nowS() + sec));
+  const spawn = { x: self.x, z: self.z };
+  const nowS = () => performance.now() / 1000;
+  const sfx = makeSfx();
+  const frozen = () => nowS() < PVP.stunUntil || nowS() < PVP.koUntil;
+  const pvpOf = (a, isMe) => (isMe ? PVP.on : !!a.target?.pvp);
+  const hpOf = (a, isMe) => (isMe ? PVP.hp : a.target?.hp ?? 100);
+  const myFig = () => {
+    const m = api.me();
+    return cleanFig(m.fig, m.color, m.uid);
+  };
+  function setPvp(on) {
+    PVP.on = !!on;
+    self.pvp = PVP.on;
+    PVP.hp = 100;
+    PVP.koUntil = 0;
+    PVP.stunUntil = 0;
+    if (PVP.on && self.s >= 0) standUp();
+    api.onPvp?.(PVP.on, PVP.kills);
+    sendNow();
+  }
+  function markAv(key, what) {
+    const a = avatars.get(key);
+    if (a) a[what] = clock.elapsedTime;
+  }
+  let shotN = 0;
+  function attack() {
+    const t = nowS();
+    const fig = myFig();
+    const w = W(fig.wp);
+    if (!PVP.on || frozen() || t - PVP.atkAt < w.cd) return;
+    PVP.atkAt = t;
+    if (self.s >= 0) standUp();
+    markAv('me', 'swing');
+    if (w.kind === 'shot') {
+      const n = ++shotN;
+      spawnProj('me', n, self.x, self.z, self.r, fig.wp);
+      sfx.shot(fig.wp);
+      api.sendAct({ t: 'shot', n, x: +self.x.toFixed(2), z: +self.z.toFixed(2), r: +self.r.toFixed(2), w: fig.wp });
+      return;
+    }
+    const fx = self.x + Math.sin(self.r) * 0.25;
+    const fz = self.z + Math.cos(self.r) * 0.25;
+    if (!blocked(fx, fz)) Object.assign(self, { x: fx, z: fz });
+    sfx.swing(fig.wp === 'longa' || fig.wp === 'machado' ? 1.3 : 1);
+    slashFx('me', fig.wp);
+    for (const v of [...views.values()]) {
+      const dx = v.x - self.x;
+      const dz = v.z - self.z;
+      const d = Math.hypot(dx, dz);
+      if (d < w.range + 0.3 && d > 0.01 && (dx * Math.sin(self.r) + dz * Math.cos(self.r)) / d >= w.arc) hitMob(v.id, w.dmg);
+    }
+    api.sendAct({ t: 'atk', x: +self.x.toFixed(2), z: +self.z.toFixed(2), r: +self.r.toFixed(2), w: fig.wp });
+  }
+  function parry() {
+    const t = nowS();
+    if (!PVP.on || frozen() || t < PVP.parryCd) return;
+    PVP.parryAt = t;
+    PVP.guardAt = t;
+    PVP.parryCd = t + (hasShield(myFig()) ? 0.55 : 0.75); // defendeu fora de hora: um tempinho sem poder defender
+    markAv('me', 'guard');
+    api.sendAct({ t: 'grd' });
+  }
+  // levei um golpe ou um tiro: parry no tempo certo, bloqueio com escudo (metade do dano) ou dano cheio
+  function takeHit(from, dmg, dirx, dirz, extra = {}) {
+    const t = nowS();
+    const shield = hasShield(myFig());
+    const ranged = extra.pn != null;
+    if (t - PVP.parryAt < (shield ? 0.4 : 0.25)) {
+      PVP.parryCd = t; // acertou o parry: pode defender de novo na hora
+      parryFx('me', ranged ? null : from);
+      if (String(from).startsWith('m:')) mobParried(from);
+      PVP.shake = 0.15;
+      api.sendAct({ t: 'pry', to: from, ...(ranged ? { pn: extra.pn, ranged: true } : {}) });
+      return;
+    }
+    if (shield && t - PVP.guardAt < 0.8) {
+      dmg = Math.ceil(dmg / 2);
+      floatText('me', 'BLOQUEIO', '#9ad1ff');
+    }
+    PVP.hp = Math.max(0, PVP.hp - dmg);
+    if (self.s >= 0) standUp();
+    const kx = self.x + dirx * 0.7;
+    const kz = self.z + dirz * 0.7;
+    if (!blocked(kx, kz)) Object.assign(self, { x: kx, z: kz });
+    if (extra.slow) {
+      PVP.slowUntil = t + extra.slow;
+      floatText('me', 'LENTO', '#8fdcff');
+    }
+    const ko = PVP.hp <= 0;
+    if (ko) PVP.koUntil = t + 3;
+    hitFx('me', dmg, ko);
+    PVP.shake = ko ? 0.45 : 0.25;
+    api.sendAct({ t: 'hit', by: from, hp: PVP.hp, ko, dmg, ...(ranged ? { pn: extra.pn } : {}) });
+    sendNow();
+  }
+  // efeitos: faíscas de cubinhos, textos subindo e tremida da câmera
+  const SPK = 120;
+  const sparkMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ toneMapped: false }), SPK);
+  sparkMesh.frustumCulled = false;
+  scene.add(sparkMesh);
+  const sparks = Array.from({ length: SPK }, () => ({ life: 0 }));
+  let sparkI = 0;
+  const sm = new THREE.Matrix4();
+  const sq = new THREE.Quaternion();
+  const ss = new THREE.Vector3();
+  const sp = new THREE.Vector3();
+  function burst(x, y, z, color, n = 14, power = 1) {
+    const c = new THREE.Color(color);
+    for (let i = 0; i < n; i++) {
+      const p = sparks[sparkI++ % SPK];
+      Object.assign(p, { x, y, z, vx: (Math.random() - 0.5) * 5 * power, vy: (1.5 + Math.random() * 3) * power, vz: (Math.random() - 0.5) * 5 * power, life: 0.45 + Math.random() * 0.3, size: 0.05 + Math.random() * 0.06, c });
+    }
+  }
+  const texts = [];
+  function floatText(key, text, color, big) {
+    const a = avatars.get(key);
+    if (!a) return;
+    const c = document.createElement('canvas');
+    const g = c.getContext('2d');
+    const font = `900 ${big ? 64 : 48}px system-ui, sans-serif`;
+    g.font = font;
+    c.width = Math.ceil(g.measureText(text).width) + 24;
+    c.height = big ? 84 : 64;
+    g.font = font;
+    g.textBaseline = 'middle';
+    g.lineWidth = 8;
+    g.strokeStyle = 'rgba(0,0,0,.75)';
+    g.strokeText(text, 12, c.height / 2);
+    g.fillStyle = color;
+    g.fillText(text, 12, c.height / 2);
+    const s = spriteFrom(c, big ? 0.55 : 0.4, 12);
+    s.position.set(a.x + (Math.random() - 0.5) * 0.5, (a.parts?.height || 2) + 0.6, a.z);
+    scene.add(s);
+    texts.push({ s, life: 0, max: big ? 1.4 : 1 });
+  }
+  // rastro do golpe: arco brilhante deitado na altura do peito, varrendo de um lado ao outro na frente de quem bate
+  const slashes = [];
+  const SLASH = {
+    curta: { r0: 0.85, r1: 1.35, arc: 2.6, color: '#f2f8ff' },
+    longa: { r0: 1.35, r1: 2.15, arc: 3.0, color: '#d6ecff' },
+    machado: { r0: 0.95, r1: 1.55, arc: 2.7, color: '#ffb066' },
+  };
+  // spritesheets da forja-vfx (pixel art): [quadros, fps]. Cortes tocam mais rápido que o padrão (golpe seco).
+  const VFX = {
+    corte: [5, 22],
+    corte_longo: [7, 24],
+    corte_machado: [7, 20],
+    estocada: [4, 24],
+    acerto: [4, 24],
+    estilhacos: [7, 24],
+    parry: [4, 24],
+    poof: [8, 16],
+    fogo: [6, 20],
+    gelo: [10, 18],
+    flecha: [5, 24],
+  };
+  const vfxTex = {};
+  const texLoader = new THREE.TextureLoader();
+  for (const name of Object.keys(VFX)) {
+    const t = texLoader.load('vfx/' + name + '.png');
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.magFilter = THREE.NearestFilter;
+    t.minFilter = THREE.NearestFilter;
+    t.generateMipmaps = false;
+    t.repeat.set(1 / VFX[name][0], 1);
+    vfxTex[name] = t;
+  }
+  const vfxPlaying = [];
+  const planeGeo = new THREE.PlaneGeometry(1, 1);
+  // efeito deitado no chão, virado para "dir" (a frente da imagem é para cima; estocada é para a direita)
+  function vfxFlat(name, x, y, z, dir, size, { right = false, flip = false } = {}) {
+    if (!vfxTex[name]) return;
+    const tex = vfxTex[name].clone();
+    tex.needsUpdate = true; // cópia precisa subir para a placa de vídeo
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const mesh = new THREE.Mesh(planeGeo, mat);
+    mesh.rotation.set(-Math.PI / 2, 0, right ? Math.PI / 2 : 0);
+    mesh.scale.set(flip ? -size : size, size, 1);
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    g.rotation.y = dir + Math.PI;
+    g.add(mesh);
+    g.renderOrder = 8;
+    scene.add(g);
+    vfxPlaying.push({ obj: g, tex, mat, name, t: 0 });
+  }
+  // efeito de frente para a câmera (acerto, parry, explosões)
+  function vfxSprite(name, x, y, z, size) {
+    if (!vfxTex[name]) return;
+    const tex = vfxTex[name].clone();
+    tex.needsUpdate = true; // cópia precisa subir para a placa de vídeo
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, toneMapped: false });
+    const sp = new THREE.Sprite(mat);
+    sp.scale.set(size, size, 1);
+    sp.position.set(x, y, z);
+    sp.renderOrder = 13;
+    scene.add(sp);
+    vfxPlaying.push({ obj: sp, tex, mat, name, t: 0 });
+  }
+  function updateVfx(dt) {
+    for (let i = vfxPlaying.length - 1; i >= 0; i--) {
+      const v = vfxPlaying[i];
+      v.t += dt;
+      const [frames, fps] = VFX[v.name];
+      const fr = Math.floor(v.t * fps);
+      if (fr >= frames) {
+        scene.remove(v.obj);
+        v.tex.dispose();
+        v.mat.dispose();
+        vfxPlaying.splice(i, 1);
+        continue;
+      }
+      v.tex.offset.x = fr / frames;
+    }
+  }
+
+  // meia-lua do golpe: fina no começo, grossa e brilhante na borda de fora no fim, apagando para dentro
+  // (cor nos vértices + mistura aditiva: preto = transparente)
+  function crescent(r0, r1, arc, color, segs = 44) {
+    const c = new THREE.Color(color);
+    const pos = [];
+    const col = [];
+    const idx = [];
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const a = -Math.PI / 2 - arc / 2 + arc * t;
+      const w = Math.sin(Math.PI * Math.min(1, t * 1.08)) ** 0.7 * (0.3 + 0.7 * t);
+      const inner = r1 - (r1 - r0) * w;
+      const k = 0.15 + 0.85 * t ** 1.4;
+      pos.push(Math.cos(a) * r1, Math.sin(a) * r1, 0, Math.cos(a) * inner, Math.sin(a) * inner, 0);
+      col.push(c.r * k, c.g * k, c.b * k, 0, 0, 0);
+      if (i) idx.push(2 * i - 2, 2 * i - 1, 2 * i, 2 * i - 1, 2 * i + 1, 2 * i);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    return g;
+  }
+  const SLASH_VFX = {
+    curta: ['corte', 2.8, 0.9],
+    longa: ['corte_longo', 4.6, 1.3],
+    machado: ['corte_machado', 3.8, 1.0],
+    lanca: ['estocada', 3.6, 1.6],
+  };
+  function slashFx(key, wp) {
+    const a = avatars.get(key);
+    if (!a) return;
+    const v = SLASH_VFX[wp];
+    if (v) {
+      const [name, size, ahead] = v;
+      const fx = Math.sin(a.r);
+      const fz = Math.cos(a.r);
+      vfxFlat(name, a.x + fx * ahead, 1.0, a.z + fz * ahead, a.r, size, { right: wp === 'lanca', flip: Math.random() < 0.5 });
+      return;
+    }
+    const outer = new THREE.Group();
+    outer.position.set(a.x, 1.05, a.z);
+    outer.rotation.y = a.r;
+    const tilt = new THREE.Group();
+    tilt.rotation.z = (Math.random() - 0.5) * 0.25; // quase reto, só uma variação leve
+    outer.add(tilt);
+    let mesh;
+    const mat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+    if (wp === 'lanca') {
+      // estocada: risco reto para a frente
+      mat.color.set('#e8f4ff');
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 2.4), mat);
+      mesh.position.set(0, 0.05, 1.5);
+    } else {
+      const c = SLASH[wp] || SLASH.curta;
+      mat.color.set(c.color);
+      // anel deitado (plano do chão), centrado na frente do boneco
+      mat.color.set('#ffffff');
+      mat.vertexColors = true;
+      mesh = new THREE.Mesh(crescent(c.r0, c.r1, c.arc, c.color), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      // faíscas na ponta onde o golpe termina
+      const end = -Math.PI / 2 + c.arc / 2;
+      const tip = new THREE.Vector3(Math.cos(end) * c.r1, 0, -Math.sin(end) * c.r1).applyEuler(new THREE.Euler(0, a.r, 0));
+      burst(a.x + tip.x, 1.05, a.z + tip.z, c.color, 6, 0.6);
+    }
+    tilt.add(mesh);
+    scene.add(outer);
+    slashes.push({ obj: outer, mat, life: 0, max: 0.22 });
+  }
+  // nocaute: o boneco desmonta em todos os cubinhos, que voam, quicam no chão e somem
+  const debris = [];
+  const dummy = new THREE.Object3D();
+  function shatter(key) {
+    const a = avatars.get(key);
+    if (!a?.parts || !a.fig) return;
+    a.holder.updateMatrixWorld(true);
+    shatterParts(figureParts(a.fig), a.parts, U, new THREE.Vector3(a.x, 0.9, a.z));
+    a.parts.root.visible = false;
+    a.shattered = true;
+    burst(a.x, 1, a.z, '#ffffff', 12, 1.2);
+    vfxSprite('poof', a.x, 1.0, a.z, 3.0);
+  }
+  function shatterParts(partsList, groups, size, center) {
+    const items = [];
+    for (const [name, p] of Object.entries(partsList)) {
+      const group = groups[name];
+      if (!group) continue;
+      for (const [k, c] of p.vox.m) {
+        const [x, y, z] = k.split(',').map(Number);
+        // só os de fora (os de dentro nem aparecem)
+        if (p.vox.has(x + 1, y, z) && p.vox.has(x - 1, y, z) && p.vox.has(x, y + 1, z) && p.vox.has(x, y - 1, z) && p.vox.has(x, y, z + 1) && p.vox.has(x, y, z - 1)) continue;
+        const pos = new THREE.Vector3((x + 0.5 - p.pivot[0]) * size, (y + 0.5 - p.pivot[1]) * size, (z + 0.5 - p.pivot[2]) * size).applyMatrix4(group.matrixWorld);
+        const out = pos.clone().sub(center);
+        out.y = Math.max(0.15, out.y);
+        out.normalize().multiplyScalar(1.5 + Math.random() * 3.5);
+        out.y += 2 + Math.random() * 3;
+        items.push({ p: pos, v: out, c, rx: Math.random() * 6, ry: Math.random() * 6, spin: (Math.random() - 0.5) * 16 });
+      }
+    }
+    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshLambertMaterial(), items.length);
+    mesh.frustumCulled = false;
+    mesh.castShadow = true;
+    const col = new THREE.Color();
+    items.forEach((it, i) => mesh.setColorAt(i, col.set(it.c)));
+    scene.add(mesh);
+    debris.push({ mesh, items, life: 0, size });
+  }
+  function updateDebris(dt) {
+    for (let d = debris.length - 1; d >= 0; d--) {
+      const D = debris[d];
+      D.life += dt;
+      const shrink = D.life < 2.2 ? 1 : Math.max(0, 1 - (D.life - 2.2) / 0.6);
+      D.items.forEach((it, i) => {
+        it.v.y -= 14 * dt;
+        it.p.addScaledVector(it.v, dt);
+        if (it.p.y < D.size / 2) {
+          it.p.y = D.size / 2;
+          it.v.y *= -0.35;
+          it.v.x *= 0.7;
+          it.v.z *= 0.7;
+          it.spin *= 0.7;
+        }
+        it.rx += it.spin * dt;
+        it.ry += it.spin * 0.6 * dt;
+        dummy.position.copy(it.p);
+        dummy.rotation.set(it.rx, it.ry, 0);
+        dummy.scale.setScalar(shrink);
+        dummy.updateMatrix();
+        D.mesh.setMatrixAt(i, dummy.matrix);
+      });
+      D.mesh.instanceMatrix.needsUpdate = true;
+      if (D.life > 2.8) {
+        scene.remove(D.mesh);
+        D.mesh.geometry.dispose();
+        D.mesh.material.dispose();
+        debris.splice(d, 1);
+      }
+    }
+    for (let i = slashes.length - 1; i >= 0; i--) {
+      const S = slashes[i];
+      S.life += dt;
+      const k = S.life / S.max;
+      S.mat.opacity = Math.max(0, 0.95 * (1 - k * k));
+      S.obj.scale.setScalar(0.85 + k * 0.3);
+      if (S.life >= S.max) {
+        scene.remove(S.obj);
+        disposeTree(S.obj);
+        S.mat.dispose();
+        slashes.splice(i, 1);
+      }
+    }
+  }
+  function textAt(x, y, z, text, color, big) {
+    const c = document.createElement('canvas');
+    const g = c.getContext('2d');
+    const font = `900 ${big ? 64 : 48}px system-ui, sans-serif`;
+    g.font = font;
+    c.width = Math.ceil(g.measureText(text).width) + 24;
+    c.height = big ? 84 : 64;
+    g.font = font;
+    g.textBaseline = 'middle';
+    g.lineWidth = 8;
+    g.strokeStyle = 'rgba(0,0,0,.75)';
+    g.strokeText(text, 12, c.height / 2);
+    g.fillStyle = color;
+    g.fillText(text, 12, c.height / 2);
+    const sp2 = spriteFrom(c, big ? 0.55 : 0.4, 12);
+    sp2.position.set(x + (Math.random() - 0.5) * 0.5, y, z);
+    scene.add(sp2);
+    texts.push({ s: sp2, life: 0, max: big ? 1.4 : 1 });
+  }
+  function hitFx(key, dmg, ko) {
+    hitStop(ko ? 0.16 : 0.07);
+    const a = avatars.get(key);
+    if (!a) return;
+    markAv(key, 'hurt');
+    vfxSprite('acerto', a.x, 1.15, a.z, 1.7);
+    vfxSprite('estilhacos', a.x, 1.0, a.z, 1.9);
+    burst(a.x, 1.1, a.z, '#ff4d4d', 6);
+    floatText(key, '-' + dmg, '#ff6b6b');
+    if (ko) {
+      floatText(key, 'K.O.!', '#ffd166', true);
+      sfx.ko();
+    } else sfx.hit();
+  }
+  function parryFx(defKey, atkKey) {
+    hitStop(0.1);
+    const d = avatars.get(defKey);
+    markAv(defKey, 'guard');
+    if (atkKey) markAv(atkKey, 'stun');
+    if (d) {
+      vfxSprite('parry', d.x + Math.sin(d.r) * 0.5, 1.3, d.z + Math.cos(d.r) * 0.5, 2.4);
+      burst(d.x + Math.sin(d.r) * 0.5, 1.3, d.z + Math.cos(d.r) * 0.5, '#ffe066', 10);
+    }
+    floatText(defKey, 'PARRY!', '#ffd166', true);
+    sfx.clang();
+  }
+  // projéteis: flecha, bola de fogo e de gelo. Todo mundo desenha; só o alvo decide se acertou.
+  const projs = new Map(); // "dono:n" -> { owner, n, x, z, dx, dz, w, dist, mesh }
+  function projMesh(w) {
+    if (w === 'arco') {
+      const v = new Vox().box(0, 0, -4, 1, 1, 4, '#8b5e3c').box(0, 0, 4, 1, 1, 6, '#c4ccd6').box(-1, 0, -6, 2, 1, -4, '#f2efe9');
+      return voxMesh(v, { size: U, origin: [0.5, 0.5, 0], jitter: 0 });
+    }
+    const tones = w === 'fogo' ? ['#ffb347', '#ff7a1a', '#ffe066'] : ['#bdf0ff', '#7fd6ff', '#e8fbff'];
+    return voxMesh(new Vox().ball(0, 0, 0, w === 'fogo' ? 2.6 : 2, (x, y, z) => tones[Math.abs(x * 3 + y * 5 + z * 7) % 3]), { size: U, glow: true });
+  }
+  function spawnProj(owner, n, x, z, r, w) {
+    const key = owner + ':' + n;
+    if (W(w).kind !== 'shot' || projs.has(key)) return;
+    const dx = Math.sin(r);
+    const dz = Math.cos(r);
+    const mesh = projMesh(w);
+    mesh.rotation.y = r;
+    scene.add(mesh);
+    projs.set(key, { owner, n, x: x + dx * 0.6, z: z + dz * 0.6, dx, dz, w, dist: 0, mesh });
+  }
+  function removeProj(key, fx) {
+    const p = projs.get(key);
+    if (!p) return;
+    scene.remove(p.mesh);
+    disposeTree(p.mesh);
+    projs.delete(key);
+    if (fx) {
+      burst(p.x, 1.15, p.z, W(p.w).color, 6, 0.7);
+      if (p.w === 'fogo') vfxSprite('fogo', p.x, 1.2, p.z, 2.8);
+      else if (p.w === 'gelo') vfxSprite('gelo', p.x, 1.1, p.z, 2.4);
+      else vfxSprite('flecha', p.x, 1.15, p.z, 1.3);
+    }
+  }
+  const hitsThing = (x, z) => Math.hypot(x, z) > 16 || CAMP.circles.some((o) => Math.hypot(x - o.x, z - o.z) < o.r);
+  function handleAct(from, ev) {
+    if (ev.t === 'mob' || ev.t === 'matk' || ev.t === 'mhit' || ev.t === 'mdie') return mobAct(from, ev);
+    const a = avatars.get(from);
+    if (!a) return;
+    const t = nowS();
+    if (ev.t === 'atk') {
+      markAv(from, 'swing');
+      sfx.swing(0.45);
+      slashFx(from, ev.w);
+      const w = W(ev.w);
+      if (!PVP.on || !a.target?.pvp || t < PVP.koUntil || w.kind !== 'melee') return;
+      const dx = self.x - ev.x;
+      const dz = self.z - ev.z;
+      const d = Math.hypot(dx, dz);
+      if (d > w.range || d < 0.01) return;
+      if ((dx * Math.sin(ev.r) + dz * Math.cos(ev.r)) / d < w.arc) return; // fora do arco do golpe
+      takeHit(from, w.dmg, dx / d, dz / d);
+    } else if (ev.t === 'shot') {
+      markAv(from, 'swing');
+      spawnProj(from, ev.n, ev.x, ev.z, ev.r, ev.w);
+      sfx.shot(ev.w, 0.5);
+    } else if (ev.t === 'grd') markAv(from, 'guard');
+    else if (ev.t === 'hit') {
+      if (ev.pn != null) removeProj(ev.by + ':' + ev.pn, true);
+      hitFx(from, ev.dmg || 20, ev.ko);
+      if (ev.by === 'me') {
+        PVP.shake = Math.max(PVP.shake, 0.1);
+        if (ev.ko) {
+          PVP.kills++;
+          api.onPvp?.(PVP.on, PVP.kills);
+        }
+      }
+    } else if (ev.t === 'pry') {
+      if (ev.pn != null) removeProj(ev.to + ':' + ev.pn, true);
+      parryFx(from, ev.ranged ? null : ev.to);
+      if (String(ev.to).startsWith('m:')) mobParried(ev.to);
+      if (ev.to === 'me' && !ev.ranged) {
+        PVP.stunUntil = t + 1; // o parry deixa quem atacou tonto (de perto)
+        PVP.shake = 0.3;
+      }
+    }
+  }
+  // ---------------- monstros
+  // Um PC só controla (o de menor id entre quem está no acampamento): ele faz os monstros andarem, atacarem e
+  // nascerem, e manda o estado para todo mundo. Quem apanha de monstro decide como sempre (parry, escudo, dano).
+  // Quem bate num monstro avisa o controlador, que tira a vida e anuncia a morte.
+  const sim = new Map(); // só no controlador: id -> estado de verdade
+  const views = new Map(); // em todos: id -> { obj, type, x, z, r, hp, st, ... }
+  let mobSeq = 1;
+  let leaderWas = false;
+  let lastMobSend = 0;
+  let nextSpawn = 0;
+  PVP.mobKills = 0;
+  const myId = () => api.selfId?.() || 'me';
+  function mobLeader() {
+    const now = performance.now();
+    let best = myId();
+    let key = 'me';
+    for (const [k, a] of avatars) if (k !== 'me' && a.seenAt && now - a.seenAt < 6000 && k < best) (best = k), (key = k);
+    return key;
+  }
+  // quem está lutando (com PvP e vivo) e onde está
+  function fighters() {
+    const list = [];
+    if (PVP.on && PVP.hp > 0) list.push({ key: 'me', x: self.x, z: self.z });
+    const now = performance.now();
+    for (const [k, a] of avatars) if (k !== 'me' && a.target?.pvp && (a.target.hp ?? 100) > 0 && now - (a.seenAt || 0) < 6000) list.push({ key: k, x: a.x, z: a.z });
+    return list;
+  }
+  function mobView(id, type) {
+    let v = views.get(id);
+    if (v) return v;
+    const m = buildMob(type);
+    const mark = labelSprite('!', '#ff4d4d');
+    mark.visible = false;
+    m.root.add(mark);
+    mark.position.y = MOBS[type].h + 0.5;
+    scene.add(m.root);
+    v = { id, type, obj: m, mark, x: 0, z: 0, r: 0, tx: 0, tz: 0, tr: 0, hp: MOBS[type].hp, st: 0, hurt: -9, atk: -9, phase: Math.random() * 6, bar: null, barHp: null };
+    views.set(id, v);
+    return v;
+  }
+  function removeView(id, how) {
+    const v = views.get(id);
+    if (!v) return;
+    if (how === 'die') {
+      v.obj.root.updateMatrixWorld(true);
+      shatterParts(v.obj.parts, v.obj.groups, MU, new THREE.Vector3(v.x, 0.8, v.z));
+      vfxSprite('poof', v.x, 0.9, v.z, 2.6);
+    } else vfxSprite('poof', v.x, 0.9, v.z, 1.8);
+    scene.remove(v.obj.root);
+    disposeTree(v.obj.root);
+    views.delete(id);
+  }
+  function mobBar(v) {
+    const max = MOBS[v.type].hp;
+    if (v.barHp === v.hp && v.bar) return;
+    if (v.bar) {
+      v.obj.root.remove(v.bar);
+      disposeTree(v.bar);
+    }
+    const c = document.createElement('canvas');
+    c.width = 96;
+    c.height = 14;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(0,0,0,.65)';
+    roundRect(g, 0, 0, 96, 14, 7);
+    g.fill();
+    g.fillStyle = '#ff5c5c';
+    if (v.hp > 0) {
+      roundRect(g, 2, 2, Math.max(8, 92 * (v.hp / max)), 10, 5);
+      g.fill();
+    }
+    v.bar = spriteFrom(c, 0.09, 10);
+    v.bar.position.y = MOBS[v.type].h + 0.25;
+    v.obj.root.add(v.bar);
+    v.barHp = v.hp;
+  }
+  // eu acertei um monstro (golpe ou tiro meu)
+  function hitMob(id, dmg, slow) {
+    const v = views.get(id);
+    if (!v) return;
+    mobHitFx(v, dmg);
+    if (mobLeader() === 'me') applyMobHit(id, dmg, 'me', slow);
+    else api.sendAct({ t: 'mhit', id, dmg, ...(slow ? { slow } : {}) });
+  }
+  function mobHitFx(v, dmg) {
+    v.hurt = clock.elapsedTime;
+    vfxSprite('acerto', v.x, MOBS[v.type].h * 0.55, v.z, 1.5);
+    textAt(v.x, MOBS[v.type].h + 0.5, v.z, '-' + dmg, '#ffb4b4');
+    sfx.hit();
+    hitStop(0.05);
+  }
+  function applyMobHit(id, dmg, by, slow) {
+    const m = sim.get(id);
+    if (!m) return;
+    m.hp -= dmg;
+    m.stunUntil = Math.max(m.stunUntil, nowS() + 0.25);
+    if (slow) m.slowUntil = nowS() + slow;
+    if (m.hp <= 0) {
+      sim.delete(id);
+      api.sendAct({ t: 'mdie', id, by: by === 'me' ? myId() : by });
+      mobDie(id, by);
+    }
+  }
+  function mobDie(id, by) {
+    removeView(id, 'die');
+    if (by === 'me') {
+      PVP.mobKills++;
+      api.onPvp?.(PVP.on, PVP.kills, PVP.mobKills);
+    }
+  }
+  // parry num monstro: ele fica tonto (quem controla aplica)
+  function mobParried(key) {
+    const id = Number(String(key).slice(2));
+    const m = sim.get(id);
+    if (m) m.stunUntil = nowS() + 1.5;
+    const v = views.get(id);
+    if (v) v.stunAt = clock.elapsedTime;
+  }
+  function mobAct(from, ev) {
+    const t = nowS();
+    if (ev.t === 'mob') {
+      if (mobLeader() !== from) return; // só vale de quem controla
+      const seen = new Set();
+      for (const [id, type, x, z, r, hp, st] of ev.l) {
+        seen.add(id);
+        const v = mobView(id, type);
+        if (!v.placed) Object.assign(v, { x, z, r, placed: true });
+        Object.assign(v, { tx: x, tz: z, tr: r, hp, st });
+      }
+      for (const id of [...views.keys()]) if (!seen.has(id)) removeView(id, 'gone');
+    } else if (ev.t === 'matk') {
+      const v = views.get(ev.id);
+      if (v) mobSwing(v);
+      // o golpe chegou em mim?
+      if (!PVP.on || t < PVP.koUntil) return;
+      const M = MOBS[v?.type ?? 0];
+      const dx = self.x - ev.x;
+      const dz = self.z - ev.z;
+      const d = Math.hypot(dx, dz);
+      if (d > M.reach + 0.45 || d < 0.01) return;
+      if ((dx * Math.sin(ev.r) + dz * Math.cos(ev.r)) / d < 0.2) return;
+      takeHit('m:' + ev.id, M.dmg, dx / d, dz / d);
+    } else if (ev.t === 'mhit') {
+      const v = views.get(ev.id);
+      if (v) mobHitFx(v, ev.dmg);
+      if (mobLeader() === 'me') applyMobHit(ev.id, ev.dmg, from, ev.slow);
+    } else if (ev.t === 'mdie') mobDie(ev.id, ev.by);
+  }
+  function mobSwing(v) {
+    v.atk = clock.elapsedTime;
+    const fx = Math.sin(v.r);
+    const fz = Math.cos(v.r);
+    vfxFlat('corte', v.x + fx * 0.7, 0.8, v.z + fz * 0.7, v.r, 2.2, { flip: Math.random() < 0.5 });
+    sfx.swing(0.5);
+  }
+  const mobBlocked = (x, z) => Math.hypot(x, z) > 12 || CAMP.circles.some((o) => Math.hypot(x - o.x, z - o.z) < o.r + 0.35);
+  // só no controlador: nascer, andar, atacar e mandar o estado
+  function simulate(dt, now) {
+    const F = fighters();
+    // nasce na beira da floresta enquanto tem alguém lutando
+    if (F.length && now > nextSpawn && sim.size < Math.min(6, 2 + F.length)) {
+      nextSpawn = now + 5 + Math.random() * 4;
+      const a = Math.random() * Math.PI * 2;
+      const type = Math.random() < 0.45 ? 0 : Math.random() < 0.55 ? 1 : 2;
+      const id = mobSeq++;
+      sim.set(id, { id, type, x: Math.cos(a) * 11, z: Math.sin(a) * 11, r: 0, hp: MOBS[type].hp, st: 0, stUntil: 0, cd: now + 1, stunUntil: 0, slowUntil: 0, idle: 0 });
+    }
+    for (const m of sim.values()) {
+      const M = MOBS[m.type];
+      let target = null;
+      let bd = 1e9;
+      for (const p of F) {
+        const d = Math.hypot(p.x - m.x, p.z - m.z);
+        if (d < bd) (bd = d), (target = p);
+      }
+      if (now < m.stunUntil) {
+        m.st = 2;
+        continue;
+      }
+      if (m.st === 1) {
+        // fim do aviso "!": golpeia
+        if (now >= m.stUntil) {
+          m.st = 0;
+          m.cd = now + M.cd;
+          api.sendAct({ t: 'matk', id: m.id, x: +m.x.toFixed(2), z: +m.z.toFixed(2), r: +m.r.toFixed(2) });
+          mobAct(myId(), { t: 'matk', id: m.id, x: m.x, z: m.z, r: m.r });
+        }
+        continue;
+      }
+      m.st = 0;
+      if (!target) {
+        // ninguém lutando: volta para a floresta e some
+        m.idle += dt;
+        const away = Math.atan2(m.x, m.z);
+        m.r = away;
+        m.x += Math.sin(away) * M.speed * dt;
+        m.z += Math.cos(away) * M.speed * dt;
+        if (m.idle > 8 || Math.hypot(m.x, m.z) > 13) sim.delete(m.id);
+        continue;
+      }
+      m.idle = 0;
+      const dx = target.x - m.x;
+      const dz = target.z - m.z;
+      m.r = Math.atan2(dx, dz);
+      if (bd <= M.reach && now >= m.cd) {
+        m.st = 1; // avisa antes de bater (dá tempo de defender)
+        m.stUntil = now + 0.5;
+        continue;
+      }
+      if (bd > M.reach * 0.8) {
+        const sp = M.speed * dt * (now < m.slowUntil ? 0.5 : 1);
+        let dir = m.r;
+        for (const turn of [0, 0.7, -0.7, 1.4, -1.4]) {
+          const nx = m.x + Math.sin(m.r + turn) * sp;
+          const nz = m.z + Math.cos(m.r + turn) * sp;
+          if (!mobBlocked(nx, nz) || Math.hypot(m.x, m.z) > 10) {
+            dir = m.r + turn;
+            break;
+          }
+        }
+        m.x += Math.sin(dir) * sp;
+        m.z += Math.cos(dir) * sp;
+      }
+    }
+    // o que eu calculo é o que eu desenho
+    for (const m of sim.values()) {
+      const v = mobView(m.id, m.type);
+      if (!v.placed) Object.assign(v, { x: m.x, z: m.z, r: m.r, placed: true });
+      Object.assign(v, { tx: m.x, tz: m.z, tr: m.r, hp: m.hp, st: m.st });
+    }
+    for (const id of [...views.keys()]) if (!sim.has(id)) removeView(id, 'gone');
+    if (now - lastMobSend > 0.1) {
+      lastMobSend = now;
+      api.sendAct({ t: 'mob', l: [...sim.values()].map((m) => [m.id, m.type, +m.x.toFixed(2), +m.z.toFixed(2), +m.r.toFixed(2), Math.max(0, Math.round(m.hp)), m.st]) });
+    }
+  }
+  function monstersFrame(dt, t, now) {
+    const leader = mobLeader() === 'me';
+    if (leader && !leaderWas) {
+      // virei o controlador: assumo os monstros que já estavam aí
+      for (const v of views.values()) sim.set(v.id, { id: v.id, type: v.type, x: v.tx, z: v.tz, r: v.tr, hp: v.hp, st: 0, stUntil: 0, cd: now + 1, stunUntil: 0, slowUntil: 0, idle: 0 });
+      mobSeq = Math.max(mobSeq, ...[...views.keys()].map((id) => id + 1), 1) + Math.floor(Math.random() * 1000);
+    }
+    if (!leader && leaderWas) sim.clear();
+    leaderWas = leader;
+    if (leader) simulate(dt, now);
+    // desenho
+    for (const v of views.values()) {
+      const k = 1 - Math.exp(-dt * 10);
+      v.x += (v.tx - v.x) * k;
+      v.z += (v.tz - v.z) * k;
+      let dr = v.tr - v.r;
+      dr = Math.atan2(Math.sin(dr), Math.cos(dr));
+      v.r += dr * (1 - Math.exp(-dt * 10));
+      const M = MOBS[v.type];
+      const o = v.obj;
+      v.phase += dt * 8;
+      o.root.position.set(v.x, M.fly ? 1.5 + Math.sin(t * 3 + v.phase) * 0.2 : 0, v.z);
+      o.root.rotation.y = v.r;
+      const G = o.groups;
+      const atk = t - v.atk;
+      if (v.type === 0) {
+        // slime pula e amassa
+        const hop = Math.abs(Math.sin(v.phase * 0.7));
+        o.body.position.y = hop * 0.35;
+        o.body.scale.set(1 + (1 - hop) * 0.15, 1 - (1 - hop) * 0.2, 1 + (1 - hop) * 0.15);
+        if (atk < 0.3) o.body.position.z = Math.sin((atk / 0.3) * Math.PI) * 0.5;
+        else o.body.position.z = 0;
+      } else if (v.type === 1) {
+        const sw = Math.sin(v.phase);
+        G.legL.rotation.x = sw * 0.6;
+        G.legR.rotation.x = -sw * 0.6;
+        const reach = atk < 0.3 ? -2.6 + (atk / 0.3) * 2 : -1.4; // braços para a frente (zumbi)
+        G.armL.rotation.x = reach;
+        G.armR.rotation.x = reach;
+        G.head.rotation.y = Math.sin(t * 2 + v.phase) * 0.2;
+      } else {
+        const flap = Math.sin(t * 22 + v.phase) * 0.9;
+        G.wingL.rotation.z = flap;
+        G.wingR.rotation.z = -flap;
+        if (atk < 0.3) o.body.position.z = Math.sin((atk / 0.3) * Math.PI) * 0.6;
+        else o.body.position.z = 0;
+      }
+      // aviso antes do golpe, tonto e piscada de dano
+      v.mark.visible = v.st === 1 && Math.floor(t * 10) % 2 === 0;
+      o.body.rotation.z = v.st === 2 ? Math.sin(t * 20) * 0.25 : 0;
+      o.body.position.x = t - v.hurt < 0.18 ? Math.sin(t * 90) * 0.06 : 0;
+      mobBar(v);
+    }
+  }
+
+  // barra de vida em cima da cabeça de quem está no PvP
+  function hpBar(a, hp) {
+    if (a.barHp === hp && a.bar) return;
+    if (a.bar) {
+      a.holder.remove(a.bar);
+      disposeTree(a.bar);
+    }
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 18;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(0,0,0,.65)';
+    roundRect(g, 0, 0, 128, 18, 9);
+    g.fill();
+    g.fillStyle = hp > 50 ? '#4ade80' : hp > 20 ? '#facc15' : '#f43f5e';
+    if (hp > 0) {
+      roundRect(g, 3, 3, Math.max(12, 122 * (hp / 100)), 12, 6);
+      g.fill();
+    }
+    a.bar = spriteFrom(c, 0.11, 10);
+    a.bar.position.y = a.parts.height + 0.7;
+    a.holder.add(a.bar);
+    a.barHp = hp;
+  }
+  function pvpFrame(dt, t) {
+    const now = nowS();
+    // nocaute acabou: volta na trilha com a vida cheia
+    if (PVP.on && PVP.hp <= 0 && now >= PVP.koUntil) {
+      PVP.hp = 100;
+      Object.assign(self, { x: spawn.x, z: spawn.z, r: 0, s: -1 });
+      sendNow();
+    }
+    for (const [key, a] of avatars) {
+      const isMe = key === 'me';
+      const on = pvpOf(a, isMe);
+      if (a.parts?.weapon) a.parts.weapon.visible = on;
+      if (a.parts?.shield) a.parts.shield.visible = on;
+      const down = on && hpOf(a, isMe) <= 0;
+      if (down && !a.shattered && a.parts) shatter(key);
+      if (!down && a.shattered && a.parts) {
+        a.shattered = false;
+        a.parts.root.visible = true;
+        a.popAt = t;
+        burst(a.x, 1, a.z, '#ffe066', 14, 0.8);
+      }
+      if (a.parts && a.popAt != null) {
+        const k = Math.min(1, (t - a.popAt) / 0.35);
+        a.parts.root.scale.setScalar(k < 1 ? 1 + 2.70158 * (k - 1) ** 3 + 1.70158 * (k - 1) ** 2 : 1);
+        if (k >= 1) a.popAt = null;
+      }
+      if (on && a.parts && !down) hpBar(a, hpOf(a, isMe));
+      else if (down && a.bar) {
+        a.holder.remove(a.bar);
+        disposeTree(a.bar);
+        a.bar = null;
+        a.barHp = null;
+      }
+      else if (a.bar) {
+        a.holder.remove(a.bar);
+        disposeTree(a.bar);
+        a.bar = null;
+        a.barHp = null;
+      }
+    }
+    for (const [key, p] of projs) {
+      const w = W(p.w);
+      const step = w.speed * dt;
+      p.x += p.dx * step;
+      p.z += p.dz * step;
+      p.dist += step;
+      p.mesh.position.set(p.x, 1.15, p.z);
+      if (p.w !== 'arco') {
+        p.mesh.rotation.x += dt * 6;
+        p.mesh.rotation.z += dt * 4;
+        if (Math.random() < 0.6) burst(p.x, 1.15, p.z, w.color, 1, 0.3);
+      }
+      if (p.dist > 15 || hitsThing(p.x, p.z)) {
+        removeProj(key, true);
+        continue;
+      }
+      // um tiro meu pegou num monstro?
+      if (p.owner === 'me') {
+        const hit = [...views.values()].find((v) => Math.hypot(v.x - p.x, v.z - p.z) < w.hit + 0.35);
+        if (hit) {
+          removeProj(key, true);
+          hitMob(hit.id, w.dmg, w.slow);
+          continue;
+        }
+      }
+      // um tiro de outra pessoa chegou em mim?
+      if (p.owner !== 'me' && PVP.on && now >= PVP.koUntil && avatars.get(p.owner)?.target?.pvp && Math.hypot(self.x - p.x, self.z - p.z) < w.hit) {
+        removeProj(key, true);
+        takeHit(p.owner, w.dmg, p.dx, p.dz, { pn: p.n, slow: w.slow });
+      }
+    }
+    for (let i = 0; i < SPK; i++) {
+      const p = sparks[i];
+      if (p.life > 0) {
+        p.life -= dt;
+        p.vy -= 9 * dt;
+        p.x += p.vx * dt;
+        p.y = Math.max(0.03, p.y + p.vy * dt);
+        p.z += p.vz * dt;
+        sp.set(p.x, p.y, p.z);
+        ss.setScalar(p.life > 0 ? p.size : 0);
+        sparkMesh.setColorAt(i, p.c);
+      } else ss.setScalar(0);
+      sm.compose(sp, sq, ss);
+      sparkMesh.setMatrixAt(i, sm);
+    }
+    sparkMesh.instanceMatrix.needsUpdate = true;
+    if (sparkMesh.instanceColor) sparkMesh.instanceColor.needsUpdate = true;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const x = texts[i];
+      x.life += dt;
+      x.s.position.y += dt * 0.9;
+      x.s.material.opacity = Math.max(0, 1 - x.life / x.max);
+      if (x.life >= x.max) {
+        scene.remove(x.s);
+        disposeTree(x.s);
+        texts.splice(i, 1);
+      }
+    }
+    monstersFrame(dt, t, now);
+    updateDebris(dt);
+    updateVfx(dt);
+    PVP.shake = Math.max(0, PVP.shake - dt);
+  }
   function ensureAvatar(key, p) {
     let a = avatars.get(key);
     if (!a) {
@@ -736,6 +1984,7 @@ export function mount(box, api) {
     }
     const fig = cleanFig(p.fig, p.color, p.uid);
     const figKey = JSON.stringify(fig);
+    a.fig = fig;
     if (a.figKey !== figKey) {
       if (a.parts) {
         a.holder.remove(a.parts.root);
@@ -797,6 +2046,10 @@ export function mount(box, api) {
   const EMOTE_KEYS = { Digit1: 'tchau', Digit2: 'danca', Digit3: 'pulo', Digit4: 'sim' };
   const onKeyDown = (e) => {
     if (!visible() || typing() || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.code === 'KeyF' && !e.repeat) return setPvp(!PVP.on);
+    if (PVP.on && e.code === 'KeyJ' && !e.repeat) return attack();
+    if (PVP.on && e.code === 'KeyK' && !e.repeat) return parry();
+    if (frozen() && MOVE[e.code]) return;
     if (MOVE[e.code]) {
       keys.add(e.code);
       walkTo = null;
@@ -822,6 +2075,19 @@ export function mount(box, api) {
   const hitPoint = new THREE.Vector3();
   renderer.domElement.addEventListener('pointerdown', (e) => {
     renderer.domElement.focus();
+    {
+      const r0 = renderer.domElement.getBoundingClientRect();
+      ndc.set(((e.clientX - r0.left) / r0.width) * 2 - 1, -((e.clientY - r0.top) / r0.height) * 2 + 1);
+      ray.setFromCamera(ndc, camera);
+    }
+    if (!PVP.on && e.button === 0 && ray.intersectObject(CAMP.screen).length) {
+      watchOnScreen();
+      return;
+    }
+    if (PVP.on && (e.button === 0 || e.button === 2)) {
+      e.button === 2 ? parry() : attack();
+      return;
+    }
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
@@ -830,6 +2096,7 @@ export function mount(box, api) {
     walkTo = seat != null ? { x: CAMP.seats[seat].x, z: CAMP.seats[seat].z, sit: seat } : { x: hitPoint.x, z: hitPoint.z };
     if (self.s >= 0) standUp();
   });
+  renderer.domElement.addEventListener('contextmenu', (e) => PVP.on && e.preventDefault());
   renderer.domElement.addEventListener(
     'wheel',
     (e) => {
@@ -871,6 +2138,8 @@ export function mount(box, api) {
   }
   function toggleSit() {
     if (self.s >= 0) return standUp();
+    if (Math.hypot(self.x - CAMP.wardrobeSpot.x, self.z - CAMP.wardrobeSpot.z) < 2.4) return api.openArsenal?.();
+    if (Math.hypot(self.x - CAMP.projSpot.x, self.z - CAMP.projSpot.z) < 2.4) return watchOnScreen();
     const i = nearestSeat(self.x, self.z, 1.6);
     if (i != null) sitOn(i);
   }
@@ -884,7 +2153,7 @@ export function mount(box, api) {
   // ---------------- rede (10 por segundo andando, 1 a cada 3 s parado)
   let lastSent = 0;
   let lastState = '';
-  const packed = () => ({ x: +self.x.toFixed(2), z: +self.z.toFixed(2), r: +self.r.toFixed(2), s: self.s, w: self.w, run: self.run, e: self.e });
+  const packed = () => ({ x: +self.x.toFixed(2), z: +self.z.toFixed(2), r: +self.r.toFixed(2), s: self.s, w: self.w, run: self.run, e: self.e, pvp: PVP.on, hp: PVP.hp });
   function sendNow() {
     const st = packed();
     lastState = JSON.stringify(st);
@@ -947,6 +2216,38 @@ export function mount(box, api) {
       P.armL.rotation.set(0, 0, -2.8);
       P.armR.rotation.set(0, 0, 2.8);
     } else if (e === 'sim') P.head.rotation.x = Math.sin(t * 12) * 0.25;
+    // PvP: golpe de cada arma, guarda, tonto, apanhando e nocaute
+    P.body.position.x = 0;
+    P.armR.position.z = P.armRz;
+    if (pvpOf(a, isMe)) {
+      const w = W(P.wp);
+      const swing = t - (a.swing ?? -9);
+      if (w.anim === 'swing' && swing < 0.3) {
+        const k = swing / 0.3;
+        P.armR.rotation.set(-1.45, 0, 0.5 - k * 0.6);
+        P.body.rotation.y = 1.0 - k * 2.0;
+      } else if (w.anim === 'thrust' && swing < 0.3) {
+        const k = Math.sin((swing / 0.3) * Math.PI);
+        P.armR.rotation.set(-1.55, 0, 0);
+        P.armR.position.z = P.armRz + k * 0.32;
+        P.body.rotation.y = -k * 0.25;
+      } else if (w.anim === 'bow' && swing < 0.45) {
+        P.armR.rotation.set(-1.55, 0, 0);
+        P.armL.rotation.set(-1.45, 0, 0.35);
+      } else if (w.anim === 'cast' && swing < 0.4) P.armR.rotation.set(-2.7 + (swing / 0.4) * 1.2, 0, 0);
+      else if (t - (a.guard ?? -9) < 0.4) {
+        P.armR.rotation.set(-1.55, 0, -0.95);
+        if (P.shield) P.armL.rotation.set(-1.35, 0, 0.55);
+      } else if (!moving && !seat && !e) P.armR.rotation.set(w.anim === 'bow' ? -0.2 : -0.55, 0, 0.1);
+      if (t - (a.stun ?? -9) < 1) {
+        P.head.rotation.z = Math.sin(t * 22) * 0.28;
+        P.body.rotation.y = Math.sin(t * 9) * 0.35;
+      }
+      if (t - (a.hurt ?? -9) < 0.18) P.body.position.x = Math.sin(t * 90) * 0.05;
+    }
+    const ko = pvpOf(a, isMe) && hpOf(a, isMe) <= 0;
+    P.root.rotation.z += ((ko ? -Math.PI / 2 : 0) - P.root.rotation.z) * (1 - Math.exp(-dt * 10));
+    P.root.position.y = ko ? 0.35 : 0;
     // falando na call: boca abre e fecha, cabeça balança e anel verde no chão
     const talk = a.speaking;
     P.mouth.scale.y = talk ? 1 + Math.abs(Math.sin(t * 18)) * 1.8 : 1;
@@ -964,7 +2265,8 @@ export function mount(box, api) {
   function frame() {
     raf = requestAnimationFrame(frame);
     if (!running || !visible()) return;
-    const dt = Math.min(0.05, clock.getDelta());
+    let dt = Math.min(0.05, clock.getDelta());
+    if (nowS() < PVP.stopUntil) dt *= 0.06; // congelada de impacto (hit stop)
     const t = clock.elapsedTime;
     const now = performance.now();
 
@@ -974,6 +2276,11 @@ export function mount(box, api) {
     if (keys.has('KeyS') || keys.has('ArrowDown')) mz += 1;
     if (keys.has('KeyA') || keys.has('ArrowLeft')) mx -= 1;
     if (keys.has('KeyD') || keys.has('ArrowRight')) mx += 1;
+    if (frozen()) {
+      mx = 0;
+      mz = 0;
+      walkTo = null;
+    }
     if (!mx && !mz && walkTo) {
       const dx = walkTo.x - self.x;
       const dz = walkTo.z - self.z;
@@ -991,7 +2298,7 @@ export function mount(box, api) {
     if ((mx || mz) && self.s < 0) {
       const len = Math.hypot(mx, mz);
       const run = keys.has('Shift');
-      const sp = (run ? RUN : SPEED) * dt;
+      const sp = (run ? RUN : SPEED) * dt * (nowS() < PVP.slowUntil ? 0.5 : 1);
       const vx = (mx / len) * sp;
       const vz = (mz / len) * sp;
       let moved = false;
@@ -1028,16 +2335,19 @@ export function mount(box, api) {
 
     fire(dt, t);
     flies(dt, t);
+    pvpFrame(dt, t);
     CAMP.lanternLight.intensity = 3 + Math.sin(t * 2.3) * 0.3;
 
     const focus = new THREE.Vector3(self.x * 0.6, 0.8, self.z * 0.55 - 0.4);
     camTarget.lerp(focus, 1 - Math.exp(-dt * 4));
     camera.position.set(camTarget.x, camTarget.y + 7.6 * zoom, camTarget.z + 9.4 * zoom);
+    if (PVP.shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * PVP.shake * 0.8, (Math.random() - 0.5) * PVP.shake * 0.8, 0));
     camera.lookAt(camTarget);
 
     if (now - lastRadio > 1000) {
       lastRadio = now;
       drawRadio();
+      syncProjector();
     }
     renderer.render(scene, camera);
   }
@@ -1061,6 +2371,7 @@ export function mount(box, api) {
       if (!avatars.has(key)) refresh();
       const a = avatars.get(key);
       if (!a) return;
+      a.seenAt = performance.now();
       if (!a.target) Object.assign(a, { x: st.x, z: st.z, r: st.r });
       a.target = st;
     },
@@ -1078,8 +2389,25 @@ export function mount(box, api) {
     },
     refresh,
     resendPos: sendNow,
+    handleAct,
+    togglePvp: () => setPvp(!PVP.on),
+    // para testar pelo DevTools: põe o meu boneco num lugar
+    debugMove: (x, z, r) => (Object.assign(self, { x, z, r, s: -1 }), sendNow()),
+    debugState: () => ({ ...PVP, x: self.x, z: self.z, projs: projs.size }),
+    pvp: () => PVP.on,
+    attack,
+    parry,
     debug: () => [...avatars].map(([k, a]) => ({ k, x: +a.x.toFixed(2), z: +a.z.toFixed(2), s: k === meKey ? self.s : a.target?.s })),
     destroy() {
+      if (PVP.on) {
+        PVP.on = false; // os outros param de me ver de espada
+        sendNow();
+      }
+      sfx.close();
+      for (const t of Object.values(vfxTex)) t.dispose();
+      video.srcObject = null;
+      videoTex?.dispose();
+      noteTex.dispose();
       running = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
@@ -1163,4 +2491,4 @@ export function preview(box, fig) {
 }
 
 export { FIG };
-window.JanjaRoom = { mount, preview, FIG, EMOTES };
+window.JanjaRoom = { mount, preview, FIG, EMOTES, WEAPONS };

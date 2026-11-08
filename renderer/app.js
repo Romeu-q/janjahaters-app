@@ -2,7 +2,7 @@ import { joinRoom, selfId } from 'trystero';
 import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain } from './mic-chain.js';
-import { FIG, cleanFig, cleanPos } from './figure.js';
+import { FIG, ONE_HAND, cleanFig, cleanPos } from './figure.js';
 import * as ident from './identity.js';
 import { initDM } from './dm.js';
 import {
@@ -88,6 +88,7 @@ import {
   Shirt,
   GripVertical,
   Tent,
+  Swords,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -221,6 +222,7 @@ const ICONS = {
   shirt: Shirt,
   'grip-vertical': GripVertical,
   tent: Tent,
+  swords: Swords,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -979,8 +981,10 @@ function connectRoom() {
     frq: room.makeAction('frq'), // pedido de amizade (assinado)
     clk: room.makeAction('clk'), // acerto do relógio (para a música tocar no mesmo ponto em todo mundo)
     pos: room.makeAction('pos'), // onde eu estou na sala de games
+    pvp: room.makeAction('pvp'), // golpes, tiros e parry do PvP do acampamento
   };
   A.pos.onMessage = (d, { peerId }) => onRoomPos(d, peerId);
+  A.pvp.onMessage = (d, { peerId }) => onRoomAct(d, peerId);
   A.clk.onMessage = (d, { peerId }) => onClk(d, peerId);
   A.frq.onMessage = (d, { peerId }) => dm?.onFriendMsg(d, peerId);
   listenOldRooms();
@@ -7496,7 +7500,67 @@ const roomApi = {
     const { pb, item } = pbOf(C.ch);
     return item ? { title: item.title, artist: item.artist, thumb: thumbOf(item), playing: pb.pausedAt == null } : null;
   },
+  sendAct: (ev) => A.pvp?.send(ev),
+  selfId: () => selfId,
+  onPvp(on, kills, mobs = 0) {
+    $('#roomPvp').classList.toggle('on', on);
+    $('#roomHint').hidden = on;
+    $('#pvpHint').hidden = !on;
+    $('#pvpPad').hidden = !on;
+    $('#pvpKills').textContent = kills;
+    $('#pvpMobs').textContent = mobs;
+  },
+  openArsenal: () => openFigEditor(),
+  // projetor: a live que estou assistindo na call (ou a minha), e quem está transmitindo
+  live() {
+    if (!C.ch) return null;
+    const inCall = [...peers.values()].filter((p) => p.voice?.ch === C.ch && p.user);
+    const streamers = inCall.filter((p) => p.voice.streaming).map((p) => ({ key: p.pid, name: p.user.name }));
+    const watched = inCall.filter((p) => p.media.screen);
+    const cur = watched.find((p) => p.pid === C.focus) || watched[0];
+    if (cur) return { key: cur.pid, name: cur.user.name, stream: cur.media.screen, streamers };
+    if (C.screen) return { key: 'me', name: me.name, stream: C.screen, streamers };
+    return { streamers };
+  },
+  watch: (pid) => peers.has(pid) && watchStream(pid),
 };
+// golpes, tiros e parry de quem está no PvP (quem apanha é quem decide; aqui só confere o formato)
+function onRoomAct(d, pid) {
+  const p = peers.get(pid);
+  if (!G3.ctl || !p?.user?.verified || !d || typeof d.t !== 'string') return;
+  const num = (v) => typeof v === 'number' && Number.isFinite(v);
+  const who = (v) => (v === selfId ? 'me' : typeof v === 'string' ? v.slice(0, 40) : '');
+  const ev = { t: d.t };
+  if (d.t === 'atk' || d.t === 'shot') {
+    if (!num(d.x) || !num(d.z) || !num(d.r) || typeof d.w !== 'string') return;
+    Object.assign(ev, { x: d.x, z: d.z, r: d.r, w: d.w.slice(0, 12) });
+    if (d.t === 'shot') {
+      if (!Number.isInteger(d.n) || d.n < 0) return;
+      ev.n = d.n;
+    }
+  } else if (d.t === 'hit') {
+    if (!num(d.hp)) return;
+    Object.assign(ev, { by: who(d.by), hp: Math.max(0, Math.min(100, d.hp)), ko: !!d.ko, dmg: num(d.dmg) ? Math.max(0, Math.min(60, Math.round(d.dmg))) : 20 });
+    if (Number.isInteger(d.pn)) ev.pn = d.pn;
+  } else if (d.t === 'pry') {
+    ev.to = who(d.to);
+    if (Number.isInteger(d.pn)) Object.assign(ev, { pn: d.pn, ranged: true });
+  } else if (d.t === 'mob') {
+    // estado dos monstros (de quem controla): [id, tipo, x, z, r, vida, estado]
+    if (!Array.isArray(d.l) || d.l.length > 12) return;
+    ev.l = d.l.filter((m) => Array.isArray(m) && m.length === 7 && m.every(num) && Number.isInteger(m[0]) && m[1] >= 0 && m[1] <= 2).map((m) => [m[0], m[1] | 0, m[2], m[3], m[4], Math.max(0, Math.min(200, m[5])), m[6] | 0]);
+  } else if (d.t === 'matk') {
+    if (!Number.isInteger(d.id) || !num(d.x) || !num(d.z) || !num(d.r)) return;
+    Object.assign(ev, { id: d.id, x: d.x, z: d.z, r: d.r });
+  } else if (d.t === 'mhit') {
+    if (!Number.isInteger(d.id) || !num(d.dmg)) return;
+    Object.assign(ev, { id: d.id, dmg: Math.max(0, Math.min(60, Math.round(d.dmg))), ...(num(d.slow) ? { slow: Math.min(3, d.slow) } : {}) });
+  } else if (d.t === 'mdie') {
+    if (!Number.isInteger(d.id)) return;
+    Object.assign(ev, { id: d.id, by: who(d.by) });
+  } else if (d.t !== 'grd') return;
+  G3.ctl.handleAct(pid, ev);
+}
 function onRoomPos(d, pid) {
   const st = cleanPos(d);
   const p = peers.get(pid);
@@ -7537,6 +7601,7 @@ function closeRoom(back) {
   closeFigEditor();
   G3.ctl?.destroy();
   G3.ctl = null;
+  roomApi.onPvp(false, 0, 0);
   $('#roomView').hidden = true;
   $('#viewHead').hidden = false;
   if (back) openView(S.view);
@@ -7573,6 +7638,12 @@ function openFigEditor() {
   swatches('hairColor', FIG.hairColor);
   chips('eyes', FIG.eyes);
   chips('acc', FIG.acc);
+  chips('wp', FIG.wp);
+  const sh = $('#fig-sh');
+  sh.checked = !!f.sh;
+  sh.disabled = !ONE_HAND.has(f.wp);
+  sh.onchange = () => setFig({ sh: sh.checked });
+  $('#fig-wpinfo').textContent = window.JanjaRoom?.WEAPONS?.[f.wp]?.info || '';
   for (const k of ['shirt', 'pants', 'shoes']) {
     const inp = $('#fig-' + k);
     inp.value = f[k];
@@ -7602,6 +7673,9 @@ function renderRoomButtons() {
 $$('[data-room]').forEach((b) => (b.onclick = () => (G3.open ? closeRoom(true) : openRoom())));
 $('#roomClose').onclick = () => closeRoom(true);
 $('#roomEdit').onclick = () => ($('#figEditor').hidden ? openFigEditor() : closeFigEditor());
+$('#roomPvp').onclick = () => G3.ctl?.togglePvp();
+$('#pvpAtk').onclick = () => G3.ctl?.attack();
+$('#pvpParry').onclick = () => G3.ctl?.parry();
 $('#figClose').onclick = closeFigEditor;
 $('#lkRoom').onchange = () => {
   look.room = $('#lkRoom').checked;

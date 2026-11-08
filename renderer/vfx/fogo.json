@@ -1,0 +1,52 @@
+{
+  "name": "fogo",
+  "effect": "Explosão",
+  "image": "fogo.png",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "frames": 6,
+  "columns": 6,
+  "rows": 1,
+  "fps": 20,
+  "frameDurationMs": 50,
+  "loopHoldMs": 250,
+  "pivot": {
+    "x": 0.5,
+    "y": 0.5
+  },
+  "settings": {
+    "type": "explosion",
+    "size": 64,
+    "seed": 7,
+    "pal": [
+      "#fff3a6",
+      "#ffc23d",
+      "#f2561d",
+      "#4a1712"
+    ],
+    "blast": 0.62,
+    "blobN": 5,
+    "ring": 0,
+    "debris": 3,
+    "smokeTail": 0.3,
+    "lump": 0.5,
+    "rotation": 0,
+    "frames": 6,
+    "fps": 20,
+    "hold": 250,
+    "headSpeed": 0.25,
+    "tailLag": 0.3,
+    "thinOut": 0.7,
+    "erode": 0.5,
+    "core": 0.45,
+    "mid": 0.75,
+    "sparks": 4,
+    "sparkSpeed": 0.85,
+    "sparkLife": 0.64,
+    "sparkLen": 1.3,
+    "flipX": false,
+    "flipY": false,
+    "outline": false,
+    "decay": true
+  }
+}

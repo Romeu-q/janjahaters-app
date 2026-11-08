@@ -28,7 +28,19 @@ export const FIG = {
     ['fone', 'Fone'],
     ['flor', 'Flor'],
   ],
+  // arsenal do PvP (o room.js tem os números de cada uma)
+  wp: [
+    ['curta', 'Espada curta'],
+    ['longa', 'Espada longa'],
+    ['lanca', 'Lança'],
+    ['machado', 'Machado'],
+    ['arco', 'Arco'],
+    ['fogo', 'Cajado de fogo'],
+    ['gelo', 'Cajado de gelo'],
+  ],
 };
+// armas de uma mão: aceitam escudo na outra
+export const ONE_HAND = new Set(['curta', 'lanca']);
 const HEX = /^#[0-9a-f]{6}$/i;
 const ids = (list) => list.map((x) => x[0]);
 const pick = (v, list, def) => (list.includes(v) ? v : def);
@@ -47,6 +59,8 @@ export function defaultFig(seed = '#5b7bf0', id = '') {
     shirt: color(seed, '#5b7bf0'),
     pants: '#3a4258',
     shoes: '#f2efe9',
+    wp: 'curta',
+    sh: true,
   };
 }
 export function cleanFig(f, seed, id) {
@@ -61,13 +75,27 @@ export function cleanFig(f, seed, id) {
     shirt: color(f.shirt, d.shirt),
     pants: color(f.pants, d.pants),
     shoes: color(f.shoes, d.shoes),
+    wp: pick(f.wp, ids(FIG.wp), d.wp),
+    sh: f.sh === undefined ? d.sh : !!f.sh,
   };
 }
+// escudo só vale com arma de uma mão
+export const hasShield = (fig) => !!fig.sh && ONE_HAND.has(fig.wp);
 // posição no acampamento que chega dos amigos (ação 'pos')
 export function cleanPos(p) {
   const n = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null);
   if (!p || typeof p !== 'object') return null;
   const x = n(p.x, -12, 12), z = n(p.z, -12, 12), r = n(p.r, -10, 10);
   if (x == null || z == null) return null;
-  return { x, z, r: r ?? 0, s: Number.isInteger(p.s) && p.s >= 0 && p.s < 16 ? p.s : -1, w: !!p.w, run: !!p.run, e: typeof p.e === 'string' ? p.e.slice(0, 12) : '' };
+  return {
+    x,
+    z,
+    r: r ?? 0,
+    s: Number.isInteger(p.s) && p.s >= 0 && p.s < 16 ? p.s : -1,
+    w: !!p.w,
+    run: !!p.run,
+    e: typeof p.e === 'string' ? p.e.slice(0, 12) : '',
+    pvp: !!p.pvp,
+    hp: n(p.hp, 0, 100) ?? 100,
+  };
 }

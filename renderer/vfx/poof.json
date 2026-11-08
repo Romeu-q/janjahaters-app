@@ -1,0 +1,52 @@
+{
+  "name": "poof",
+  "effect": "Explosão",
+  "image": "poof.png",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "frames": 8,
+  "columns": 8,
+  "rows": 1,
+  "fps": 16,
+  "frameDurationMs": 63,
+  "loopHoldMs": 250,
+  "pivot": {
+    "x": 0.5,
+    "y": 0.5
+  },
+  "settings": {
+    "type": "explosion",
+    "size": 64,
+    "seed": 7,
+    "pal": [
+      "#f4f1ee",
+      "#c9c3cc",
+      "#8a8094",
+      "#2a2430"
+    ],
+    "blast": 0.55,
+    "blobN": 5,
+    "ring": 0,
+    "debris": 4,
+    "smokeTail": 1,
+    "lump": 0.6,
+    "rotation": 0,
+    "frames": 8,
+    "fps": 16,
+    "hold": 250,
+    "headSpeed": 0.25,
+    "tailLag": 0.3,
+    "thinOut": 0.7,
+    "erode": 0.55,
+    "core": 0.35,
+    "mid": 0.7,
+    "sparks": 3,
+    "sparkSpeed": 0.85,
+    "sparkLife": 0.64,
+    "sparkLen": 1.3,
+    "flipX": false,
+    "flipY": false,
+    "outline": false,
+    "decay": true
+  }
+}
