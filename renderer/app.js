@@ -1,7 +1,8 @@
 import { joinRoom, selfId } from 'trystero';
 import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
-import { buildMicChain, gateParams as micGateParams } from './mic-chain.js';
+import { buildMicChain } from './mic-chain.js';
+import { FIG, cleanFig, cleanPos } from './figure.js';
 import * as ident from './identity.js';
 import { initDM } from './dm.js';
 import {
@@ -83,6 +84,9 @@ import {
   Ban,
   UserMinus,
   Sparkles,
+  Sofa,
+  Shirt,
+  GripVertical,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -212,6 +216,9 @@ const ICONS = {
   moon: Moon,
   server: Server,
   sparkles: Sparkles,
+  sofa: Sofa,
+  shirt: Shirt,
+  'grip-vertical': GripVertical,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -341,36 +348,29 @@ function toast(msg) {
 const freshProfile = !store.get('profile', null);
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
-  { mic: '', out: '', noise: 'janja', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
+  { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
     stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
-// v1.10: no PC quem estava na "Forte" (RNNoise) passa para a Máxima (DeepFilterNet3); no celular continua o RNNoise (mais leve)
-if ((settings.nsVersion || 0) < 2) {
-  if (settings.noise === 'strong' && !isMobile) settings.noise = 'dfn';
-  settings.nsVersion = 2;
-  store.set('settings', settings);
-}
 // v1.12: o DeepFilterNet3 deixou o mic ruim para a galera: todo mundo volta para o RNNoise (Forte).
-// A Máxima continua nas opções para quem quiser testar.
-if (settings.nsVersion < 3) {
+// v1.19: o DeepFilterNet3 saiu do app; quem ainda estava nele vai para o RNNoise.
+if ((settings.nsVersion || 0) < 3 || settings.noise === 'dfn') {
   if (settings.noise === 'dfn') settings.noise = 'strong';
   settings.nsVersion = 3;
   store.set('settings', settings);
 }
-// v2.0: o Janja Voice (motor e rede neural próprios) vira o padrão. Quem estava no padrão anterior (Forte/RNNoise)
-// passa para ele; quem escolheu Máxima, Básica ou Desligada continua como estava.
-if (settings.nsVersion < 4) {
-  if (settings.noise === 'strong') settings.noise = 'janja';
-  settings.nsVersion = 4;
+// v2.1: o Janja Voice saiu do app (só o RNNoise, com o anti-impacto na frente). Quem estava nele volta para o RNNoise.
+if ((settings.nsVersion || 0) < 5 || settings.noise === 'janja') {
+  if (settings.noise === 'janja') settings.noise = 'strong';
+  settings.nsVersion = 5;
   store.set('settings', settings);
 }
 // aparência (só deste PC) e plugins ligados
-const LOOK_DEFAULTS = { style: 'bolha', theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [] };
+const LOOK_DEFAULTS = { style: 'bolha', theme: 'padrao', accent: '', bg: '', dim: 50, blur: 0, glass: 25, font: 100, family: '', radius: '', compact: false, noAnim: false, noFx: false, css: '', themes: [], room: !isMobile };
 settings.look = { ...LOOK_DEFAULTS, ...settings.look };
 settings.plugins = { ...settings.plugins };
-settings.gate = { on: true, auto: true, db: -50, ...settings.gate }; // sensibilidade do mic
+settings.gate = { on: true, auto: true, db: -50, impact: true, ...settings.gate }; // sensibilidade do mic e anti-impacto
 settings.localMute = { ...settings.localMute }; // uid -> silenciado só para mim
 settings.streamMute = { ...settings.streamMute }; // uid -> som da stream dele mutado só para mim
 settings.streamVolumes = { ...settings.streamVolumes }; // uid -> volume do áudio da stream
@@ -851,6 +851,7 @@ function onRecsChanged(list) {
     const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000 && myStatus() !== 'dnd' && (!settings.mutedCh[m.ch] || pingsMe(m)));
     if (textChatCh() && document.hasFocus()) markRead(textChatCh());
     for (const m of notifyMsgs) pluginEmit('message', m);
+    if (G3.ctl) for (const m of fresh) if (!m.del && !m.edited && Date.now() - m.ts < 30_000) roomBubble(m);
     if (notifyMsgs.some((m) => pingsMe(m) || (plug('mentions') && mentionsMe(m.text)))) {
       if (!plug('noTypingSounds')) sfx.msg();
       window.desk?.flash();
@@ -885,7 +886,7 @@ function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -975,7 +976,9 @@ function connectRoom() {
     move: room.makeAction('move'), // "vai para o canal X" (arrastaram você)
     frq: room.makeAction('frq'), // pedido de amizade (assinado)
     clk: room.makeAction('clk'), // acerto do relógio (para a música tocar no mesmo ponto em todo mundo)
+    pos: room.makeAction('pos'), // onde eu estou na sala de games
   };
+  A.pos.onMessage = (d, { peerId }) => onRoomPos(d, peerId);
   A.clk.onMessage = (d, { peerId }) => onClk(d, peerId);
   A.frq.onMessage = (d, { peerId }) => dm?.onFriendMsg(d, peerId);
   listenOldRooms();
@@ -986,6 +989,7 @@ function connectRoom() {
     A.hi.send(hiPayload(), { target: pid });
     A.sum.send([...recs.values()].map((r) => [r.id, r.v]), { target: pid });
     for (const ms of [500, 2000, 5000]) setTimeout(() => pingClock(pid), ms);
+    if (G3.ctl) setTimeout(() => G3.ctl?.resendPos(), 1500);
     setTimeout(retryMissingFiles, 3000);
   };
   A.freq.onMessage = async (d, { peerId }) => {
@@ -1045,6 +1049,7 @@ function onHi(pid, d) {
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
+  if (d?.user?.fig) p.user.fig = cleanFig(d.user.fig, p.user.color, p.user.id);
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
   verifyHi(p, d?.user);
@@ -1236,14 +1241,11 @@ const C = {
 };
 
 // Modos de supressão de ruído (Configurações → Voz e áudio):
-//   'dfn'    DeepFilterNet3. Supressão e ganho do navegador desligados: o modelo é o único removedor.
 //   'strong' RNNoise. Supressão do navegador desligada (não empilha dois removedores).
-//   'janja'  Janja Voice (motor e rede neural próprios). Supressão do navegador desligada.
 //   'basic'  só o WebRTC (supressão de ruído do próprio Chromium).
 //   'off'    nada.
 // O cancelamento de eco do WebRTC (AEC3) é independente e vale em todos.
-const engineOf = (noise) =>
-  noise === 'dfn' ? 'dfn' : noise === 'strong' ? 'rnnoise' : noise === 'janja' ? 'janja' : 'none';
+const engineOf = (noise) => (noise === 'strong' ? 'rnnoise' : 'none');
 function getRawMic(deviceId = settings.mic, opts = settings) {
   return navigator.mediaDevices.getUserMedia({
     audio: {
@@ -1251,15 +1253,13 @@ function getRawMic(deviceId = settings.mic, opts = settings) {
       channelCount: 1,
       echoCancellation: opts.echo,
       noiseSuppression: opts.noise === 'basic',
-      autoGainControl: opts.noise !== 'dfn', // no DeepFilterNet3 o ganho vem depois do modelo
+      autoGainControl: true,
     },
   });
 }
 
-// Um AudioContext só, de 48 kHz (o RNNoise e o DeepFilterNet3 trabalham nessa taxa), para tudo do mic.
+// Um AudioContext só, de 48 kHz (o RNNoise trabalha nessa taxa), para tudo do mic.
 let micCtx;
-const gateParams = (opts = settings) => micGateParams(engineOf(opts.noise), opts.gate);
-let overloadWarned = false;
 async function processMic(raw, opts = settings) {
   const stopRaw = () => raw.getTracks().forEach((t) => t.stop());
   micCtx ||= new AudioContext({ sampleRate: 48000 });
@@ -1268,20 +1268,14 @@ async function processMic(raw, opts = settings) {
   const chain = await buildMicChain(micCtx, src, {
     engine: engineOf(opts.noise),
     gate: opts.gate,
-    onOverload: () => {
-      if (overloadWarned) return;
-      overloadWarned = true;
-      toast('O PC está pesado para a supressão Máxima. Se a sua voz picotar, use a Forte (RNNoise) em Configurações → Voz e áudio.');
-    },
   });
-  if (opts.noise === 'dfn' && chain.engine !== 'dfn') toast('A supressão Máxima não carregou: usando a Forte (RNNoise)');
-  if (opts.noise === 'janja' && chain.engine !== 'janja') toast('O Janja Voice não carregou: usando a Forte (RNNoise)');
   const dest = micCtx.createMediaStreamDestination();
   dest.channelCount = 1;
   chain.output.connect(dest);
   return {
     stream: dest.stream,
     gate: chain.gate,
+    setGate: chain.setGate, // portão e anti-impacto (são dois nós)
     engine: chain.engine,
     stop() {
       stopRaw();
@@ -1311,7 +1305,8 @@ async function joinVoice(ch) {
     C.mic = m.stream;
     C.micStop = m.stop;
     C.micGate = m.gate || null;
-    C.micEngine = m.engine || null; // qual removedor de ruído está ativo (dfn, rnnoise, none)
+    C.micSetGate = m.setGate || null;
+    C.micEngine = m.engine || null; // qual removedor de ruído está ativo (rnnoise, none)
   } catch {
     C.mic = null;
     C.micStop = null;
@@ -1355,6 +1350,7 @@ function leaveVoice(switching) {
   C.mic = null;
   C.micStop = null;
   C.micGate = null;
+  C.micSetGate = null;
   C.meters.clear();
   C.speaking.clear();
   for (const p of peers.values()) dropMedia(p);
@@ -1721,11 +1717,11 @@ $('#btnMute').onclick = $('#ctlMute').onclick = toggleMute;
 $('#btnDeafen').onclick = $('#ctlDeafen').onclick = toggleDeafen;
 $('#vbLeave').onclick = () => leaveVoice();
 
-// ----- botão rápido do Janja Voice (ao lado de sair da call) -----
-// Liga/desliga a supressão de ruído sem abrir as configurações. Desligar vai para "Desligada".
+// ----- botão rápido da supressão de ruído (ao lado de sair da call) -----
+// Liga/desliga o RNNoise sem abrir as configurações. Desligar vai para "Desligada".
 function renderNoiseBtn() {
-  const on = settings.noise === 'janja';
-  const title = on ? 'Janja Voice ligado: clique para desligar a remoção de ruído' : 'Janja Voice desligado: clique para remover o ruído de fundo';
+  const on = settings.noise === 'strong';
+  const title = on ? 'Supressão de ruído ligada (RNNoise): clique para desligar' : 'Supressão de ruído desligada: clique para remover o ruído de fundo';
   for (const b of [$('#vbNoise'), $('#ctlNoise')]) {
     if (!b) continue;
     b.classList.toggle('on', on);
@@ -1741,6 +1737,7 @@ async function restartMic() {
     C.mic = next.stream;
     C.micStop = next.stop;
     C.micGate = next.gate || null;
+    C.micSetGate = next.setGate || null;
     C.micEngine = next.engine || null;
     applyMicEnabled();
     meter('me', next.stream);
@@ -1753,7 +1750,7 @@ let noiseBusy = false;
 async function toggleNoise() {
   if (noiseBusy) return;
   noiseBusy = true;
-  settings.noise = settings.noise === 'janja' ? 'off' : 'janja';
+  settings.noise = settings.noise === 'strong' ? 'off' : 'strong';
   saveSettings();
   renderNoiseBtn();
   try {
@@ -1761,8 +1758,7 @@ async function toggleNoise() {
   } finally {
     noiseBusy = false;
   }
-  if (settings.noise === 'janja' && C.ch && C.micEngine !== 'janja') return; // o aviso de falha já apareceu
-  toast(settings.noise === 'janja' ? 'Janja Voice ligado: ruído de fundo removido' : 'Janja Voice desligado');
+  toast(settings.noise === 'strong' ? 'Supressão de ruído ligada' : 'Supressão de ruído desligada');
 }
 $('#vbNoise').onclick = $('#ctlNoise').onclick = toggleNoise;
 renderNoiseBtn();
@@ -2849,6 +2845,87 @@ function trackRow(item, removable) {
   return li;
 }
 
+// Reordenar a fila arrastando (mouse ou dedo). A ordem é o "at" de cada música; a que foi arrastada ganha um
+// "at" entre as vizinhas. Solta no meio do autoplay, vira do autoplay; solta acima, vira escolhida.
+const QD = { drag: null };
+function moveQueueItem(id, beforeId) {
+  const ch = C.ch;
+  const q = queueOf(ch);
+  const item = q.find((x) => x.id === id);
+  if (!item || id === beforeId) return;
+  const rest = q.filter((x) => x.id !== id);
+  let idx = beforeId ? rest.findIndex((x) => x.id === beforeId) : rest.length;
+  if (idx < 0) idx = rest.length;
+  const prev = rest[idx - 1];
+  const next = rest[idx];
+  const auto = !!prev?.auto;
+  const same = rest.filter((x) => !!x.auto === auto);
+  const prevS = [...same].reverse().find((x) => rest.indexOf(x) < idx);
+  const nextS = same.find((x) => rest.indexOf(x) >= idx);
+  const at = prevS && nextS ? (prevS.at + nextS.at) / 2 : prevS ? prevS.at + 1 : nextS ? nextS.at - 1 : Date.now();
+  if (at === item.at && auto === !!item.auto) return;
+  const moved = { ...item, at };
+  if (auto) moved.auto = true;
+  else delete moved.auto;
+  if (!auto && item.auto) moved.addedBy = me.name; // tirou do autoplay: agora é escolha de quem arrastou
+  put(moved);
+}
+$('#queue').addEventListener('pointerdown', (e) => {
+  const li = e.target.closest('li[data-qid]');
+  if (!li || e.button !== 0 || e.target.closest('button')) return;
+  if (e.pointerType !== 'mouse' && !e.target.closest('.q-grip')) return; // no toque, só pela alça (o resto rola a lista)
+  QD.drag = { li, id: li.dataset.qid, y0: e.clientY, on: false, pid: e.pointerId };
+});
+addEventListener('pointermove', (e) => {
+  const d = QD.drag;
+  if (!d || e.pointerId !== d.pid) return;
+  const dy = e.clientY - d.y0;
+  if (!d.on) {
+    if (Math.abs(dy) < 6) return;
+    d.on = true;
+    d.li.classList.add('q-dragging');
+    $('#queue').classList.add('q-sorting');
+    try {
+      d.li.setPointerCapture(e.pointerId);
+    } catch {}
+  }
+  d.li.style.transform = `translateY(${dy}px)`;
+  // onde vai cair: antes da primeira linha cujo meio está abaixo do dedo
+  const rows = [...$('#queue').querySelectorAll('li[data-qid]')].filter((r) => r !== d.li);
+  let before = null;
+  for (const r of rows) {
+    const b = r.getBoundingClientRect();
+    if (e.clientY < b.top + b.height / 2) {
+      before = r;
+      break;
+    }
+  }
+  for (const r of rows) r.classList.toggle('q-drop-before', r === before);
+  $('#queue').classList.toggle('q-drop-end', !before);
+  d.before = before?.dataset.qid || null;
+  // perto da borda, a lista rola sozinha
+  const box = $('#queue').getBoundingClientRect();
+  if (e.clientY < box.top + 30) $('#queue').scrollTop -= 8;
+  else if (e.clientY > box.bottom - 30) $('#queue').scrollTop += 8;
+});
+function endQueueDrag(e) {
+  const d = QD.drag;
+  if (!d || (e && e.pointerId !== d.pid)) return;
+  QD.drag = null;
+  for (const r of $('#queue').querySelectorAll('.q-drop-before')) r.classList.remove('q-drop-before');
+  $('#queue').classList.remove('q-sorting', 'q-drop-end');
+  if (!d.on) return;
+  d.li.classList.remove('q-dragging');
+  d.li.style.transform = '';
+  // um clique que virou arrasto não toca a música
+  addEventListener('click', (ev) => ev.stopPropagation(), { capture: true, once: true });
+  if (e?.type === 'pointerup') moveQueueItem(d.id, d.before);
+  lastQueueIds = '';
+  renderMusic();
+}
+addEventListener('pointerup', endQueueDrag);
+addEventListener('pointercancel', endQueueDrag);
+
 let lastQueueIds = '';
 function renderMusic() {
   $('#musicOff').hidden = !!C.ch;
@@ -2869,11 +2946,19 @@ function renderMusic() {
   setIcon($('#plPlay'), item && pb.pausedAt == null ? 'pause' : 'play');
   const q = queueOf(C.ch);
   const ids = q.map((x) => x.id + x.v).join();
-  if (ids !== lastQueueIds) {
+  if (ids !== lastQueueIds && !QD.drag) {
     const prev = new Set(lastQueueIds.split(','));
     lastQueueIds = ids;
     const list = $('#queue');
-    const rows = q.map((x) => trackRow(x, true));
+    const rows = q.map((x) => {
+      const li = trackRow(x, true);
+      li.dataset.qid = x.id;
+      const grip = el('span', 'q-grip');
+      grip.title = 'Arraste para mudar a ordem';
+      grip.append(icon('grip-vertical', 'sm'));
+      li.prepend(grip);
+      return li;
+    });
     const firstAuto = q.findIndex((x) => x.auto);
     const nodes = [...rows];
     if (firstAuto >= 0) {
@@ -5242,6 +5327,7 @@ function renderHeader() {
 }
 
 function renderPresence() {
+  G3.ctl?.refresh();
   renderSidebar();
   renderPeopleList();
   renderMeCard();
@@ -5267,6 +5353,7 @@ function openView(id) {
   store.set('view:' + R.hash, c.id);
   S.unread.delete(c.id);
   const text = c.type === 'text';
+  closeRoom();
   $('#textView').hidden = !text;
   $('#voiceView').hidden = text;
   if (text) renderMessages();
@@ -5890,6 +5977,7 @@ function renderGateUi(level, thr, open) {
   $('#stGateAuto').checked = g.auto;
   $('#stGateDb').value = g.db;
   $('#stGateDb').disabled = !g.on || g.auto;
+  $('#stImpact').checked = g.impact !== false;
   $('#sensBox').classList.toggle('off', !g.on);
   const t = g.auto && thr != null ? thr : g.db;
   $('#sensThr').style.left = dbToPct(t) + '%';
@@ -5902,7 +5990,7 @@ function renderGateUi(level, thr, open) {
 // muda na hora: no teste e na call
 function applyGate() {
   saveSettings();
-  for (const node of [testStream?.gate, C.micGate]) node?.port.postMessage(gateParams());
+  for (const set of [testStream?.setGate, C.micSetGate]) set?.(settings.gate);
   renderGateUi();
 }
 $('#stGateOn').onchange = () => {
@@ -5911,6 +5999,10 @@ $('#stGateOn').onchange = () => {
 };
 $('#stGateAuto').onchange = () => {
   settings.gate.auto = $('#stGateAuto').checked;
+  applyGate();
+};
+$('#stImpact').onchange = () => {
+  settings.gate.impact = $('#stImpact').checked;
   applyGate();
 };
 $('#stGateDb').oninput = () => {
@@ -6261,6 +6353,7 @@ function fillLookForm() {
   $('#lkRadius').value = look.radius;
   $('#lkCompact').checked = look.compact;
   $('#lkNoAnim').checked = look.noAnim;
+  $('#lkRoom').checked = look.room !== false;
   $('#lkStyle').value = look.style === 'classico' ? 'classico' : 'bolha';
   $('#lkNoFx').checked = look.noFx;
   $('#lkBgDel').hidden = !look.bg;
@@ -7401,6 +7494,135 @@ document.addEventListener('keydown', (e) => {
 
 // ============================================================ celular (app Android)
 // Uma tela por vez: Canais | Conversa | Painel (pessoas, chat da call, música, sons)
+// ============================================================ sala de games (room.js)
+// Uma sala 3D (sofá, TV, puffs, fliperama) com um boneco de cada um do grupo, andando com WASD.
+// O three.js vem num arquivo à parte (room.bundle.js) que só carrega quando alguém abre a sala, e a sala é
+// desmontada (memória e placa de vídeo liberadas) quando você sai dela. Desligada em Aparência, nem aparece.
+const G3 = { ctl: null, loading: null, preview: null, open: false };
+const roomOn = () => look.room !== false;
+function myFig() {
+  return cleanFig(store.get('fig', null), me.color, me.id);
+}
+function loadRoom() {
+  if (window.JanjaRoom) return Promise.resolve(window.JanjaRoom);
+  return (G3.loading ||= new Promise((ok, no) => {
+    const s = document.createElement('script');
+    s.src = 'room.bundle.js';
+    s.onload = () => ok(window.JanjaRoom);
+    s.onerror = () => {
+      G3.loading = null;
+      no(new Error('não carregou a sala'));
+    };
+    document.head.append(s);
+  }));
+}
+const roomPeople = () =>
+  [...peers.values()]
+    .filter((p) => p.user && p.user.verified && !p.user.bot && !banOf(p.user.id))
+    .map((p) => ({ key: p.pid, uid: p.user.id, name: p.user.name, color: p.user.color, fig: p.user.fig, speaking: C.speaking.has(p.pid), pos: p.roomPos }));
+const roomApi = {
+  me: () => ({ uid: me.id, name: me.name || 'Eu', color: me.color, fig: myFig(), speaking: C.speaking.has('me') }),
+  people: roomPeople,
+  sendPos: (st) => A.pos?.send(st),
+  tv() {
+    if (!C.ch) return null;
+    const { pb, item } = pbOf(C.ch);
+    return item ? { title: item.title, artist: item.artist, thumb: thumbOf(item), playing: pb.pausedAt == null } : null;
+  },
+};
+function onRoomPos(d, pid) {
+  const st = cleanPos(d);
+  const p = peers.get(pid);
+  if (!st || !p?.user?.verified) return;
+  p.roomPos = st;
+  G3.ctl?.handlePos(pid, st);
+}
+function roomBubble(m) {
+  if (m.bot || typeof m.text !== 'string' || !m.text.trim()) return;
+  const key = m.uid === me.id ? 'me' : [...peers.values()].find((p) => p.user?.id === m.uid)?.pid;
+  if (key) G3.ctl.bubble(key, m.text.replace(/s+/g, ' ').trim());
+}
+async function openRoom(edit) {
+  if (!roomOn()) return;
+  setPane('center');
+  $('#textView').hidden = true;
+  $('#voiceView').hidden = true;
+  $('#roomView').hidden = false;
+  $('#viewHead').hidden = true;
+  G3.open = true;
+  $('#roomLoading').hidden = !!G3.ctl;
+  try {
+    const R3 = await loadRoom();
+    if (!G3.open) return;
+    if (!G3.ctl) G3.ctl = R3.mount($('#roomStage'), roomApi);
+    $('#roomLoading').hidden = true;
+    $('#roomStage canvas')?.focus();
+    if (edit) openFigEditor();
+  } catch (err) {
+    console.warn('sala', err);
+    toast('Não deu para abrir a sala de games');
+    closeRoom(true);
+  }
+}
+function closeRoom(back) {
+  if (!G3.open) return;
+  G3.open = false;
+  closeFigEditor();
+  G3.ctl?.destroy();
+  G3.ctl = null;
+  $('#roomView').hidden = true;
+  $('#viewHead').hidden = false;
+  if (back) openView(S.view);
+}
+// editor do boneco: escolhe e já aparece na sala e na prévia girando
+function openFigEditor() {
+  const box = $('#figEditor');
+  box.hidden = false;
+  const f = myFig();
+  const chips = (key, list) => {
+    $('#fig-' + key).replaceChildren(
+      ...list.map(([id, label]) => {
+        const b = el('button', 'chip' + (f[key] === id ? ' on' : ''), label);
+        b.type = 'button';
+        b.onclick = () => setFig({ [key]: id });
+        return b;
+      }),
+    );
+  };
+  chips('char', FIG.char);
+  chips('acc', FIG.acc);
+  if (!G3.preview && window.JanjaRoom) G3.preview = window.JanjaRoom.preview($('#figPreview'), f);
+}
+function closeFigEditor() {
+  $('#figEditor').hidden = true;
+  G3.preview?.destroy();
+  G3.preview = null;
+}
+let figHiTimer = 0;
+function setFig(change) {
+  const f = { ...myFig(), ...change };
+  store.set('fig', f);
+  G3.preview?.set(f);
+  G3.ctl?.refresh();
+  openFigEditor();
+  clearTimeout(figHiTimer);
+  figHiTimer = setTimeout(sendHi, 600); // os amigos recebem o boneco novo
+}
+function renderRoomButtons() {
+  for (const b of $$('[data-room]')) b.hidden = !roomOn();
+  if (!roomOn()) closeRoom(true);
+}
+$$('[data-room]').forEach((b) => (b.onclick = () => (G3.open ? closeRoom(true) : openRoom())));
+$('#roomClose').onclick = () => closeRoom(true);
+$('#roomEdit').onclick = () => ($('#figEditor').hidden ? openFigEditor() : closeFigEditor());
+$('#figClose').onclick = closeFigEditor;
+$('#lkRoom').onchange = () => {
+  look.room = $('#lkRoom').checked;
+  saveLook();
+  renderRoomButtons();
+};
+renderRoomButtons();
+
 function setPane(p) {
   if (!isMobile) return;
   $('#app').dataset.pane = p;
@@ -7516,7 +7738,7 @@ window.addEventListener('beforeunload', () => {
   room?.leave();
 });
 
-window.__toca = { peers, C, recs, Y, AP, advance, pbOf, queueOf, addLink, toggleAutoplay, djRank, musicPos, netNow, clock: () => clockOff }; // para depurar pelo DevTools (Ctrl+Shift+I)
+window.__toca = { peers, C, recs, Y, AP, advance, pbOf, queueOf, addLink, toggleAutoplay, djRank, musicPos, netNow, clock: () => clockOff, G3, roomBubble: (m) => roomBubble(m) }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
 // ----- convite por link (janjahaters://join/CODIGO) -----

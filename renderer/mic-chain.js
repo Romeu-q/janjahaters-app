@@ -1,24 +1,13 @@
 // Caminho do som do microfone, usado pela call e pelo banco de testes (ns-lab.html).
 //
-//   mic -> corte de grave (100 Hz no DFN, 80 Hz nos outros) -> removedor de ruído -> portão de sensibilidade
-//       -> limitador (só fora do DFN) -> amigos
+//   mic -> corte de grave (80 Hz) -> anti-impacto -> RNNoise -> portão (sensibilidade) -> limitador -> amigos
 //
-// Removedor de ruído (um só, nunca dois empilhados):
-//   'dfn'      DeepFilterNet3 (rede neural, 48 kHz). Tira teclado mesmo com a pessoa falando e tem um
-//              portão próprio para as pausas, que olha 30 ms à frente para não cortar o começo das palavras.
-//   'rnnoise'  RNNoise (rede neural pequena): mais leve, tira menos teclado.
-//   'janja'    Janja Voice: motor próprio (renderer/janja-voice) com rede neural treinada por nós
-//              (renderer/models). O eco continua com o AEC3 do WebRTC (opção "Cancelamento de eco").
-//   'none'     nada (a supressão do próprio navegador/WebRTC pode estar ligada no getUserMedia).
-// Se o DeepFilterNet3 ou o Janja Voice não carregarem, cai para o RNNoise sozinho.
+// O anti-impacto (gate-worklet.js, só com 5 ms de atraso) abaixa estalo de tecla e batida na mesa ANTES do
+// RNNoise, inclusive com você falando, que é onde o RNNoise mais deixa passar. O portão fica DEPOIS: decide
+// pelo som já limpo (no banco de testes, o portão antes do RNNoise piorava a voz com ventilador ligado).
+// Removedor de ruído: 'rnnoise' (rede neural pequena, 48 kHz) ou 'none' (a supressão do próprio
+// navegador/WebRTC pode estar ligada no getUserMedia).
 import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
-import { createDeepFilterNetAudioWorklet } from '@workadventure/noise-suppression/deepfilternet';
-
-export const DFN_URLS = {
-  moduleUrl: 'vendor/dfn/worklet.js',
-  wasmUrl: 'vendor/dfn/df_bg.wasm',
-  modelUrl: 'vendor/dfn/DeepFilterNet3_onnx.tar.gz',
-};
 
 // worklets carregados por AudioContext (addModule só uma vez em cada um)
 const modules = new WeakMap();
@@ -45,98 +34,20 @@ async function rnnoiseNode(ctx) {
   const node = new RnnoiseWorkletNode(ctx, { wasmBinary: wasm, maxChannels: 1 });
   return { node, dispose: () => node.destroy() };
 }
-// Janja Voice: worklet gerado no build:ui a partir de renderer/janja-voice/worklet.ts
-let janjaModel = null;
-function loadJanjaModel() {
-  janjaModel ||= fetch('models/janja-voice-v1.bin').then((r) => {
-    if (!r.ok) throw new Error(`modelo do Janja Voice: HTTP ${r.status}`);
-    return r.arrayBuffer();
-  });
-  janjaModel.catch(() => (janjaModel = null));
-  return janjaModel;
-}
-async function janjaNode(ctx) {
-  const [, model] = await Promise.all([loadModule(ctx, 'janja-voice-worklet.js'), loadJanjaModel()]);
-  const node = new AudioWorkletNode(ctx, 'janja-voice', {
-    numberOfInputs: 2,
-    numberOfOutputs: 1,
-    outputChannelCount: [1],
-    channelCount: 1,
-    channelCountMode: 'explicit',
-    processorOptions: {
-      // o eco fica com o AEC3 do navegador; aqui só ruído (rede neural + supressor clássico acima de 8 kHz)
-      settings: { noiseSuppression: true, echoCancellation: false, voiceFocus: false, neural: true, strength: 0.5 },
-      model: model.slice(0), // cópia: o original fica em cache para a próxima call
-    },
-  });
-  // espera o worklet confirmar que leu o modelo (sem modelo ele cairia no supressor clássico em silêncio)
-  await new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Janja Voice não respondeu')), 3000);
-    node.port.onmessage = (e) => {
-      if (e.data?.type !== 'model') return;
-      clearTimeout(t);
-      node.port.onmessage = null;
-      e.data.ok ? resolve() : reject(new Error(e.data.error));
-    };
-  });
-  return {
-    node,
-    dispose: () => {
-      node.port.postMessage({ type: 'dispose' });
-      node.port.close();
-    },
-  };
-}
 
-// opções do DeepFilterNet3 usadas na call (o banco de testes compara variações)
-// Escolhidas no banco de testes (ns-lab.html?variantes):
-//  - minSpeechFrames 2: 2 quadros de fala seguidos para abrir o portão; tecla sozinha não abre
-//  - speechAttenuationDb 30 (padrão 25): tira um pouco mais de ruído durante a fala sem piorar a voz
-//  - postGain desligado: o nivelador depois do modelo deixava vazar mais teclado com digitação intensa
-//    (o ganho automático do navegador também fica desligado: ele aumentaria o teclado antes do modelo)
-export const DFN_OPTIONS = {
-  minSpeechFrames: 2,
-  speechAttenuationDb: 30,
-  postGain: false,
-};
-async function dfnNode(ctx, onOverload, extra) {
-  const w = await createDeepFilterNetAudioWorklet(ctx, { ...DFN_URLS, ...DFN_OPTIONS, ...extra, onOverload });
-  await w.ready;
-  return { node: w.node, dispose: () => w.dispose() };
-}
-
-// gate: { on, auto, db } das configurações. No DeepFilterNet3 o "automático" é o portão do próprio modelo;
-// o nosso portão só entra se a pessoa escolher a sensibilidade na mão.
+// gate: { on, auto, db, impact } das configurações
 export function gateParams(engine, gate) {
-  const ours = engine === 'dfn' ? gate.on && !gate.auto : gate.on;
-  return { on: ours, auto: gate.auto, thr: gate.db };
+  return { on: !!gate.on, auto: gate.auto, thr: gate.db, impact: gate.impact !== false, ...(gate.ratio ? { ratio: gate.ratio } : {}) };
 }
 
 /**
  * Monta o caminho entre `input` (um nó de áudio) e a saída. Não conecta a saída em lugar nenhum.
- * @returns {{ output: AudioNode, gate: AudioWorkletNode, engine: string, dispose(): void }}
+ * `gatePos` 'post' (sem anti-impacto) e 'pre' (portão antes do RNNoise) só existem para o banco de testes comparar.
+ * @returns {{ output: AudioNode, gate: AudioWorkletNode, engine: string, setGate(gate): void, dispose(): void }}
  */
-export async function buildMicChain(ctx, input, { engine = 'dfn', gate = { on: true, auto: true, db: -50 }, onOverload, dfn, lowCutHz = engine === 'dfn' ? 100 : 80, limiter: useLimiter = engine !== 'dfn' } = {}) {
+export async function buildMicChain(ctx, input, { engine = 'rnnoise', gate = { on: true, auto: true, db: -50 }, lowCutHz = 80, limiter: useLimiter = true, gatePos = 'split' } = {}) {
   await loadModule(ctx, 'gate-worklet.js');
-  let den = null;
-  let used = engine;
-  if (engine === 'dfn') {
-    try {
-      den = await dfnNode(ctx, onOverload, dfn);
-    } catch (err) {
-      console.warn('DeepFilterNet3 não carregou, usando RNNoise', err);
-      used = 'rnnoise';
-    }
-  }
-  if (engine === 'janja') {
-    try {
-      den = await janjaNode(ctx);
-    } catch (err) {
-      console.warn('Janja Voice não carregou, usando RNNoise', err);
-      used = 'rnnoise';
-    }
-  }
-  if (used === 'rnnoise') den = await rnnoiseNode(ctx);
+  const den = engine === 'rnnoise' ? await rnnoiseNode(ctx) : null;
 
   // batida na mesa e vibração do teclado ficam quase todas abaixo de 80 Hz; a voz quase não usa essa faixa
   const lowCut = ctx.createBiquadFilter();
@@ -144,9 +55,7 @@ export async function buildMicChain(ctx, input, { engine = 'dfn', gate = { on: t
   lowCut.frequency.value = lowCutHz || 10;
   lowCut.Q.value = 0.7;
   const gateNode = new AudioWorkletNode(ctx, 'janja-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-  gateNode.port.postMessage(gateParams(used, gate));
-  // limitador (RNNoise/sem supressão): estalo alto não chega estourado. No DeepFilterNet3 fica de fora:
-  // o ganho de compensação do compressor levantava o resíduo de ruído nas pausas e somava 6 ms
+  // limitador: estalo alto não chega estourado
   const limiter = ctx.createDynamicsCompressor();
   limiter.threshold.value = -12;
   limiter.knee.value = 4;
@@ -154,19 +63,31 @@ export async function buildMicChain(ctx, input, { engine = 'dfn', gate = { on: t
   limiter.attack.value = 0.002;
   limiter.release.value = 0.12;
 
+  const impactNode = gatePos === 'split' ? new AudioWorkletNode(ctx, 'janja-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], processorOptions: { lookMs: 5 } }) : null;
+  // o mesmo processador faz as duas coisas: no 'split', um só abaixa estalos e o outro só é o portão
+  const setGate = (g) => {
+    const p = gateParams(engine, g);
+    if (impactNode) {
+      impactNode.port.postMessage({ ...p, on: false });
+      gateNode.port.postMessage({ ...p, impact: false });
+    } else gateNode.port.postMessage(gatePos === 'post' ? { ...p, impact: false } : p);
+  };
+  setGate(gate);
   let chain = input.connect(lowCut);
-  if (den) chain = chain.connect(den.node);
-  chain = chain.connect(gateNode);
+  const order = gatePos === 'split' ? [impactNode, den?.node, gateNode] : gatePos === 'post' ? [den?.node, gateNode] : [gateNode, den?.node];
+  for (const n of order) if (n) chain = chain.connect(n);
   if (useLimiter) chain = chain.connect(limiter);
   return {
     output: chain,
     gate: gateNode,
-    engine: used,
+    engine,
+    setGate,
     dispose() {
       input.disconnect(lowCut);
-      for (const n of [lowCut, den?.node, gateNode, limiter]) n?.disconnect();
+      for (const n of [lowCut, impactNode, den?.node, gateNode, limiter]) n?.disconnect();
       den?.dispose();
       gateNode.port.close();
+      impactNode?.port.close();
     },
   };
 }

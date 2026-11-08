@@ -1,6 +1,7 @@
 node_modules/
 dist/
 renderer/bundle.js
+renderer/room.bundle.js
 *.log
 renderer/vendor/
 oauth.json
@@ -11,4 +12,3 @@ bin/
 turn.json
 renderer/turn.gen.js
 janja-bot/
-renderer/janja-voice-worklet.js

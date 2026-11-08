@@ -3,8 +3,6 @@
 // Mistura uma fala real (lab/voz.wav, ou um .wav seu) com teclado mecânico, batidas na mesa e ventilador
 // sintetizados, passa cada cenário pelas opções do app (o mesmo código: mic-chain.js) e mede.
 import { buildMicChain } from './mic-chain.js';
-import { createDeepFilterNetAudioWorklet } from '@workadventure/noise-suppression/deepfilternet';
-import { DFN_URLS } from './mic-chain.js';
 
 const SR = 48000;
 const $ = (s) => document.querySelector(s);
@@ -195,32 +193,14 @@ function siSdr(ref, out, lag) {
 }
 
 // ---------- processamento ----------
+const G = { on: true, auto: true, db: -50 };
 const ENGINES = [
-  { id: 'raw', name: 'Sem tratamento' },
-  { id: 'rnnoise', name: 'RNNoise (como na v1.9)', build: (ctx, src) => buildMicChain(ctx, src, { engine: 'rnnoise', gate: { on: true, auto: true, db: -50 } }) },
-  {
-    id: 'dfn-pure',
-    name: 'DeepFilterNet3 puro',
-    build: async (ctx, src) => {
-      const w = await createDeepFilterNetAudioWorklet(ctx, DFN_URLS);
-      await w.ready;
-      src.connect(w.node);
-      return { output: w.node, dispose: () => w.dispose() };
-    },
-  },
-  { id: 'dfn', name: 'Nova (v1.10): DeepFilterNet3 + filtros', build: (ctx, src) => buildMicChain(ctx, src, { engine: 'dfn', gate: { on: true, auto: true, db: -50 } }) },
+  { id: "raw", name: "Sem tratamento" },
+  { id: "old", name: "Antes: RNNoise e depois o portão", build: (ctx, src) => buildMicChain(ctx, src, { engine: "rnnoise", gate: { ...G, impact: false }, gatePos: "post" }) },
+  { id: "split", name: "Anti-impacto antes, portão depois", build: (ctx, src) => buildMicChain(ctx, src, { engine: "rnnoise", gate: G, gatePos: "split" }) },
+  { id: "split9", name: "Split, limiar 9", build: (ctx, src) => buildMicChain(ctx, src, { engine: "rnnoise", gate: { ...G, ratio: 9 }, gatePos: "split" }) },
+  { id: "split12", name: "Split, limiar 12", build: (ctx, src) => buildMicChain(ctx, src, { engine: "rnnoise", gate: { ...G, ratio: 12 }, gatePos: "split" }) },
 ];
-// variações para achar a melhor configuração (?variantes na URL)
-if (location.search.includes('variantes')) {
-  const g = { on: true, auto: true, db: -50 };
-  const v = (id, name, opts) => ENGINES.push({ id, name, build: (ctx, src) => buildMicChain(ctx, src, { engine: 'dfn', gate: g, ...opts }) });
-  v('dfn-nogain', 'DFN + filtros, sem postGain', { dfn: { postGain: false } });
-  v('dfn-nogain-nolim', 'DFN só com corte de grave', { dfn: { postGain: false }, limiter: false });
-  v('dfn-msf1', 'DFN + filtros, minSpeechFrames 1', { dfn: { minSpeechFrames: 1, postGain: false } });
-  v('dfn-soft', 'DFN, portão suave (pausa 35 dB)', { dfn: { postGain: false, pauseAttenuationDb: 35 } });
-  v('dfn-hp120', 'DFN, corte em 120 Hz', { dfn: { postGain: false }, lowCutHz: 120 });
-  v('dfn-sa30', 'DFN, até 30 dB durante a fala', { dfn: { postGain: false, speechAttenuationDb: 30 } });
-}
 
 // Alguns worklets (o RNNoise) terminam de preparar o wasm de forma assíncrona: renderiza 0,5 s de silêncio,
 // pausa um instante para eles ficarem prontos e só então toca o cenário (cortado da saída depois).

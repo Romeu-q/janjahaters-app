@@ -26,6 +26,7 @@
     <span class="tool-sep" id="toolSepEnd"></span>
     <button type="button" class="tool" id="tbAway" title="Ficar ausente"><i data-icon="moon"></i><span>Ausente</span></button>
     <span class="grow"></span>
+    <button type="button" class="tool" id="tbRoom" data-room title="Sala de games"><i data-icon="sofa"></i><span>Sala</span></button>
     <button type="button" class="tool" id="tbFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span>Amigos</span><span class="badge" data-friends-badge hidden></span></button>
     <button type="button" class="tool" id="tbInvite" title="Convidar amigos"><i data-icon="user-plus"></i><span>Convidar</span></button>
     <button type="button" class="tool" id="tbServer" title="Perfil do servidor"><i data-icon="server"></i><span>Servidor</span></button>
@@ -48,6 +49,7 @@
           <div class="group-sub" id="groupSub">1 online</div>
           <div class="group-desc" id="groupDesc" hidden></div>
         </div>
+        <button class="icon-btn" id="btnRoom" data-room title="Sala de games"><i data-icon="sofa"></i></button>
         <button class="icon-btn" id="btnFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span class="badge dot-badge" data-friends-badge hidden></span></button>
         <button class="icon-btn" id="btnServer" title="Perfil do servidor"><i data-icon="settings"></i></button>
         <button class="icon-btn" id="btnInvite" title="Convidar amigos"><i data-icon="user-plus"></i></button>
@@ -68,7 +70,7 @@
           <div class="vb-channel" id="vbChannel"></div>
         </div>
         <button class="icon-btn" id="vbStream" title="Transmitir tela"><i data-icon="screen-share"></i></button>
-        <button class="icon-btn" id="vbNoise" title="Janja Voice"><i data-icon="sparkles"></i></button>
+        <button class="icon-btn" id="vbNoise" title="Supressão de ruído"><i data-icon="sparkles"></i></button>
         <button class="icon-btn danger" id="vbLeave" title="Desconectar"><i data-icon="phone-off"></i></button>
       </div>
 
@@ -125,9 +127,29 @@
           <button class="ctl" id="ctlStreamCfg" title="Qualidade da stream" hidden><i data-icon="sliders"></i><span>Qualidade</span></button>
           <button class="ctl" id="ctlMusic" title="Música"><i data-icon="list-music"></i><span>Música</span></button>
           <button class="ctl" id="ctlSounds" title="Soundboard"><i data-icon="drum"></i><span>Sons</span></button>
-          <button class="ctl" id="ctlNoise" title="Janja Voice"><i data-icon="sparkles"></i><span>Janja Voice</span></button>
+          <button class="ctl" id="ctlNoise" title="Supressão de ruído"><i data-icon="sparkles"></i><span>Ruído</span></button>
           <button class="ctl join" id="ctlCall"><i data-icon="phone"></i><span>Entrar</span></button>
         </footer>
+      </section>
+
+      <section id="roomView" class="view" hidden>
+        <div id="roomStage"></div>
+        <div id="roomLoading" class="room-loading">Montando a sala…</div>
+        <div class="room-hud">
+          <div class="room-hint"><b>WASD</b> andar · <b>Shift</b> correr · <b>E</b> sentar · <b>1</b> tchau <b>2</b> sim <b>3</b> não <b>4</b> pulo · clique no chão para ir</div>
+          <span class="grow"></span>
+          <button type="button" class="ghost sm" id="roomEdit"><i data-icon="shirt" class="sm"></i>Personalizar</button>
+          <button type="button" class="icon-btn" id="roomClose" title="Sair da sala"><i data-icon="x"></i></button>
+        </div>
+        <aside id="figEditor" class="fig-editor" hidden>
+          <header><h3>Seu boneco</h3><button type="button" class="icon-btn sm" id="figClose" title="Fechar"><i data-icon="x"></i></button></header>
+          <div id="figPreview" class="fig-preview" title="Arraste para girar"></div>
+          <div class="fig-scroll">
+            <h4>Personagem</h4><div class="fig-row" id="fig-char"></div>
+            <h4>Acessório</h4><div class="fig-row" id="fig-acc"></div>
+            <p class="muted small fig-credit">Bonecos e móveis: Kenney (kenney.nl), CC0.</p>
+          </div>
+        </aside>
       </section>
     </main>
 
@@ -456,12 +478,11 @@
             <small class="muted">Fale normalmente: a barra fica verde quando o seu som passa para os amigos. Se o teclado ou o barulho de fundo deixar a barra verde, arraste o limite para a direita.</small>
             <label class="check"><input type="checkbox" id="stGateAuto"> Ajustar a sensibilidade sozinho (pelo barulho de fundo)</label>
             <label class="check"><input type="checkbox" id="stGateOn"> Usar sensibilidade (desligado: o mic fica sempre aberto)</label>
+            <label class="check"><input type="checkbox" id="stImpact"> Abaixar estalos de teclado e batidas na mesa (também com você falando)</label>
           </div>
           <label>Supressão de ruído
             <select id="stNoise">
-              <option value="janja">Janja Voice: IA própria do janjahaters (recomendada)</option>
-              <option value="strong">Forte: RNNoise</option>
-              <option value="dfn">Máxima: DeepFilterNet3 (experimental: pode deixar a voz estranha)</option>
+              <option value="strong">Forte: RNNoise (recomendada)</option>
               <option value="basic">Básica: a do WebRTC/navegador</option>
               <option value="off">Desligada</option>
             </select>
@@ -537,6 +558,7 @@
           </label>
           <label class="check"><input type="checkbox" id="lkCompact"> Mensagens compactas (sem avatar, tudo numa linha)</label>
           <label class="check"><input type="checkbox" id="lkNoAnim"> Reduzir animações</label>
+          <label class="check"><input type="checkbox" id="lkRoom"> Sala de games 3D (desligue para economizar memória: ela nem carrega)</label>
           <label class="check"><input type="checkbox" id="lkNoFx"> Esconder efeitos de perfil e decorações animadas dos outros</label>
         </section>
 

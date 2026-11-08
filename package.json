@@ -6,7 +6,7 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/janja-voice/worklet.ts --bundle --format=iife --target=chrome120 --outfile=renderer/janja-voice-worklet.js && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/bundle.js",
+    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/bundle.js && esbuild renderer/room.js --bundle --minify --format=iife --target=chrome120 --outfile=renderer/room.bundle.js",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
     "release": "npm version patch && git push --follow-tags",
@@ -26,10 +26,10 @@
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",
+      "renderer/room.bundle.js",
+      "renderer/room/**",
       "renderer/gate-worklet.js",
       "renderer/pcm-worklet.js",
-      "renderer/janja-voice-worklet.js",
-      "renderer/models/**",
       "renderer/icon.png",
       "renderer/vendor/**",
       "oauth.json"
@@ -83,6 +83,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.11",
+    "three": "^0.170.0",
     "youtubei.js": "^18.3.0"
   },
   "devDependencies": {
@@ -92,7 +93,6 @@
     "@capacitor/cli": "^8.6.0",
     "@capacitor/core": "^8.6.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
-    "@workadventure/noise-suppression": "^0.2.0",
     "electron": "^45.1.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
