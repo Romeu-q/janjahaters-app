@@ -153,5 +153,3 @@ window.desk = {
   minimize: () => native && App.minimizeApp(),
 };
 
-// procura atualização ao abrir, como no PC
-setTimeout(() => checkUpdate().catch(() => {}), 4000);

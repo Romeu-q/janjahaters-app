@@ -6915,50 +6915,18 @@ const verNewer = (a, b) => {
   for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
   return false;
 };
-// um amigo apareceu numa versão mais nova: procura na hora (uma vez por versão)
+// um amigo apareceu numa versão mais nova: só avisa (uma vez por versão); atualizar é quando a pessoa quiser
 const askedFor = new Set();
 function checkFriendVersion(ver) {
-  if (typeof ver !== 'string' || !/^\d+\.\d+\.\d+$/.test(ver) || !appVersion || !verNewer(ver, appVersion) || askedFor.has(ver)) return;
+  if (typeof ver !== 'string' || !/^\d+\.\d+\.\d+$/.test(ver) || !appVersion || !verNewer(ver, appVersion) || askedFor.has(ver) || !window.desk?.checkUpdate) return;
   askedFor.add(ver);
-  window.desk?.checkUpdate?.().catch(() => {});
-}
-function forceUpdate(version, state, detail) {
-  const box = $('#forceUpdate');
-  if (box.hidden) {
-    box.hidden = false;
-    $$('dialog[open]').forEach(hardClose);
-    keepRejoin = true; // depois de atualizar, volta para a call
-    saveRejoin();
-    if (!isMobile && C.ch) leaveVoice();
-  }
-  $('#fuTitle').textContent = `Atualizando para a versão ${version}`;
-  const bar = $('#fuBar');
-  bar.classList.toggle('indeterminate', state === 'start');
-  bar.style.width = state === 'progress' ? detail + '%' : state === 'ready' ? '100%' : '';
-  const btn = $('#fuBtn');
-  btn.hidden = true;
-  if (isMobile) {
-    bar.style.width = '100%';
-    $('#fuStatus').textContent = 'Baixe e abra o arquivo para instalar por cima. Seus grupos e mensagens continuam.';
-    btn.hidden = false;
-    btn.textContent = 'Baixar atualização';
-    btn.onclick = () => window.desk?.installUpdate();
-  } else if (state === 'ready') $('#fuStatus').textContent = 'Pronto. Instalando e abrindo de novo…';
-  else if (state === 'progress') $('#fuStatus').textContent = `Baixando… ${detail}%`;
-  else if (state === 'error') {
-    $('#fuStatus').textContent = 'Não consegui baixar: ' + detail;
-    btn.hidden = false;
-    btn.textContent = 'Tentar de novo';
-    btn.onclick = () => {
-      forceUpdate(version, 'start');
-      window.desk.checkUpdate().catch((err) => forceUpdate(version, 'error', ipcError(err)));
-    };
-  } else $('#fuStatus').textContent = 'Baixando…';
+  toast(`Um amigo está na versão ${ver}. Para atualizar, clique no ícone ↻ lá em cima quando quiser.`);
 }
 let updVersion = '';
 function showUpdate(version) {
   updVersion = version;
-  forceUpdate(version, 'ready');
+  $('#tbUpdate').hidden = false;
+  $('#tbUpdateText').textContent = isMobile ? `Baixar a versão ${version}` : `Reiniciar para a ${version}`;
 }
 $('#tbUpdate').onclick = () => {
   if (!isMobile && C.ch && !confirm('O app vai reiniciar para atualizar e te colocar de volta na call. Atualizar agora?')) return;
@@ -6967,7 +6935,7 @@ $('#tbUpdate').onclick = () => {
   if (isMobile) toast('Baixando… quando terminar, abra o arquivo para instalar por cima');
   window.desk?.installUpdate();
 };
-// o app só procura sozinho ao abrir; este botão procura na hora
+// o app não procura sozinho: só por este botão (ou pelo ícone da barra de título)
 const setUpdStatus = (t) => ($('#updStatus').textContent = t);
 async function checkUpdateNow() {
   const b = $('#btnCheckUpdate');
@@ -7017,13 +6985,10 @@ if (window.desk?.appInfo) {
   window.desk.onUpdateReady((v) => showUpdate(v));
   window.desk.onUpdateAvailable?.((v) => {
     updVersion = v;
-    forceUpdate(v, 'start');
+    toast(`Baixando a versão ${v}… quando terminar aparece o botão para reiniciar`);
   });
-  window.desk.onUpdateProgress((pct) => {
-    setUpdStatus(`Baixando atualização… ${pct}%`);
-    if (updVersion) forceUpdate(updVersion, 'progress', pct);
-  });
-  window.desk.onUpdateError?.((msg) => updVersion && forceUpdate(updVersion, 'error', msg));
+  window.desk.onUpdateProgress((pct) => setUpdStatus(`Baixando atualização… ${pct}%`));
+  window.desk.onUpdateError?.((msg) => updVersion && toast('Não consegui baixar a atualização: ' + msg));
   window.desk.appInfo().then(({ version, updateReady, google, prefs }) => {
     appVersion = version;
     $('#appVersion').textContent = `janjahaters v${version}`;
