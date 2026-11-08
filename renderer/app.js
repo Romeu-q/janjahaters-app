@@ -7523,6 +7523,68 @@ const roomApi = {
     return { streamers };
   },
   watch: (pid) => peers.has(pid) && watchStream(pid),
+  // perto do telão: botões para escolher a stream e ampliar
+  onScreen(info) {
+    G3.screen = info;
+    const bar = $('#screenBar');
+    const st = info?.streamers || [];
+    bar.hidden = !st.length;
+    if (!bar.hidden) {
+      const chips = st.map((x) => {
+        const b = el('button', 'chip' + (x.key === info.key ? ' on' : ''), x.name);
+        b.type = 'button';
+        b.title = 'Ver a tela de ' + x.name;
+        b.onclick = () => watchStream(x.key);
+        return b;
+      });
+      const big = el('button', 'chip big');
+      big.type = 'button';
+      big.append(icon('maximize', 'sm'), document.createTextNode('Ampliar'));
+      big.onclick = () => openLiveBig();
+      bar.replaceChildren(el('span', 'sb-title', 'Telão'), ...chips, big);
+    }
+    if (!$('#liveBig').hidden) openLiveBig();
+  },
+  // telão do chat: últimas mensagens do chat da call
+  chat() {
+    const ch = callChatCh();
+    const c = ch ? channel(ch) : null;
+    const plain = (m) => {
+      let t = String(m.text || '')
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/[*_~`|>#]+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (m.att?.length) t = (t ? t + ' ' : '') + '📎';
+      return t || '…';
+    };
+    const msgs = ch
+      ? all('msg')
+          .filter((m) => m.ch === ch && !m.del)
+          .sort((a, b) => a.ts - b.ts)
+          .slice(-10)
+          .map((m) => ({ id: m.id, name: m.name || '?', color: m.color, text: plain(m) }))
+      : [];
+    return { title: c ? 'Chat de ' + c.name : 'Chat da call', msgs };
+  },
+};
+// live em tamanho grande por cima do acampamento (com a troca de stream em cima)
+function openLiveBig() {
+  const live = roomApi.live();
+  const box = $('#liveBig');
+  if (!live?.stream) {
+    box.hidden = true;
+    return toast(live?.streamers?.length ? 'Clique num nome no telão para começar a assistir' : 'Ninguém está transmitindo agora');
+  }
+  box.hidden = false;
+  const v = $('#liveBigVideo');
+  if (v.srcObject !== live.stream) v.srcObject = live.stream;
+  v.play().catch(() => {});
+  $('#liveBigTitle').textContent = live.name ? 'Tela de ' + live.name : 'Live';
+}
+$('#liveBigClose').onclick = () => {
+  $('#liveBig').hidden = true;
+  $('#liveBigVideo').srcObject = null;
 };
 // golpes, tiros e parry de quem está no PvP (quem apanha é quem decide; aqui só confere o formato)
 function onRoomAct(d, pid) {
@@ -7602,6 +7664,8 @@ function closeRoom(back) {
   G3.ctl?.destroy();
   G3.ctl = null;
   roomApi.onPvp(false, 0, 0);
+  roomApi.onScreen(null);
+  $('#liveBigClose').click();
   $('#roomView').hidden = true;
   $('#viewHead').hidden = false;
   if (back) openView(S.view);

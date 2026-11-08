@@ -1328,3 +1328,14 @@ html.mobile #queue .q-grip { width: 28px; opacity: .8; }
 .fig-wpinfo { margin: 6px 0 4px; min-height: 1.2em; }
 .fig-sh { margin-top: 4px; }
 html:not(.mobile) .pvp-pad { display: none; }
+
+/* telão do acampamento: escolher a stream e ampliar */
+.screen-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 999px; background: rgba(20, 18, 30, .72); backdrop-filter: blur(8px); max-width: calc(100% - 32px); overflow-x: auto; }
+.screen-bar .sb-title { color: #fff; font-weight: 700; font-size: 12.5px; padding: 0 6px; }
+.screen-bar .chip { border: 0; background: rgba(255, 255, 255, .12); color: #fff; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.screen-bar .chip.on { background: var(--accent); }
+.screen-bar .chip.big { background: #fff; color: #111; font-weight: 700; }
+.live-big { position: absolute; inset: 0; background: rgba(5, 6, 12, .94); display: flex; flex-direction: column; z-index: 5; }
+.live-big header { display: flex; align-items: center; padding: 10px 14px; color: #fff; }
+.live-big video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+.screen-bar { z-index: 6; } /* fica por cima da live ampliada: dá para trocar de stream nela também */

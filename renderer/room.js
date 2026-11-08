@@ -648,19 +648,42 @@ function buildCamp(scene) {
   add(tent('#3f7fd8', '#14305c'), 5.4, -5.6, { ry: -0.7, solid: 2.1 });
 
   // projetor: tela no fundo da clareira (atrás da fogueira) com a live que a pessoa está assistindo
-  const SW = 5.2;
+  const SW = 6.6;
   const SH = SW * (9 / 16);
   const SZ = -8.4;
   const SY = 1.0;
   const frame = new Vox();
-  for (const x of [-11, 10]) frame.box(x, 0, 0, x + 1, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // postes
-  frame.box(-11, Math.round((SY + SH) / V), 0, 11, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // travessa
+  const PX = Math.round(SW / 2 / V) + 1;
+  for (const x of [-PX, PX - 1]) frame.box(x, 0, 0, x + 1, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // postes
+  frame.box(-PX, Math.round((SY + SH) / V), 0, PX, Math.round((SY + SH) / V) + 1, 1, '#3b2a1e'); // travessa
   add(frame, 0, SZ - 0.15);
   const screenMat = new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false });
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(SW, SH), screenMat);
   screen.position.set(0, SY + SH / 2, SZ + 0.05);
   scene.add(screen);
-  circles.push({ x: -2.7, z: SZ, r: 0.4 }, { x: 2.7, z: SZ, r: 0.4 }, { x: 0, z: SZ, r: 0.6 }, { x: -1.4, z: SZ, r: 0.5 }, { x: 1.4, z: SZ, r: 0.5 });
+  for (let x = -SW / 2; x <= SW / 2; x += 0.8) circles.push({ x, z: SZ, r: 0.45 });
+
+  // telão do chat: quadro no lado direito, virado para o meio da clareira
+  const CW = 4.4;
+  const CH = CW * 0.75;
+  const chatPos = { x: 8.1, z: -1.6 };
+  const chatRy = Math.atan2(0 - chatPos.x, 3 - chatPos.z);
+  const board = new Vox();
+  const BX = Math.round(CW / 2 / V) + 1;
+  for (const x of [-BX, BX - 1]) board.box(x, 0, 0, x + 1, Math.round((0.9 + CH) / V) + 1, 1, '#3b2a1e');
+  board.box(-BX, Math.round((0.9 + CH) / V), 0, BX, Math.round((0.9 + CH) / V) + 1, 1, '#3b2a1e');
+  add(board, chatPos.x - Math.sin(chatRy) * 0.15, chatPos.z - Math.cos(chatRy) * 0.15, { ry: chatRy });
+  const chatCanvas = document.createElement('canvas');
+  chatCanvas.width = 768;
+  chatCanvas.height = 576;
+  const chatTex = new THREE.CanvasTexture(chatCanvas);
+  chatTex.colorSpace = THREE.SRGBColorSpace;
+  chatTex.anisotropy = 4;
+  const chatScreen = new THREE.Mesh(new THREE.PlaneGeometry(CW, CH), new THREE.MeshBasicMaterial({ map: chatTex, toneMapped: false }));
+  chatScreen.position.set(chatPos.x, 0.9 + CH / 2, chatPos.z);
+  chatScreen.rotation.y = chatRy;
+  scene.add(chatScreen);
+  for (let k = -CW / 2; k <= CW / 2; k += 0.8) circles.push({ x: chatPos.x + Math.cos(chatRy) * k, z: chatPos.z - Math.sin(chatRy) * k, r: 0.4 });
   const proj = new Vox();
   proj.box(-1, 0, -1, 2, 2, 2, '#6b4429'); // toco
   proj.box(-1, 2, -1, 2, 3, 2, '#c9a06a');
@@ -734,7 +757,7 @@ function buildCamp(scene) {
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
   scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: '#ffffff', size: 0.25, fog: false })));
 
-  return { circles, seats, radio: radioMesh, lanternLight, wardrobeSpot, screen, screenMat, beam, projSpot };
+  return { circles, seats, radio: radioMesh, lanternLight, wardrobeSpot, screen, screenMat, beam, projSpot, screenSpot: { x: 0, z: SZ }, chatCanvas, chatTex };
 }
 
 // chamas: cubinhos que sobem, encolhem e mudam de cor (amarelo -> laranja -> vermelho), mais faíscas
@@ -1019,8 +1042,17 @@ export function mount(box, api) {
     g.fillText(sub, 320, 215, 600);
     noteTex.needsUpdate = true;
   }
+  let nearScreen = false;
+  let screenKey = '';
   function syncProjector() {
     liveInfo = api.live?.() || null;
+    // perto do telão (ou sentado vendo): o app mostra os botões de escolher a stream e ampliar
+    nearScreen = Math.hypot(self.x - CAMP.screenSpot.x, self.z - CAMP.screenSpot.z) < 8.5;
+    const sk = (nearScreen ? 1 : 0) + '|' + (liveInfo?.key || '') + '|' + (liveInfo?.streamers || []).map((x) => x.key).join();
+    if (sk !== screenKey) {
+      screenKey = sk;
+      api.onScreen?.(nearScreen && liveInfo ? liveInfo : null);
+    }
     const key = liveInfo?.stream ? 'v:' + liveInfo.key : liveInfo?.streamers?.length ? 'w:' + liveInfo.streamers.map((x) => x.key + x.name).join() : 'none';
     if (key === liveKey) return;
     liveKey = key;
@@ -1041,9 +1073,76 @@ export function mount(box, api) {
     }
     CAMP.screenMat.needsUpdate = true;
   }
+  // clique no telão: começa a assistir; com mais de uma stream, passa para a próxima
   function watchOnScreen() {
     const st = liveInfo?.streamers || [];
-    if (!liveInfo?.stream && st.length) api.watch?.(st[0].key);
+    if (!st.length) return;
+    if (!liveInfo?.stream) return api.watch?.(st[0].key);
+    const i = st.findIndex((x) => x.key === liveInfo.key);
+    if (st.length > 1) api.watch?.(st[(i + 1) % st.length].key);
+  }
+
+  // telão do chat: as últimas mensagens do chat da call
+  let chatKey = '';
+  function wrapText(g, text, maxW, maxLines) {
+    const words = String(text).split(/\s+/);
+    const lines = [];
+    let line = '';
+    for (const w of words) {
+      const t = line ? line + ' ' + w : w;
+      if (g.measureText(t).width > maxW && line) {
+        lines.push(line);
+        line = w;
+        if (lines.length === maxLines) break;
+      } else line = t;
+    }
+    if (lines.length < maxLines && line) lines.push(line);
+    else if (lines.length === maxLines) lines[maxLines - 1] = lines[maxLines - 1].replace(/.{2}$/, '') + '…';
+    return lines;
+  }
+  function drawChat() {
+    const info = api.chat?.() || { title: 'Chat', msgs: [] };
+    const key = info.title + '|' + info.msgs.map((m) => m.id + m.text.length).join();
+    if (key === chatKey) return;
+    chatKey = key;
+    const c = CAMP.chatCanvas;
+    const g = c.getContext('2d');
+    g.fillStyle = '#10142a';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#1c2340';
+    g.fillRect(0, 0, c.width, 64);
+    g.fillStyle = '#ffd166';
+    g.font = '800 30px system-ui, sans-serif';
+    g.textBaseline = 'middle';
+    g.fillText('💬 ' + info.title, 24, 34, c.width - 48);
+    // de baixo para cima: as mais novas embaixo
+    let y = c.height - 20;
+    const items = [];
+    for (const m of [...info.msgs].reverse()) {
+      g.font = '500 26px system-ui, sans-serif';
+      const lines = wrapText(g, m.text, c.width - 48, 2);
+      const h = 34 + lines.length * 32;
+      if (y - h < 74) break;
+      y -= h;
+      items.push({ m, lines, y });
+    }
+    for (const { m, lines, y: yy } of items) {
+      g.font = '800 26px system-ui, sans-serif';
+      g.fillStyle = m.color || '#9ab0ff';
+      g.textBaseline = 'top';
+      g.fillText(m.name, 24, yy, c.width - 48);
+      g.font = '500 26px system-ui, sans-serif';
+      g.fillStyle = '#e8ebf5';
+      lines.forEach((l, i) => g.fillText(l, 24, yy + 32 + i * 32, c.width - 48));
+    }
+    if (!items.length) {
+      g.fillStyle = 'rgba(255,255,255,.6)';
+      g.font = '500 28px system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.fillText('Nada no chat ainda. Mande algo na aba Chat!', c.width / 2, c.height / 2);
+      g.textAlign = 'left';
+    }
+    CAMP.chatTex.needsUpdate = true;
   }
 
   const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 120);
@@ -1097,6 +1196,7 @@ export function mount(box, api) {
     const w = W(fig.wp);
     if (!PVP.on || frozen() || t - PVP.atkAt < w.cd) return;
     PVP.atkAt = t;
+    if (aim.touch || !aim.on) autoAim();
     if (self.s >= 0) standUp();
     markAv('me', 'swing');
     if (w.kind === 'shot') {
@@ -1847,6 +1947,72 @@ export function mount(box, api) {
     }
   }
 
+  // ---------------- mira
+  const aimRing = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.32, 24), new THREE.MeshBasicMaterial({ color: '#ff5c5c', transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false }));
+  aimRing.rotation.x = -Math.PI / 2;
+  const aimDot = new THREE.Mesh(new THREE.CircleGeometry(0.06, 12), aimRing.material);
+  aimDot.rotation.x = -Math.PI / 2;
+  const aimLineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]);
+  const aimLine = new THREE.Line(aimLineGeo, new THREE.LineDashedMaterial({ color: '#ffd1d1', dashSize: 0.25, gapSize: 0.18, transparent: true, opacity: 0.8, toneMapped: false }));
+  const reachArc = new THREE.Mesh(new THREE.RingGeometry(0.4, 1, 32, 1), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+  reachArc.rotation.x = -Math.PI / 2;
+  let reachKey = '';
+  for (const o of [aimRing, aimDot, aimLine, reachArc]) {
+    o.visible = false;
+    o.renderOrder = 7;
+    scene.add(o);
+  }
+  // no toque (celular) não tem mouse: mira sozinho no alvo mais perto
+  function autoAim() {
+    let best = null;
+    let bd = 9;
+    for (const v of views.values()) {
+      const d = Math.hypot(v.x - self.x, v.z - self.z);
+      if (d < bd) (bd = d), (best = v);
+    }
+    for (const [k, a] of avatars) {
+      if (k === 'me' || !a.target?.pvp || (a.target.hp ?? 100) <= 0) continue;
+      const d = Math.hypot(a.x - self.x, a.z - self.z);
+      if (d < bd) (bd = d), (best = a);
+    }
+    if (best) self.r = Math.atan2(best.x - self.x, best.z - self.z);
+  }
+  function updateAim() {
+    const show = PVP.on && aim.on && !aim.touch && PVP.hp > 0;
+    if (show) self.r = Math.atan2(aim.x - self.x, aim.z - self.z);
+    const w = W(myFig().wp);
+    aimRing.visible = aimDot.visible = show;
+    aimLine.visible = show && w.kind === 'shot';
+    reachArc.visible = PVP.on && w.kind === 'melee' && PVP.hp > 0;
+    if (show) {
+      aimRing.position.set(aim.x, 0.04, aim.z);
+      aimDot.position.set(aim.x, 0.045, aim.z);
+      aimRing.scale.setScalar(1 + Math.sin(performance.now() / 160) * 0.08);
+    }
+    if (aimLine.visible) {
+      // linha da arma até onde o tiro chega (15) na direção da mira
+      const len = Math.min(15, Math.hypot(aim.x - self.x, aim.z - self.z) + 2);
+      const p = aimLineGeo.attributes.position;
+      p.setXYZ(0, self.x + Math.sin(self.r) * 0.5, 1.15, self.z + Math.cos(self.r) * 0.5);
+      p.setXYZ(1, self.x + Math.sin(self.r) * len, 1.15, self.z + Math.cos(self.r) * len);
+      p.needsUpdate = true;
+      aimLineGeo.computeBoundingSphere();
+      aimLine.computeLineDistances();
+    }
+    if (reachArc.visible) {
+      // meia-lua no chão mostrando até onde o golpe pega
+      const key = myFig().wp;
+      if (key !== reachKey) {
+        reachKey = key;
+        const half = Math.acos(Math.max(-1, Math.min(1, w.arc)));
+        reachArc.geometry.dispose();
+        reachArc.geometry = new THREE.RingGeometry(0.45, w.range, 32, 1, -Math.PI / 2 - half, half * 2);
+      }
+      reachArc.position.set(self.x, 0.03, self.z);
+      reachArc.rotation.set(-Math.PI / 2, 0, self.r);
+    }
+  }
+
   // barra de vida em cima da cabeça de quem está no PvP
   function hpBar(a, hp) {
     if (a.barHp === hp && a.bar) return;
@@ -1970,6 +2136,7 @@ export function mount(box, api) {
         texts.splice(i, 1);
       }
     }
+    updateAim();
     monstersFrame(dt, t, now);
     updateDebris(dt);
     updateVfx(dt);
@@ -2097,6 +2264,17 @@ export function mount(box, api) {
     if (self.s >= 0) standUp();
   });
   renderer.domElement.addEventListener('contextmenu', (e) => PVP.on && e.preventDefault());
+  // mira: ponto do chão embaixo do mouse
+  const aim = { on: false, x: 0, z: 0, touch: false };
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    const r0 = renderer.domElement.getBoundingClientRect();
+    ndc.set(((e.clientX - r0.left) / r0.width) * 2 - 1, -((e.clientY - r0.top) / r0.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    if (ray.ray.intersectPlane(groundPlane, hitPoint)) Object.assign(aim, { on: true, x: hitPoint.x, z: hitPoint.z });
+  });
+  renderer.domElement.addEventListener('pointerleave', () => (aim.on = false));
+  renderer.domElement.addEventListener('pointerdown', (e) => (aim.touch = e.pointerType === 'touch'));
   renderer.domElement.addEventListener(
     'wheel',
     (e) => {
@@ -2321,7 +2499,7 @@ export function mount(box, api) {
         if (walkTo.sit != null && Math.hypot(walkTo.x - self.x, walkTo.z - self.z) < 1.6) sitOn(walkTo.sit);
         walkTo = null;
       }
-      self.r = Math.atan2(mx, mz);
+      if (!(PVP.on && aim.on)) self.r = Math.atan2(mx, mz);
       self.w = moved;
       self.run = moved && run;
       if (moved) self.e = '';
@@ -2348,6 +2526,7 @@ export function mount(box, api) {
       lastRadio = now;
       drawRadio();
       syncProjector();
+      drawChat();
     }
     renderer.render(scene, camera);
   }
@@ -2391,6 +2570,7 @@ export function mount(box, api) {
     resendPos: sendNow,
     handleAct,
     togglePvp: () => setPvp(!PVP.on),
+    watchNext: () => watchOnScreen(),
     // para testar pelo DevTools: põe o meu boneco num lugar
     debugMove: (x, z, r) => (Object.assign(self, { x, z, r, s: -1 }), sendNow()),
     debugState: () => ({ ...PVP, x: self.x, z: self.z, projs: projs.size }),
