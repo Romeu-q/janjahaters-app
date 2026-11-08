@@ -6,7 +6,7 @@
   "main": "main.js",
   "private": true,
   "scripts": {
-    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/bundle.js",
+    "build:ui": "node scripts/copy-vendor.mjs && esbuild renderer/janja-voice/worklet.ts --bundle --format=iife --target=chrome120 --outfile=renderer/janja-voice-worklet.js && esbuild renderer/app.js --bundle --format=iife --target=chrome120 --define:import.meta.url=location.href --outfile=renderer/bundle.js",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder --win nsis --x64 --publish never",
     "release": "npm version patch && git push --follow-tags",
@@ -28,6 +28,8 @@
       "renderer/bundle.js",
       "renderer/gate-worklet.js",
       "renderer/pcm-worklet.js",
+      "renderer/janja-voice-worklet.js",
+      "renderer/models/**",
       "renderer/icon.png",
       "renderer/vendor/**",
       "oauth.json"

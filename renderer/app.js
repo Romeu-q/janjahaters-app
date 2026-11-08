@@ -82,6 +82,7 @@ import {
   Shield,
   Ban,
   UserMinus,
+  Sparkles,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -210,6 +211,7 @@ const ICONS = {
   'arrow-down-to-line': ArrowDownToLine,
   moon: Moon,
   server: Server,
+  sparkles: Sparkles,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -339,7 +341,7 @@ function toast(msg) {
 const freshProfile = !store.get('profile', null);
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
-  { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
+  { mic: '', out: '', noise: 'janja', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
     stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
@@ -355,6 +357,13 @@ if ((settings.nsVersion || 0) < 2) {
 if (settings.nsVersion < 3) {
   if (settings.noise === 'dfn') settings.noise = 'strong';
   settings.nsVersion = 3;
+  store.set('settings', settings);
+}
+// v2.0: o Janja Voice (motor e rede neural próprios) vira o padrão. Quem estava no padrão anterior (Forte/RNNoise)
+// passa para ele; quem escolheu Máxima, Básica ou Desligada continua como estava.
+if (settings.nsVersion < 4) {
+  if (settings.noise === 'strong') settings.noise = 'janja';
+  settings.nsVersion = 4;
   store.set('settings', settings);
 }
 // aparência (só deste PC) e plugins ligados
@@ -1229,10 +1238,12 @@ const C = {
 // Modos de supressão de ruído (Configurações → Voz e áudio):
 //   'dfn'    DeepFilterNet3. Supressão e ganho do navegador desligados: o modelo é o único removedor.
 //   'strong' RNNoise. Supressão do navegador desligada (não empilha dois removedores).
+//   'janja'  Janja Voice (motor e rede neural próprios). Supressão do navegador desligada.
 //   'basic'  só o WebRTC (supressão de ruído do próprio Chromium).
 //   'off'    nada.
 // O cancelamento de eco do WebRTC (AEC3) é independente e vale em todos.
-const engineOf = (noise) => (noise === 'dfn' ? 'dfn' : noise === 'strong' ? 'rnnoise' : 'none');
+const engineOf = (noise) =>
+  noise === 'dfn' ? 'dfn' : noise === 'strong' ? 'rnnoise' : noise === 'janja' ? 'janja' : 'none';
 function getRawMic(deviceId = settings.mic, opts = settings) {
   return navigator.mediaDevices.getUserMedia({
     audio: {
@@ -1264,6 +1275,7 @@ async function processMic(raw, opts = settings) {
     },
   });
   if (opts.noise === 'dfn' && chain.engine !== 'dfn') toast('A supressão Máxima não carregou: usando a Forte (RNNoise)');
+  if (opts.noise === 'janja' && chain.engine !== 'janja') toast('O Janja Voice não carregou: usando a Forte (RNNoise)');
   const dest = micCtx.createMediaStreamDestination();
   dest.channelCount = 1;
   chain.output.connect(dest);
@@ -1708,6 +1720,52 @@ function toggleDeafen() {
 $('#btnMute').onclick = $('#ctlMute').onclick = toggleMute;
 $('#btnDeafen').onclick = $('#ctlDeafen').onclick = toggleDeafen;
 $('#vbLeave').onclick = () => leaveVoice();
+
+// ----- botão rápido do Janja Voice (ao lado de sair da call) -----
+// Liga/desliga a supressão de ruído sem abrir as configurações. Desligar vai para "Desligada".
+function renderNoiseBtn() {
+  const on = settings.noise === 'janja';
+  const title = on ? 'Janja Voice ligado: clique para desligar a remoção de ruído' : 'Janja Voice desligado: clique para remover o ruído de fundo';
+  for (const b of [$('#vbNoise'), $('#ctlNoise')]) {
+    if (!b) continue;
+    b.classList.toggle('on', on);
+    b.classList.toggle('off', !on);
+    b.title = title;
+  }
+}
+async function restartMic() {
+  if (!C.ch) return;
+  try {
+    const next = await getMic();
+    C.micStop?.();
+    C.mic = next.stream;
+    C.micStop = next.stop;
+    C.micGate = next.gate || null;
+    C.micEngine = next.engine || null;
+    applyMicEnabled();
+    meter('me', next.stream);
+    syncMedia();
+  } catch (err) {
+    toast('Não consegui trocar o microfone: ' + err.message);
+  }
+}
+let noiseBusy = false;
+async function toggleNoise() {
+  if (noiseBusy) return;
+  noiseBusy = true;
+  settings.noise = settings.noise === 'janja' ? 'off' : 'janja';
+  saveSettings();
+  renderNoiseBtn();
+  try {
+    await restartMic();
+  } finally {
+    noiseBusy = false;
+  }
+  if (settings.noise === 'janja' && C.ch && C.micEngine !== 'janja') return; // o aviso de falha já apareceu
+  toast(settings.noise === 'janja' ? 'Janja Voice ligado: ruído de fundo removido' : 'Janja Voice desligado');
+}
+$('#vbNoise').onclick = $('#ctlNoise').onclick = toggleNoise;
+renderNoiseBtn();
 // no PC o botão fica na barra de ferramentas: com a call aberta ele sempre desconecta, de qualquer canal
 const callBtnLeaves = () => !!C.ch && (C.ch === S.view || !isMobile);
 $('#ctlCall').onclick = () => (callBtnLeaves() ? leaveVoice() : channel(S.view)?.type === 'voice' && joinVoice(S.view));
@@ -5956,21 +6014,8 @@ $('#btnSaveSettings').onclick = async () => {
     .setSinkId?.(settings.out)
     .catch(() => {});
   closeDialog($('#settingsDlg'));
-  if (micChanged && C.ch) {
-    try {
-      const next = await getMic();
-      C.micStop?.();
-      C.mic = next.stream;
-      C.micStop = next.stop;
-      C.micGate = next.gate || null;
-      C.micEngine = next.engine || null;
-      applyMicEnabled();
-      meter('me', next.stream);
-      syncMedia();
-    } catch (err) {
-      toast('Não consegui trocar o microfone: ' + err.message);
-    }
-  }
+  renderNoiseBtn();
+  if (micChanged) await restartMic();
   sendHi();
   renderPresence();
   for (const box of chatBoxes()) renderChat(box.box, box.ch, true);
@@ -6851,6 +6896,25 @@ async function checkUpdateNow() {
   }
 }
 $('#btnCheckUpdate').onclick = checkUpdateNow;
+// ícone de atualização na barra de título: sempre à mão, sem abrir as configurações
+if (window.desk?.checkUpdate) {
+  const tb = $('#tbCheckUpdate');
+  tb.hidden = false;
+  tb.onclick = async () => {
+    if (tb.classList.contains('busy')) return;
+    tb.classList.add('busy');
+    toast('Procurando atualizações…');
+    try {
+      const r = await checkUpdateNow();
+      if (r?.status === 'latest') toast(`Você já está na versão mais nova${appVersion ? ` (${appVersion})` : ''}`);
+      else if (r?.status === 'downloading') toast(`Baixando a versão ${r.version}…`);
+      else if (r?.status === 'dev') toast('Modo de desenvolvimento: sem atualizações');
+      else if (!r) toast('Não consegui procurar atualizações agora');
+    } finally {
+      tb.classList.remove('busy');
+    }
+  };
+}
 
 let desktopPrefs = { tray: true, hotkeys: true, autostart: false };
 if (window.desk?.appInfo) {

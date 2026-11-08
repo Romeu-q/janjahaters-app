@@ -7,8 +7,10 @@
 //   'dfn'      DeepFilterNet3 (rede neural, 48 kHz). Tira teclado mesmo com a pessoa falando e tem um
 //              portão próprio para as pausas, que olha 30 ms à frente para não cortar o começo das palavras.
 //   'rnnoise'  RNNoise (rede neural pequena): mais leve, tira menos teclado.
+//   'janja'    Janja Voice: motor próprio (renderer/janja-voice) com rede neural treinada por nós
+//              (renderer/models). O eco continua com o AEC3 do WebRTC (opção "Cancelamento de eco").
 //   'none'     nada (a supressão do próprio navegador/WebRTC pode estar ligada no getUserMedia).
-// Se o DeepFilterNet3 não carregar, cai para o RNNoise sozinho.
+// Se o DeepFilterNet3 ou o Janja Voice não carregarem, cai para o RNNoise sozinho.
 import { loadRnnoise, RnnoiseWorkletNode } from '@sapphi-red/web-noise-suppressor';
 import { createDeepFilterNetAudioWorklet } from '@workadventure/noise-suppression/deepfilternet';
 
@@ -43,6 +45,49 @@ async function rnnoiseNode(ctx) {
   const node = new RnnoiseWorkletNode(ctx, { wasmBinary: wasm, maxChannels: 1 });
   return { node, dispose: () => node.destroy() };
 }
+// Janja Voice: worklet gerado no build:ui a partir de renderer/janja-voice/worklet.ts
+let janjaModel = null;
+function loadJanjaModel() {
+  janjaModel ||= fetch('models/janja-voice-v1.bin').then((r) => {
+    if (!r.ok) throw new Error(`modelo do Janja Voice: HTTP ${r.status}`);
+    return r.arrayBuffer();
+  });
+  janjaModel.catch(() => (janjaModel = null));
+  return janjaModel;
+}
+async function janjaNode(ctx) {
+  const [, model] = await Promise.all([loadModule(ctx, 'janja-voice-worklet.js'), loadJanjaModel()]);
+  const node = new AudioWorkletNode(ctx, 'janja-voice', {
+    numberOfInputs: 2,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    channelCount: 1,
+    channelCountMode: 'explicit',
+    processorOptions: {
+      // o eco fica com o AEC3 do navegador; aqui só ruído (rede neural + supressor clássico acima de 8 kHz)
+      settings: { noiseSuppression: true, echoCancellation: false, voiceFocus: false, neural: true, strength: 0.5 },
+      model: model.slice(0), // cópia: o original fica em cache para a próxima call
+    },
+  });
+  // espera o worklet confirmar que leu o modelo (sem modelo ele cairia no supressor clássico em silêncio)
+  await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('Janja Voice não respondeu')), 3000);
+    node.port.onmessage = (e) => {
+      if (e.data?.type !== 'model') return;
+      clearTimeout(t);
+      node.port.onmessage = null;
+      e.data.ok ? resolve() : reject(new Error(e.data.error));
+    };
+  });
+  return {
+    node,
+    dispose: () => {
+      node.port.postMessage({ type: 'dispose' });
+      node.port.close();
+    },
+  };
+}
+
 // opções do DeepFilterNet3 usadas na call (o banco de testes compara variações)
 // Escolhidas no banco de testes (ns-lab.html?variantes):
 //  - minSpeechFrames 2: 2 quadros de fala seguidos para abrir o portão; tecla sozinha não abre
@@ -80,6 +125,14 @@ export async function buildMicChain(ctx, input, { engine = 'dfn', gate = { on: t
       den = await dfnNode(ctx, onOverload, dfn);
     } catch (err) {
       console.warn('DeepFilterNet3 não carregou, usando RNNoise', err);
+      used = 'rnnoise';
+    }
+  }
+  if (engine === 'janja') {
+    try {
+      den = await janjaNode(ctx);
+    } catch (err) {
+      console.warn('Janja Voice não carregou, usando RNNoise', err);
       used = 'rnnoise';
     }
   }

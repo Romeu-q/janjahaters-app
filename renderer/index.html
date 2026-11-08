@@ -13,6 +13,7 @@
     <div class="tb-group" id="tbGroup"></div>
     <button class="tb-update" id="tbUpdate" hidden><i data-icon="download" class="sm"></i><span id="tbUpdateText">Atualização pronta</span></button>
     <div class="tb-status"><span id="connDot" class="dot"></span><span id="connText">Procurando amigos…</span></div>
+    <button class="tb-check-update" id="tbCheckUpdate" title="Procurar atualizações" hidden><i data-icon="refresh"></i></button>
     <div class="tb-buttons" id="winButtons">
       <button data-win="min" title="Minimizar"><i data-icon="minus"></i></button>
       <button data-win="max" title="Maximizar"><i data-icon="square" class="sm"></i></button>
@@ -67,6 +68,7 @@
           <div class="vb-channel" id="vbChannel"></div>
         </div>
         <button class="icon-btn" id="vbStream" title="Transmitir tela"><i data-icon="screen-share"></i></button>
+        <button class="icon-btn" id="vbNoise" title="Janja Voice"><i data-icon="sparkles"></i></button>
         <button class="icon-btn danger" id="vbLeave" title="Desconectar"><i data-icon="phone-off"></i></button>
       </div>
 
@@ -123,6 +125,7 @@
           <button class="ctl" id="ctlStreamCfg" title="Qualidade da stream" hidden><i data-icon="sliders"></i><span>Qualidade</span></button>
           <button class="ctl" id="ctlMusic" title="Música"><i data-icon="list-music"></i><span>Música</span></button>
           <button class="ctl" id="ctlSounds" title="Soundboard"><i data-icon="drum"></i><span>Sons</span></button>
+          <button class="ctl" id="ctlNoise" title="Janja Voice"><i data-icon="sparkles"></i><span>Janja Voice</span></button>
           <button class="ctl join" id="ctlCall"><i data-icon="phone"></i><span>Entrar</span></button>
         </footer>
       </section>
@@ -456,7 +459,8 @@
           </div>
           <label>Supressão de ruído
             <select id="stNoise">
-              <option value="strong">Forte: RNNoise (recomendada)</option>
+              <option value="janja">Janja Voice: IA própria do janjahaters (recomendada)</option>
+              <option value="strong">Forte: RNNoise</option>
               <option value="dfn">Máxima: DeepFilterNet3 (experimental: pode deixar a voz estranha)</option>
               <option value="basic">Básica: a do WebRTC/navegador</option>
               <option value="off">Desligada</option>
