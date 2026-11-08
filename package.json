@@ -27,7 +27,6 @@
       "renderer/style.css",
       "renderer/bundle.js",
       "renderer/room.bundle.js",
-      "renderer/room/**",
       "renderer/gate-worklet.js",
       "renderer/pcm-worklet.js",
       "renderer/icon.png",

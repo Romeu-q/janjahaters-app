@@ -87,6 +87,7 @@ import {
   Sofa,
   Shirt,
   GripVertical,
+  Tent,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -219,6 +220,7 @@ const ICONS = {
   sofa: Sofa,
   shirt: Shirt,
   'grip-vertical': GripVertical,
+  tent: Tent,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -7560,7 +7562,7 @@ async function openRoom(edit) {
     if (edit) openFigEditor();
   } catch (err) {
     console.warn('sala', err);
-    toast('Não deu para abrir a sala de games');
+    toast('Não deu para abrir o acampamento');
     closeRoom(true);
   }
 }
@@ -7589,8 +7591,28 @@ function openFigEditor() {
       }),
     );
   };
-  chips('char', FIG.char);
+  const swatches = (key, list) => {
+    $('#fig-' + key).replaceChildren(
+      ...list.map((c) => {
+        const b = el('button', 'swatch' + (f[key] === c ? ' on' : ''));
+        b.type = 'button';
+        b.style.background = c;
+        b.title = c;
+        b.onclick = () => setFig({ [key]: c });
+        return b;
+      }),
+    );
+  };
+  swatches('skin', FIG.skin);
+  chips('hair', FIG.hair);
+  swatches('hairColor', FIG.hairColor);
+  chips('eyes', FIG.eyes);
   chips('acc', FIG.acc);
+  for (const k of ['shirt', 'pants', 'shoes']) {
+    const inp = $('#fig-' + k);
+    inp.value = f[k];
+    inp.oninput = () => setFig({ [k]: inp.value }, true);
+  }
   if (!G3.preview && window.JanjaRoom) G3.preview = window.JanjaRoom.preview($('#figPreview'), f);
 }
 function closeFigEditor() {
@@ -7599,12 +7621,12 @@ function closeFigEditor() {
   G3.preview = null;
 }
 let figHiTimer = 0;
-function setFig(change) {
+function setFig(change, typing) {
   const f = { ...myFig(), ...change };
   store.set('fig', f);
   G3.preview?.set(f);
   G3.ctl?.refresh();
-  openFigEditor();
+  if (!typing) openFigEditor();
   clearTimeout(figHiTimer);
   figHiTimer = setTimeout(sendHi, 600); // os amigos recebem o boneco novo
 }

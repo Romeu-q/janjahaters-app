@@ -1,80 +1,341 @@
-// Sala de games: uma sala 3D com sofá, TV, poltronas e fliperama, onde cada um do grupo aparece como um boneco.
-// Móveis: "Furniture Kit" e bonecos: "Mini Characters" do Kenney (CC0, renderer/room/). Vai num arquivo separado
-// (room.bundle.js, com o three.js dentro) e só carrega quando alguém abre a sala: com a sala desligada nas
-// configurações, nada disso fica na memória.
+// Acampamento (a "sala de games"): uma clareira à noite com fogueira no meio, troncos para sentar, barracas e
+// pinheiros, onde cada um do grupo aparece como um boneco. Tudo é voxel feito aqui no código: cada objeto é uma
+// lista de cubinhos com cor que vira uma malha só (sem arquivos de modelo). Vai num arquivo separado
+// (room.bundle.js, com o three.js dentro) e só carrega quando alguém abre: desligada nas configurações, nada
+// disso fica na memória.
 //
 // O app chama window.JanjaRoom.mount(caixa, api) e recebe { handlePos, bubble, refresh, resendPos, destroy }.
 // api: me(), people(), sendPos(estado), tv()
 import * as THREE from 'three';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { FIG, cleanFig } from './figure.js';
 
-const BASE = 'room/';
-const S = 3.1; // escala dos bonecos e móveis do Kenney (um boneco de 0,78 vira ~2,4 na sala)
-const F = S / 2.4; // os móveis foram posicionados com 2,4; tudo cresce junto
-const SPEED = 3.6;
-const RUN = 6.2;
-const ROOM = { x0: -6.6, x1: 6.6, z0: -5.0, z1: 5.2 }; // onde dá para andar
-const RADIUS = 0.4;
-// emotes nas teclas 1 a 4: animação do Kenney e se repete
-export const EMOTES = { tchau: 'interact-right', sim: 'emote-yes', nao: 'emote-no', pulo: 'jump' };
+const V = 0.25; // tamanho do cubinho do cenário
+const U = 0.09; // tamanho do cubinho dos bonecos (mais fino, para ter rosto)
+const SPEED = 3.4;
+const RUN = 6;
+const RADIUS = 0.35;
+const CLEARING = 9.6; // até onde dá para andar (raio a partir da fogueira)
+export const EMOTES = ['tchau', 'danca', 'pulo', 'sim'];
 
-// ------------------------------------------------------------------ carregamento
-const loader = new GLTFLoader();
-const gltfCache = new Map();
-function loadGltf(url) {
-  if (!gltfCache.has(url))
-    gltfCache.set(
-      url,
-      loader.loadAsync(BASE + url).catch((err) => {
-        gltfCache.delete(url);
-        throw err;
-      }),
-    );
-  return gltfCache.get(url);
+// ------------------------------------------------------------------ voxel
+// Vox guarda cubinhos (x, y, z inteiros) com cor; voxGeometry junta tudo numa malha só, desenhando só as faces que
+// ficam para fora (a de dentro, encostada em outro cubinho, nunca aparece).
+let seed = 1;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+class Vox {
+  constructor() {
+    this.m = new Map();
+  }
+  set(x, y, z, c) {
+    this.m.set(x + ',' + y + ',' + z, c);
+    return this;
+  }
+  has(x, y, z) {
+    return this.m.has(x + ',' + y + ',' + z);
+  }
+  // caixa [x0, x1) × [y0, y1) × [z0, z1); a cor pode ser uma função (x, y, z) => cor
+  box(x0, y0, z0, x1, y1, z1, c) {
+    for (let x = x0; x < x1; x++) for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) this.set(x, y, z, typeof c === 'function' ? c(x, y, z) : c);
+    return this;
+  }
+  ball(cx, cy, cz, r, c, sy = 1) {
+    const R = Math.ceil(r);
+    for (let x = -R; x <= R; x++)
+      for (let y = -R; y <= R; y++)
+        for (let z = -R; z <= R; z++) if (x * x + (y / sy) * (y / sy) + z * z <= r * r) this.set(cx + x, cy + y, cz + z, typeof c === 'function' ? c(x, y, z) : c);
+    return this;
+  }
 }
-function prepare(obj) {
-  obj.traverse((o) => {
-    if (o.isMesh) {
-      o.castShadow = true;
-      o.receiveShadow = true;
-      for (const m of [].concat(o.material)) if (m) m.roughness = Math.max(m.roughness ?? 1, 0.7);
+const FACES = [
+  { n: [1, 0, 0], c: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]], s: 0.82 },
+  { n: [-1, 0, 0], c: [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]], s: 0.78 },
+  { n: [0, 1, 0], c: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]], s: 1 },
+  { n: [0, -1, 0], c: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], s: 0.55 },
+  { n: [0, 0, 1], c: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], s: 0.92 },
+  { n: [0, 0, -1], c: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]], s: 0.7 },
+];
+// confere a ordem dos cantos (anti-horária vista de fora) uma vez só
+for (const f of FACES) {
+  const [a, b, c] = f.c;
+  const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const cr = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  if (cr[0] * f.n[0] + cr[1] * f.n[1] + cr[2] * f.n[2] < 0) f.c.reverse();
+}
+const tmpColor = new THREE.Color();
+function voxGeometry(vox, size, origin = [0, 0, 0], jitter = 0.05) {
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const idx = [];
+  for (const [key, c] of vox.m) {
+    const [x, y, z] = key.split(',').map(Number);
+    tmpColor.set(c);
+    // cada cubinho com uma variação leve de tom (textura de voxel)
+    const j = 1 + ((Math.abs((x * 73856093) ^ (y * 19349663) ^ (z * 83492791)) % 100) / 100 - 0.5) * jitter * 2;
+    for (const f of FACES) {
+      if (vox.has(x + f.n[0], y + f.n[1], z + f.n[2])) continue;
+      const base = pos.length / 3;
+      for (const k of f.c) {
+        pos.push((x + k[0] - origin[0]) * size, (y + k[1] - origin[1]) * size, (z + k[2] - origin[2]) * size);
+        nor.push(...f.n);
+        col.push(tmpColor.r * f.s * j, tmpColor.g * f.s * j, tmpColor.b * f.s * j);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
-  });
-  return obj;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeBoundingSphere();
+  return g;
 }
-
-// ------------------------------------------------------------------ peças feitas aqui (paredes, fliperama)
-const mats = new Map();
-function mat(color, opts = {}) {
-  const key = color + JSON.stringify(opts);
-  if (!mats.has(key)) mats.set(key, new THREE.MeshStandardMaterial({ color, roughness: 0.75, metalness: 0, ...opts }));
-  return mats.get(key);
-}
-function mesh(geo, material, { shadow = true } = {}) {
-  const m = new THREE.Mesh(geo, material);
-  m.castShadow = shadow;
-  m.receiveShadow = true;
+const VOX_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+const GLOW_MAT = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+function voxMesh(vox, { size = V, origin, glow = false, shadow = true, jitter } = {}) {
+  const m = new THREE.Mesh(voxGeometry(vox, size, origin, jitter), glow ? GLOW_MAT : VOX_MAT);
+  m.castShadow = shadow && !glow;
+  m.receiveShadow = !glow;
   return m;
 }
-const rbox = (w, h, d, color, r = 0.06, opts) => mesh(new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2)), mat(color, opts));
-const at = (o, x, y, z, ry = 0) => {
-  o.position.set(x, y, z);
-  o.rotation.y = ry;
-  return o;
-};
-function canvasTex(w, h, draw) {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  draw(c.getContext('2d'), w, h);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 4;
-  return t;
+// tom aleatório numa lista (folhas, pedras...)
+const pickC = (list) => () => list[Math.floor(rnd() * list.length)];
+
+// ------------------------------------------------------------------ modelos do cenário (em cubinhos de V)
+function pine(h = 1) {
+  const v = new Vox();
+  const trunk = pickC(['#5b3a22', '#6b4429', '#4e3120']);
+  const leaf = pickC(['#1f5c3a', '#24693f', '#1b5234', '#2c7a46']);
+  v.box(-1, 0, -1, 1, 5, 1, trunk);
+  let y = 4;
+  for (const r of [5, 4.2, 3.4, 2.6, 1.8, 1]) {
+    const R = Math.round(r * h);
+    for (let dy = 0; dy < 3; dy++) {
+      const rr = R - dy * 0.6;
+      for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) if (x * x + z * z <= rr * rr) v.set(x, y + dy, z, leaf());
+    }
+    y += 2;
+  }
+  v.box(0, y, 0, 1, y + 2, 1, leaf);
+  return v;
 }
+function roundTree() {
+  const v = new Vox();
+  v.box(-1, 0, -1, 1, 7, 1, pickC(['#6b4429', '#5b3a22']));
+  v.ball(0, 9, 0, 4.2, pickC(['#3a8f4a', '#2f7d40', '#45a056', '#36884a']), 0.85);
+  return v;
+}
+function rock(r = 2) {
+  return new Vox().ball(0, 0, 0, r, pickC(['#7d828c', '#6c717b', '#8e939c', '#5f646d']), 0.6);
+}
+function bush() {
+  return new Vox().ball(0, 1, 0, 2.2, pickC(['#2f7d40', '#3a8f4a', '#28703a']), 0.8);
+}
+function mushroom() {
+  const v = new Vox();
+  v.box(0, 0, 0, 1, 2, 1, '#f1e7d6');
+  v.box(-1, 2, -1, 2, 3, 2, (x, y, z) => ((x + z) % 2 ? '#ffffff' : '#d64545'));
+  v.set(0, 3, 0, '#d64545');
+  return v;
+}
+function flower(c) {
+  const v = new Vox();
+  v.set(0, 0, 0, '#3a8f4a').set(0, 1, 0, '#3a8f4a').set(0, 2, 0, '#ffd166');
+  for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) v.set(x, 2, z, c);
+  return v;
+}
+// tronco deitado para sentar (ao longo de x, centrado), 2 de altura
+function log(len = 10) {
+  const v = new Vox();
+  const bark = pickC(['#6b4429', '#5b3a22', '#704a2d']);
+  const x0 = -Math.floor(len / 2);
+  for (let x = x0; x < x0 + len; x++)
+    for (let y = 0; y < 2; y++) for (let z = -1; z < 2; z++) v.set(x, y, z, x === x0 || x === x0 + len - 1 ? (y === 1 && z === 0 ? '#c9a06a' : '#b88a55') : bark());
+  return v;
+}
+function stump() {
+  const v = new Vox();
+  for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) for (let y = 0; y < 2; y++) v.set(x, y, z, y === 1 ? (x === 0 && z === 0 ? '#a77a4a' : '#c9a06a') : '#6b4429');
+  return v;
+}
+// barraca em "A" virada para +z
+function tent(color, dark) {
+  const v = new Vox();
+  const W = 7;
+  const H = 9;
+  for (let y = 0; y < H; y++) {
+    const half = Math.round(W * (1 - y / H));
+    for (let x = -half; x <= half; x++)
+      for (let z = -6; z <= 6; z++) {
+        const edge = Math.abs(x) >= half - 1 || z === -6 || z === 6;
+        if (!edge) continue; // casca: por dentro é vazia
+        let c = color;
+        if (z === 6 && Math.abs(x) < half - 1 && y < H - 3) c = dark; // porta escura na frente
+        v.set(x, y, z, c);
+      }
+  }
+  for (const x of [-W - 2, W + 2]) for (const z of [-6, 6]) v.set(x, 0, z, '#8d6e4a'); // estaquinhas
+  return v;
+}
+function lanternPost() {
+  const v = new Vox();
+  v.box(0, 0, 0, 1, 9, 1, '#5b3a22');
+  v.box(0, 8, 0, 3, 9, 1, '#5b3a22');
+  return v;
+}
+function lanternGlow() {
+  return new Vox().box(0, 0, 0, 2, 3, 2, (x, y) => (y === 0 || y === 2 ? '#3a2a1a' : '#ffd27a'));
+}
+function cooler() {
+  const v = new Vox();
+  v.box(0, 0, 0, 4, 2, 3, '#3f7fd8');
+  v.box(0, 2, 0, 4, 3, 3, '#f2f2f2');
+  v.box(1, 3, 1, 3, 4, 2, '#d9d9d9');
+  return v;
+}
+function radio() {
+  const v = new Vox();
+  v.box(0, 0, 0, 5, 3, 2, (x, y, z) => (z === 1 && (x === 1 || x === 3) && y === 1 ? '#111' : '#3d3d46'));
+  v.box(0, 3, 0, 1, 7, 1, '#9aa0aa');
+  return v;
+}
+function guitar() {
+  const v = new Vox();
+  v.ball(0, 2, 0, 2, '#c47a2c', 1);
+  v.box(-1, 2, 2, 2, 3, 3, '#2b1d14'); // boca
+  v.box(0, 4, 0, 1, 10, 1, '#5b3a22');
+  v.box(-1, 10, 0, 2, 12, 1, '#2b1d14');
+  return v;
+}
+function moon() {
+  return new Vox().ball(0, 0, 0, 6, pickC(['#fff6d5', '#f3e9c3', '#fff9e6']));
+}
+
+// ------------------------------------------------------------------ boneco (em cubinhos de U)
+// Coordenadas do boneco: x para a direita dele, y para cima, z para a frente (rosto em +z).
+// Partes separadas para animar: pernas (pivô no quadril), braços (ombro), cabeça (pescoço).
+function figureParts(fig) {
+  const skin = fig.skin;
+  const hairC = fig.hairColor;
+  const eyeC = '#1b1b22';
+  const parts = {};
+  // pernas: 3 de largura, quadril em y=5
+  for (const s of [-1, 1]) {
+    const v = new Vox();
+    const x0 = s < 0 ? -3 : 0;
+    v.box(x0, 0, -1, x0 + 3, 5, 2, (x, y) => (y < 2 ? fig.shoes : fig.pants));
+    v.box(x0, 0, 2, x0 + 3, 1, 3, fig.shoes); // biqueira
+    parts[s < 0 ? 'legL' : 'legR'] = { vox: v, pivot: [x0 + 1.5, 5, 0.5] };
+  }
+  // tronco
+  const torso = new Vox();
+  torso.box(-4, 5, -2, 4, 11, 2, (x, y) => (y === 5 ? fig.pants : fig.shirt));
+  parts.torso = { vox: torso, pivot: [0, 0, 0] };
+  // braços: 2 de largura, ombro em y=11, mão embaixo
+  for (const s of [-1, 1]) {
+    const v = new Vox();
+    const x0 = s < 0 ? -6 : 4;
+    v.box(x0, 6, -1, x0 + 2, 11, 1, (x, y) => (y < 7 ? skin : fig.shirt));
+    parts[s < 0 ? 'armL' : 'armR'] = { vox: v, pivot: [x0 + 1, 11, 0] };
+  }
+  // cabeça grandona: 10×10×10, pescoço em y=11
+  const h = new Vox();
+  h.box(-5, 11, -5, 5, 21, 5, skin);
+  const F = 4; // camada do rosto (z = 4)
+  const eye = (x0) => {
+    if (fig.eyes === 'feliz') h.set(x0, 15, F, eyeC).set(x0 + 1, 16, F, eyeC).set(x0 + 2, 15, F, eyeC);
+    else if (fig.eyes === 'sono') h.set(x0, 15, F, eyeC).set(x0 + 1, 15, F, eyeC).set(x0 + 2, 15, F, eyeC);
+    else {
+      const tall = fig.eyes === 'brilho' ? 3 : 2;
+      for (let y = 15; y < 15 + tall; y++) h.set(x0, y, F, eyeC).set(x0 + 1, y, F, eyeC);
+      h.set(x0 + 1, 14 + tall, F, '#ffffff');
+      if (fig.eyes === 'brilho') h.set(x0, 15, F, '#ffffff');
+    }
+  };
+  const wide = fig.eyes === 'feliz' || fig.eyes === 'sono';
+  eye(wide ? -4 : -4);
+  eye(wide ? 1 : 2);
+  h.set(-4, 14, F, '#ff8fa3').set(3, 14, F, '#ff8fa3'); // bochechas
+  if (fig.hair !== 'careca') {
+    h.box(-5, 20, -5, 5, 22, 5, hairC); // topo
+    h.box(-5, 13, -6, 5, 21, -5, hairC); // nuca
+    for (const x of [-6, 5]) h.box(x, 16, -5, x + 1, 21, 1, hairC); // laterais
+    h.box(-5, 19, F, 5, 20, F + 1, hairC); // franjinha
+    if (fig.hair === 'franja' || fig.hair === 'longo') h.box(-5, 18, F, 5, 20, F + 1, hairC).box(-5, 17, F, -1, 18, F + 1, hairC);
+    if (fig.hair === 'espetado') for (const [x, z] of [[-4, -3], [-1, -4], [2, -3], [-3, 1], [1, 0], [3, 2], [-1, 3]]) h.box(x, 22, z, x + 2, 24 + ((x + z + 8) % 2), z + 2, hairC);
+    if (fig.hair === 'moicano') h.box(-1, 22, -5, 1, 25, 5, hairC);
+    if (fig.hair === 'coque') h.box(-2, 22, -3, 2, 25, 1, hairC);
+    if (fig.hair === 'longo') {
+      h.box(-6, 8, -6, 6, 16, -4, hairC);
+      for (const x of [-6, 5]) h.box(x, 10, -5, x + 1, 16, 2, hairC);
+    }
+    if (fig.hair === 'rabo') h.box(-1, 18, -7, 1, 20, -6, hairC).box(-1, 11, -8, 1, 19, -6, hairC);
+  }
+  if (fig.acc === 'gorro') {
+    h.box(-6, 19, -6, 6, 24, 6, (x, y) => (y === 19 ? '#f2efe9' : y % 2 ? '#ef476f' : '#d63a5f'));
+    h.box(-1, 24, -1, 1, 26, 1, '#f2efe9');
+  } else if (fig.acc === 'bone') {
+    h.box(-6, 20, -6, 6, 23, 6, '#ef476f');
+    h.box(-5, 20, 6, 5, 21, 10, '#d63a5f');
+  } else if (fig.acc === 'chapeu') {
+    h.box(-8, 21, -8, 8, 22, 8, '#8b5e3c');
+    h.box(-5, 22, -5, 5, 25, 5, '#9c6a44');
+    h.box(-5, 22, -5, 5, 23, 5, '#2b1d14');
+  } else if (fig.acc === 'oculos') {
+    for (const x0 of [-5, 0]) {
+      for (let x = x0; x < x0 + 5; x++) h.set(x, 18, F + 1, eyeC).set(x, 14, F + 1, eyeC);
+      for (let y = 14; y < 19; y++) h.set(x0, y, F + 1, eyeC).set(x0 + 4, y, F + 1, eyeC);
+    }
+  } else if (fig.acc === 'fone') {
+    h.box(-6, 22, 0, 6, 23, 1, '#2b2d42');
+    for (const x of [-7, 5]) h.box(x, 14, -1, x + 2, 19, 2, '#ef476f');
+  } else if (fig.acc === 'flor') {
+    for (const [x, y] of [[3, 22], [5, 22], [4, 23], [4, 21]]) h.set(x, y, 2, '#ff8fab');
+    h.set(4, 22, 2, '#ffd166');
+  }
+  parts.head = { vox: h, pivot: [0, 11, 0] };
+  return parts;
+}
+function buildFigure(fig) {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  const groups = {};
+  for (const [name, p] of Object.entries(figureParts(fig))) {
+    const g = new THREE.Group();
+    g.position.set(p.pivot[0] * U, p.pivot[1] * U, p.pivot[2] * U);
+    g.add(voxMesh(p.vox, { size: U, origin: p.pivot, jitter: 0.02 }));
+    body.add(g);
+    groups[name] = g;
+  }
+  // boca separada (abre quando a pessoa fala)
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(2 * U, U, 0.3 * U), new THREE.MeshLambertMaterial({ color: '#5a2330' }));
+  mouth.position.set(0, (13.5 - 11) * U, 5 * U + 0.01);
+  groups.head.add(mouth);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.52, 32), new THREE.MeshBasicMaterial({ color: '#3ddc84', transparent: true, opacity: 0.85 }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  ring.visible = false;
+  root.add(ring);
+  const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 24), new THREE.MeshBasicMaterial({ color: '#000', transparent: true, opacity: 0.3, depthWrite: false }));
+  shadow.rotation.x = -Math.PI / 2;
+  shadow.position.y = 0.02;
+  root.add(shadow);
+  return { root, body, ...groups, mouth, ring, height: 22 * U };
+}
+function disposeTree(o) {
+  o.traverse((x) => {
+    x.geometry?.dispose();
+    if (x.isSprite) {
+      x.material.map?.dispose();
+      x.material.dispose();
+    } else if (x.material && x.material !== VOX_MAT && x.material !== GLOW_MAT) x.material.dispose?.();
+  });
+}
+
+// ------------------------------------------------------------------ etiquetas e balões
 function roundRect(g, x, y, w, h, r) {
   g.beginPath();
   g.moveTo(x + r, y);
@@ -84,242 +345,14 @@ function roundRect(g, x, y, w, h, r) {
   g.arcTo(x, y, x + w, y, r);
   g.closePath();
 }
-
-// ------------------------------------------------------------------ a sala
-function buildRoom(scene) {
-  const obstacles = []; // [x0, z0, x1, z1] ou { c: [x, z], r }
-  const seats = []; // { x, z, r, y }
-
-  // chão de tábuas
-  const floorTex = canvasTex(512, 512, (g, w) => {
-    const cols = ['#c9925e', '#c48b57', '#cf9a66', '#bf8652'];
-    for (let i = 0; i < 8; i++) {
-      g.fillStyle = cols[i % 4];
-      g.fillRect(0, i * 64, w, 64);
-      g.fillStyle = 'rgba(80,40,10,.25)';
-      g.fillRect(0, i * 64, w, 2);
-      g.fillRect((i * 197) % w, i * 64, 2, 64);
-    }
-  });
-  floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-  floorTex.repeat.set(3, 3);
-  const floor = mesh(new THREE.PlaneGeometry(14.4, 11.4), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }), { shadow: false });
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.set(0, 0, 0.2);
-  scene.add(floor);
-
-  // paredes com papel de parede listrado
-  const wallTex = canvasTex(256, 256, (g, w, h) => {
-    g.fillStyle = '#f3e3cf';
-    g.fillRect(0, 0, w, h);
-    g.fillStyle = '#ecd6bd';
-    for (let x = 0; x < w; x += 32) g.fillRect(x, 0, 14, h);
-  });
-  wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
-  wallTex.repeat.set(5, 1.5);
-  const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95 });
-  scene.add(at(mesh(new THREE.PlaneGeometry(14.4, 4.2), wallMat, { shadow: false }), 0, 2.1, -5.5));
-  const left = mesh(new THREE.PlaneGeometry(11.4, 4.2), wallMat, { shadow: false });
-  left.rotation.y = Math.PI / 2;
-  left.position.set(-7.2, 2.1, 0.2);
-  scene.add(left);
-  scene.add(at(rbox(14.4, 0.18, 0.08, '#a8744a', 0.02), 0, 0.09, -5.46), at(rbox(0.08, 0.18, 11.4, '#a8744a', 0.02), -7.16, 0.09, 0.2));
-
-  // janela com luz do dia
-  const win = new THREE.Group();
-  win.add(rbox(2.4, 1.7, 0.12, '#ffffff', 0.04));
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 1.4), new THREE.MeshBasicMaterial({ color: '#bfe6ff' }));
-  glass.position.z = 0.07;
-  win.add(glass, at(rbox(0.06, 1.4, 0.04, '#ffffff', 0.01), 0, 0, 0.09), at(rbox(2.1, 0.06, 0.04, '#ffffff', 0.01), 0, 0, 0.09));
-  scene.add(at(win, -4.2, 2.4, -5.45));
-
-  // tela da TV (desenhada aqui por cima do modelo da TV)
-  const tvCanvas = document.createElement('canvas');
-  tvCanvas.width = 512;
-  tvCanvas.height = 288;
-  const tvTex = new THREE.CanvasTexture(tvCanvas);
-  tvTex.colorSpace = THREE.SRGBColorSpace;
-  const screen = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.5625), new THREE.MeshBasicMaterial({ map: tvTex, toneMapped: false }));
-  screen.visible = false;
-  scene.add(screen);
-  const tvLight = new THREE.PointLight('#9fb8ff', 2.5, 6, 2);
-  tvLight.position.set(0, 1.6, -4.2);
-  scene.add(tvLight);
-
-  // fliperama no canto (o kit não tem)
-  const arc = new THREE.Group();
-  arc.add(at(rbox(0.95, 1.9, 0.85, '#3a0ca3', 0.05), 0, 0.95, 0));
-  arc.add(at(rbox(0.97, 0.3, 0.6, '#f72585', 0.04), 0, 1.98, 0.08));
-  arc.add(at(rbox(0.9, 0.12, 0.45, '#22223b', 0.03), 0, 1.05, 0.38));
-  const arcCanvas = document.createElement('canvas');
-  arcCanvas.width = 128;
-  arcCanvas.height = 112;
-  const arcTex = new THREE.CanvasTexture(arcCanvas);
-  arcTex.colorSpace = THREE.SRGBColorSpace;
-  arcTex.magFilter = THREE.NearestFilter;
-  const arcScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.62), new THREE.MeshBasicMaterial({ map: arcTex, toneMapped: false }));
-  arcScreen.position.set(0, 1.52, 0.432);
-  arc.add(arcScreen);
-  for (const [x, c] of [[-0.25, '#ffd166'], [0.05, '#ef476f'], [0.22, '#06d6a0']]) arc.add(at(mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.04, 12), mat(c)), x, 1.13, 0.45));
-  scene.add(at(arc, -6.5, 0, -4.4, Math.PI / 4));
-  obstacles.push([-7.1, -5.0, -5.9, -3.8]);
-
-  // pôsteres e varal de luzinhas
-  const poster = (x, color, accent) => {
-    const t = canvasTex(160, 220, (g, w, h) => {
-      g.fillStyle = color;
-      g.fillRect(0, 0, w, h);
-      g.fillStyle = accent;
-      g.beginPath();
-      g.arc(w / 2, h * 0.42, 46, 0, Math.PI * 2);
-      g.fill();
-      g.fillStyle = '#ffffff';
-      g.fillRect(24, h - 50, w - 48, 10);
-      g.fillRect(40, h - 32, w - 80, 8);
-    });
-    scene.add(at(new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.25), new THREE.MeshStandardMaterial({ map: t, roughness: 0.9 })), x, 2.6, -5.47));
-  };
-  poster(-2.4, '#264653', '#e9c46a');
-  poster(2.5, '#6d597a', '#ff8fab');
-  const bulbs = [];
-  for (let i = 0; i < 26; i++) {
-    const b = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), new THREE.MeshBasicMaterial({ color: ['#ffd166', '#ef476f', '#06d6a0', '#4cc9f0'][i % 4] }));
-    b.position.set(-6.8 + i * 0.54, 3.75 - Math.sin(((i % 6) / 5) * Math.PI) * 0.18, -5.4);
-    scene.add(b);
-    bulbs.push(b);
-  }
-  const lamp = new THREE.PointLight('#ffcf8a', 7, 9, 1.6);
-  lamp.position.set(5.9, 2.1, 1.7);
-  scene.add(lamp);
-
-  return { obstacles, seats, floor, screen, tvCanvas, tvTex, tvLight, arcCanvas, arcTex, bulbs };
+function spriteFrom(c, scaleH, order) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
+  s.scale.set((c.width / c.height) * scaleH, scaleH, 1);
+  s.renderOrder = order;
+  return s;
 }
-
-// Móveis do Kenney. Cada um: arquivo, escala, posição (centro no chão), giro, se bloqueia e lugares para sentar
-// (em coordenadas do móvel já centrado: x para o lado, z para a frente).
-const FURNITURE = [
-  { f: 'rugRounded', s: 4.4, x: 0, z: -1.2, solid: false },
-  { f: 'cabinetTelevision', s: 3.4, x: 0, z: -5.05 },
-  { f: 'televisionModern', s: 3.6, x: 0, z: -5.05, y: 'cabinetTelevision', tv: true, solid: false },
-  { f: 'speaker', s: 2.6, x: -2.6, z: -5.1 },
-  { f: 'speaker', s: 2.6, x: 2.6, z: -5.1 },
-  { f: 'tableCoffee', s: 2.6, x: 0, z: -1.4 },
-  { f: 'loungeSofa', s: 3.2, x: 0, z: 1.5, r: Math.PI, seats: [-0.25, 0.25] },
-  { f: 'loungeChair', s: 3.0, x: -3.9, z: -1.4, r: Math.PI / 2, seats: [0] },
-  { f: 'loungeChair', s: 3.0, x: 3.9, z: -1.4, r: -Math.PI / 2, seats: [0] },
-  { f: 'pillow', s: 2.4, x: -1.5, z: 2.0, r: Math.PI, solid: false, y: 0.8 },
-  { f: 'pillowBlue', s: 2.4, x: 1.5, z: 2.05, r: Math.PI, solid: false, y: 0.8 },
-  { f: 'bookcaseOpen', s: 3.0, x: 4.1, z: -5.15 },
-  { f: 'bookcaseOpen', s: 3.0, x: 5.75, z: -5.15 },
-  { f: 'books', s: 3.0, x: 4.1, z: -5.1, solid: false, y: 'bookcaseOpen' },
-  { f: 'pottedPlant', s: 1.6, x: 6.5, z: -4.8 },
-  { f: 'pottedPlant', s: 1.4, x: -6.6, z: 4.6 },
-  { f: 'plantSmall2', s: 3, x: 6.5, z: 4.6 },
-  { f: 'lampRoundFloor', s: 2.6, x: 5.9, z: 1.7 },
-  { f: 'sideTable', s: 2.6, x: -6.7, z: 0.6, r: Math.PI / 2 },
-  { f: 'radio', s: 2.6, x: -6.7, z: 0.6, r: Math.PI / 2, solid: false, y: 'sideTable' },
-  { f: 'cardboardBoxOpen', s: 2.6, x: 6.2, z: -2.6, r: 0.4 },
-];
-async function furnish(scene, R) {
-  const heights = {};
-  // primeiro as peças de baixo (o que fica em cima precisa da altura delas)
-  const order = [...FURNITURE].sort((a, b) => (typeof a.y === 'string') - (typeof b.y === 'string'));
-  await Promise.all(
-    order
-      .filter((d) => typeof d.y !== 'string')
-      .map(async (d) => place(d)),
-  );
-  await Promise.all(order.filter((d) => typeof d.y === 'string').map(place));
-
-  async function place(d) {
-    let g;
-    try {
-      g = await loadGltf('furn/' + d.f + '.glb');
-    } catch {
-      return; // sem o modelo, a sala continua sem ele
-    }
-    const obj = prepare(g.scene.clone(true));
-    obj.scale.multiplyScalar(d.s * (d.f.startsWith('rug') ? 1 : F));
-    // centraliza no chão
-    const box = new THREE.Box3().setFromObject(obj);
-    const c = box.getCenter(new THREE.Vector3());
-    obj.position.set(-c.x, -box.min.y, -c.z);
-    const wrap = new THREE.Group();
-    wrap.add(obj);
-    const y = typeof d.y === 'string' ? heights[d.y] || 0 : d.y || 0;
-    wrap.position.set(d.x, y, d.z);
-    wrap.rotation.y = d.r || 0;
-    scene.add(wrap);
-    const size = box.getSize(new THREE.Vector3());
-    heights[d.f] = Math.max(heights[d.f] || 0, y + size.y);
-    if (d.solid !== false) {
-      const wb = new THREE.Box3().setFromObject(wrap);
-      R.obstacles.push([wb.min.x, wb.min.z, wb.max.x, wb.max.z]);
-    }
-    if (d.seats) {
-      const cos = Math.cos(d.r || 0);
-      const sin = Math.sin(d.r || 0);
-      for (const sx of d.seats) {
-        const lx = sx * size.x;
-        const lz = size.z * 0.12; // um pouco para a frente do centro
-        R.seats.push({ x: d.x + lx * cos + lz * sin, z: d.z - lx * sin + lz * cos, r: d.r || 0, y: size.y * 0.42 });
-      }
-    }
-    if (d.tv) {
-      // a tela fica na frente do modelo da TV
-      const sw = size.x * 0.86;
-      R.screen.scale.set(sw, sw, 1);
-      R.screen.position.set(d.x, y + size.y * 0.56, d.z + size.z / 2 + 0.01);
-      R.screen.visible = true;
-      R.tvLight.position.set(d.x, y + size.y * 0.5, d.z + 0.9);
-    }
-  }
-}
-
-// ------------------------------------------------------------------ bonecos (Mini Characters)
-async function buildFigure(fig) {
-  const g = await loadGltf('chars/character-' + fig.char + '.glb');
-  const model = cloneSkinned(g.scene);
-  prepare(model);
-  model.scale.setScalar(S);
-  const root = new THREE.Group();
-  const body = new THREE.Group();
-  body.add(model);
-  root.add(body);
-  const mixer = new THREE.AnimationMixer(model);
-  const actions = {};
-  for (const clip of g.animations) actions[clip.name] = mixer.clipAction(clip);
-  let head = null;
-  model.traverse((o) => {
-    if (o.name === 'head') head = o;
-  });
-  if (fig.acc !== 'nada' && head) {
-    try {
-      const a = await loadGltf('chars/aid-' + fig.acc + '.glb');
-      head.add(prepare(a.scene.clone(true)));
-    } catch {}
-  }
-  // anel verde no chão quando a pessoa fala na call
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.52, 32), new THREE.MeshBasicMaterial({ color: '#3ddc84', transparent: true, opacity: 0.85 }));
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.02;
-  ring.visible = false;
-  root.add(ring);
-  return { root, body, model, mixer, actions, head, ring, height: 0.8 * S };
-}
-function play(P, name, fade = 0.2) {
-  const next = P.actions[name] || P.actions.idle;
-  if (!next || P.current === next) return;
-  next.reset();
-  const once = name in ONCE;
-  next.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
-  next.clampWhenFinished = once;
-  next.fadeIn(fade).play();
-  P.current?.fadeOut(fade);
-  P.current = next;
-}
-const ONCE = { 'emote-yes': 1, 'emote-no': 1, 'interact-right': 1 };
-
 function labelSprite(text, color) {
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
@@ -329,7 +362,7 @@ function labelSprite(text, color) {
   c.width = w;
   c.height = 56;
   g.font = font;
-  g.fillStyle = 'rgba(20,22,30,.72)';
+  g.fillStyle = 'rgba(12,14,24,.72)';
   roundRect(g, 0, 0, w, 56, 28);
   g.fill();
   g.fillStyle = color;
@@ -339,12 +372,7 @@ function labelSprite(text, color) {
   g.fillStyle = '#fff';
   g.textBaseline = 'middle';
   g.fillText(text, 40, 30, w - 52);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
-  s.scale.set((w / 56) * 0.28, 0.28, 1);
-  s.renderOrder = 10;
-  return s;
+  return spriteFrom(c, 0.28, 10);
 }
 function bubbleSprite(text) {
   const c = document.createElement('canvas');
@@ -380,22 +408,241 @@ function bubbleSprite(text) {
   g.fillStyle = '#1b1b22';
   g.textBaseline = 'top';
   lines.forEach((l, i) => g.fillText(l, 24, 14 + i * 38));
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
-  s.scale.set(w / 150, h / 150, 1);
-  s.renderOrder = 11;
+  const s = spriteFrom(c, h / 150, 11);
   s.center.set(0.5, 0);
   return s;
 }
-// libera só o que é deste boneco (geometria e texturas dos modelos ficam no cache, compartilhadas)
-function disposeOwn(o) {
-  o.traverse((x) => {
-    if (x.isSprite) {
-      x.material.map?.dispose();
-      x.material.dispose();
-    } else if (x.isMesh && x.geometry?.type === 'RingGeometry') x.geometry.dispose();
-  });
+
+// ------------------------------------------------------------------ o acampamento
+function buildCamp(scene) {
+  seed = 7;
+  const circles = []; // obstáculos: { x, z, r }
+  const seats = []; // { x, z, r, y }
+  const add = (vox, x, z, { ry = 0, y = 0, s = 1, solid = 0, glow = false, shadow = true } = {}) => {
+    const m = voxMesh(vox, { glow, shadow });
+    m.position.set(x, y, z);
+    m.rotation.y = ry;
+    m.scale.setScalar(s);
+    scene.add(m);
+    if (solid) circles.push({ x, z, r: solid * s });
+    return m;
+  };
+
+  // chão: grama em blocos de 0,5 (topo em y=0), com a clareira de terra em volta da fogueira e a trilha
+  const ground = new Vox();
+  const grass = ['#3f7d3a', '#447f3c', '#3a7536', '#4a8a40', '#37702f'];
+  const dirt = ['#7a5a3a', '#6e5133', '#836141', '#735638'];
+  for (let x = -34; x < 34; x++)
+    for (let z = -34; z < 34; z++) {
+      const d = Math.hypot(x + 0.5, z + 0.5) / 2;
+      if (d > 17) continue;
+      const nearFire = d < 3 + Math.sin(x * 1.3 + z) * 0.4;
+      const path = Math.abs(x + 0.5) < 1.6 && z > 8 && d < 15;
+      const list = nearFire || path ? dirt : grass;
+      ground.set(x, -1, z, list[Math.floor(rnd() * list.length)]);
+    }
+  scene.add(voxMesh(ground, { size: 0.5, shadow: false, jitter: 0.08 }));
+  // tufinhos de grama
+  const tufts = new Vox();
+  for (let i = 0; i < 280; i++) {
+    const a = rnd() * Math.PI * 2;
+    const d = 3.5 + rnd() * 12;
+    const x = Math.round((Math.cos(a) * d) / V);
+    const z = Math.round((Math.sin(a) * d) / V);
+    if (Math.abs(x * V) < 0.9 && z * V > 4) continue;
+    tufts.set(x, 0, z, rnd() < 0.5 ? '#4f9a45' : '#5aa84d');
+    if (rnd() < 0.4) tufts.set(x, 1, z, '#62b154');
+  }
+  scene.add(voxMesh(tufts, { shadow: false }));
+
+  // fogueira: anel de pedras, lenha cruzada e brasas (as chamas animadas vêm em makeFire)
+  const ring = new Vox();
+  for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
+    const x = Math.round(Math.cos(a) * 4.5);
+    const z = Math.round(Math.sin(a) * 4.5);
+    ring.box(x, 0, z, x + 1, 1 + (Math.round(a * 3) % 2), z + 1, pickC(['#7d828c', '#6c717b', '#8e939c']));
+  }
+  add(ring, 0, 0, { solid: 1.45 });
+  const wood = new Vox();
+  wood.box(-4, 0, -1, 4, 1, 1, '#5b3a22').box(-1, 1, -4, 1, 2, 4, '#6b4429').box(-3, 0, 2, 3, 1, 3, '#704a2d');
+  add(wood, 0, 0);
+  const embers = new Vox();
+  for (let x = -2; x <= 2; x++) for (let z = -2; z <= 2; z++) if (x * x + z * z <= 5 && rnd() < 0.8) embers.set(x, 0, z, rnd() < 0.5 ? '#ff7a1a' : '#ffb347');
+  add(embers, 0, 0.02, { glow: true });
+
+  // troncos e tocos em volta da fogueira (de frente para ela)
+  const R = 3.4;
+  const face = (a) => Math.atan2(-Math.cos(a), -Math.sin(a));
+  const logAt = (a) => {
+    const x = Math.cos(a) * R;
+    const z = Math.sin(a) * R;
+    add(log(10), x, z, { ry: -(a + Math.PI / 2) });
+    const tx = -Math.sin(a);
+    const tz = Math.cos(a);
+    for (const o of [-0.6, 0.6]) {
+      seats.push({ x: x + tx * o, z: z + tz * o, r: face(a), y: 2 * V });
+      circles.push({ x: x + tx * o, z: z + tz * o, r: 0.45 });
+    }
+  };
+  logAt(Math.PI * 0.5 + 0.55);
+  logAt(Math.PI * 0.5 - 0.55);
+  logAt(Math.PI * 1.5 - 0.6);
+  logAt(Math.PI * 1.5 + 0.6);
+  const stumpAt = (a) => {
+    const x = Math.cos(a) * R;
+    const z = Math.sin(a) * R;
+    add(stump(), x, z, { solid: 0.4 });
+    seats.push({ x, z, r: face(a), y: 2 * V });
+  };
+  stumpAt(0);
+  stumpAt(Math.PI);
+
+  // barracas
+  add(tent('#f28c28', '#5a2d0c'), -5.6, -5.2, { ry: 0.75, solid: 2.1 });
+  add(tent('#3f7fd8', '#14305c'), 5.4, -5.6, { ry: -0.7, solid: 2.1 });
+
+  // coisas de acampamento
+  add(cooler(), 2.4, -5.6, { ry: -0.4, solid: 0.55 });
+  const radioMesh = add(radio(), -2.6, -5.9, { ry: 0.3, solid: 0.5 });
+  add(guitar(), 5.2, 1.4, { ry: 0.6, s: 0.7 });
+  add(lanternPost(), -3.4, 5.6, { solid: 0.25 });
+  add(lanternGlow(), -3.4 + 0.5, 5.6 - 0.05, { y: 1.25, glow: true });
+  const lanternLight = new THREE.PointLight('#ffcf7a', 3, 7, 1.6);
+  lanternLight.position.set(-2.8, 1.7, 5.65);
+  scene.add(lanternLight);
+  for (let i = 0; i < 4; i++) add(mushroom(), -8 + rnd() * 2, 1 + rnd() * 3, { s: 0.6 });
+  for (let i = 0; i < 16; i++) {
+    const a = rnd() * Math.PI * 2;
+    const d = 5.5 + rnd() * 3.5;
+    add(flower(['#ff8fab', '#ffd166', '#c9c2f2', '#ffffff'][i % 4]), Math.cos(a) * d, Math.sin(a) * d, { shadow: false, s: 0.45 });
+  }
+  for (let i = 0; i < 9; i++) {
+    const a = rnd() * Math.PI * 2;
+    const d = 6.5 + rnd() * 3;
+    const x = Math.cos(a) * d;
+    const z = Math.sin(a) * d;
+    if (Math.abs(x) < 2 && z > 5) continue;
+    add(rock(1.5 + rnd() * 1.5), x, z, { solid: 0.4 });
+  }
+
+  // anel de árvores em volta da clareira (a trilha da frente fica aberta para a câmera)
+  for (let i = 0; i < 46; i++) {
+    const a = (i / 46) * Math.PI * 2 + rnd() * 0.12;
+    const d = 10.4 + rnd() * 4.5;
+    const x = Math.cos(a) * d;
+    const z = Math.sin(a) * d;
+    if (Math.abs(x) < 3 && z > 0) continue;
+    const round = rnd() < 0.25;
+    add(round ? roundTree() : pine(0.9 + rnd() * 0.3), x, z, { s: 0.9 + rnd() * 0.5, solid: 0.5, ry: rnd() * 6 });
+    if (rnd() < 0.5) add(bush(), x + (rnd() - 0.5) * 2, z + (rnd() - 0.5) * 2, { shadow: false });
+  }
+
+  // céu: lua e estrelas
+  add(moon(), -16, -30, { y: 18, glow: true, shadow: false });
+  const starPos = [];
+  for (let i = 0; i < 500; i++) {
+    const a = rnd() * Math.PI * 2;
+    const e = 0.15 + rnd() * 0.85;
+    starPos.push(Math.cos(a) * 60 * Math.cos(e), 8 + Math.sin(e) * 40, Math.sin(a) * 60 * Math.cos(e));
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+  scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: '#ffffff', size: 0.25, fog: false })));
+
+  return { circles, seats, radio: radioMesh, lanternLight };
+}
+
+// chamas: cubinhos que sobem, encolhem e mudam de cor (amarelo -> laranja -> vermelho), mais faíscas
+function makeFire(scene) {
+  const N = 46;
+  const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ toneMapped: false }), N);
+  inst.frustumCulled = false;
+  scene.add(inst);
+  const ps = Array.from({ length: N }, () => ({}));
+  const reset = (p) => {
+    p.x = (Math.random() - 0.5) * 0.7;
+    p.z = (Math.random() - 0.5) * 0.7;
+    p.y = 0.1;
+    p.v = 0.9 + Math.random() * 0.9;
+    p.size = 0.18 + Math.random() * 0.16;
+    p.life = 0;
+    p.max = 0.7 + Math.random() * 0.6;
+  };
+  ps.forEach((p) => (reset(p), (p.life = Math.random() * p.max)));
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const sc = new THREE.Vector3();
+  const pos = new THREE.Vector3();
+  const cY = new THREE.Color('#ffe066');
+  const cO = new THREE.Color('#ff8a1f');
+  const cR = new THREE.Color('#c8321e');
+  const c = new THREE.Color();
+  const light = new THREE.PointLight('#ff9a3c', 22, 16, 1.5);
+  light.position.set(0, 1.1, 0);
+  scene.add(light);
+  const SN = 40;
+  const sparkGeo = new THREE.BufferGeometry();
+  const sp = new Float32Array(SN * 3);
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+  const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({ color: '#ffcf70', size: 0.08, toneMapped: false }));
+  sparks.frustumCulled = false;
+  scene.add(sparks);
+  const sv = Array.from({ length: SN }, () => Math.random() * 3);
+  return (dt, t) => {
+    for (let i = 0; i < N; i++) {
+      const p = ps[i];
+      p.life += dt;
+      if (p.life >= p.max) reset(p);
+      const k = p.life / p.max;
+      p.y += p.v * dt;
+      p.x *= 1 - dt * 1.2;
+      p.z *= 1 - dt * 1.2;
+      const s = p.size * (1 - k * 0.85);
+      pos.set(p.x + Math.sin(t * 7 + i) * 0.03, p.y, p.z);
+      q.setFromAxisAngle(up, i);
+      sc.set(s, s, s);
+      m.compose(pos, q, sc);
+      inst.setMatrixAt(i, m);
+      c.copy(k < 0.4 ? cY : cO).lerp(k < 0.4 ? cO : cR, k < 0.4 ? k / 0.4 : (k - 0.4) / 0.6);
+      inst.setColorAt(i, c);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+    for (let i = 0; i < SN; i++) {
+      sv[i] += dt;
+      const life = (sv[i] % 2.6) / 2.6;
+      const a = i * 2.39;
+      sp[i * 3] = Math.cos(a) * (0.2 + life * 0.6) + Math.sin(t + i) * 0.1;
+      sp[i * 3 + 1] = 0.5 + life * 3.2;
+      sp[i * 3 + 2] = Math.sin(a) * (0.2 + life * 0.6);
+    }
+    sparkGeo.attributes.position.needsUpdate = true;
+    light.intensity = 20 + Math.sin(t * 13) * 2.5 + Math.sin(t * 7.3) * 2 + Math.random() * 1.5;
+  };
+}
+// vaga-lumes piscando perto das árvores
+function makeFireflies(scene) {
+  const N = 36;
+  const geo = new THREE.BufferGeometry();
+  const p = new Float32Array(N * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  const mat = new THREE.PointsMaterial({ color: '#d8ff7a', size: 0.12, transparent: true, opacity: 0.9, toneMapped: false });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  scene.add(pts);
+  const f = Array.from({ length: N }, (_, i) => ({ a: (i / N) * Math.PI * 2 + Math.random(), d: 6 + Math.random() * 5, h: 0.6 + Math.random() * 2, s: 0.2 + Math.random() * 0.4 }));
+  return (dt, t) => {
+    for (let i = 0; i < N; i++) {
+      const o = f[i];
+      const a = o.a + t * o.s * 0.15;
+      p[i * 3] = Math.cos(a) * o.d + Math.sin(t * o.s * 2 + i) * 0.5;
+      p[i * 3 + 1] = o.h + Math.sin(t * 1.3 + i) * 0.3;
+      p[i * 3 + 2] = Math.sin(a) * o.d + Math.cos(t * o.s * 2 + i) * 0.5;
+    }
+    geo.attributes.position.needsUpdate = true;
+    mat.opacity = 0.55 + Math.sin(t * 3) * 0.35;
+  };
 }
 
 // ------------------------------------------------------------------ montagem
@@ -411,82 +658,101 @@ export function mount(box, api) {
   box.append(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#2a2238');
-  scene.add(new THREE.HemisphereLight('#fff3e0', '#6b5a7a', 1.4));
-  const sun = new THREE.DirectionalLight('#fff1d6', 2.2);
-  sun.position.set(-5, 9, 4);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 8, bottom: -8 });
-  sun.shadow.bias = -0.0005;
-  scene.add(sun);
-  const R = buildRoom(scene);
-  let alive = true;
-  furnish(scene, R)
-    .then(() => {
-      if (!blocked(self.x, self.z)) return;
-      for (let d = 0.5; d < 6; d += 0.5)
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
-          const x = self.x + Math.sin(a) * d;
-          const z = self.z + Math.cos(a) * d;
-          if (!blocked(x, z)) {
-            Object.assign(self, { x, z });
-            sendNow();
-            return;
-          }
-        }
-    })
-    .catch((err) => console.warn('móveis da sala', err));
+  scene.background = new THREE.Color('#0d1430');
+  scene.fog = new THREE.Fog('#0d1430', 20, 46);
+  scene.add(new THREE.HemisphereLight('#6a80c4', '#2a1e14', 1.25));
+  const moonLight = new THREE.DirectionalLight('#a9bfff', 1.2);
+  moonLight.position.set(-8, 14, -10);
+  moonLight.castShadow = true;
+  moonLight.shadow.mapSize.set(1024, 1024);
+  Object.assign(moonLight.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, far: 50 });
+  moonLight.shadow.bias = -0.001;
+  scene.add(moonLight);
+  // luz fraquinha do lado da câmera: o rosto dos bonecos aparece mesmo de costas para o fogo
+  const fill = new THREE.DirectionalLight('#ffd9b0', 0.55);
+  fill.position.set(0, 6, 14);
+  scene.add(fill);
+  const CAMP = buildCamp(scene);
+  const fire = makeFire(scene);
+  const flies = makeFireflies(scene);
 
-  const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 60);
+  // placa da música em cima do rádio
+  let radioSign = null;
+  let radioKey = '';
+  function drawRadio() {
+    const info = api.tv();
+    const key = info ? info.title + '|' + info.artist + '|' + info.playing : '';
+    if (key === radioKey) return;
+    radioKey = key;
+    if (radioSign) {
+      scene.remove(radioSign);
+      disposeTree(radioSign);
+      radioSign = null;
+    }
+    if (!info) return;
+    const c = document.createElement('canvas');
+    const g = c.getContext('2d');
+    const t1 = (info.playing ? '♪ ' : '❚❚ ') + info.title.slice(0, 40);
+    const t2 = (info.artist || '').slice(0, 40);
+    g.font = '700 30px system-ui, sans-serif';
+    c.width = Math.min(640, Math.max(g.measureText(t1).width, 200) + 40);
+    c.height = t2 ? 92 : 58;
+    g.fillStyle = 'rgba(12,14,24,.78)';
+    roundRect(g, 0, 0, c.width, c.height, 18);
+    g.fill();
+    g.fillStyle = '#ffd166';
+    g.font = '700 30px system-ui, sans-serif';
+    g.textBaseline = 'top';
+    g.fillText(t1, 20, 12, c.width - 40);
+    if (t2) {
+      g.fillStyle = 'rgba(255,255,255,.8)';
+      g.font = '500 24px system-ui, sans-serif';
+      g.fillText(t2, 20, 52, c.width - 40);
+    }
+    radioSign = spriteFrom(c, c.height / 190, 9);
+    radioSign.position.copy(CAMP.radio.position).add(new THREE.Vector3(0.6, 2.4, 0));
+    scene.add(radioSign);
+  }
+
+  const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 120);
   let zoom = 1;
   const camTarget = new THREE.Vector3(0, 0.8, 0);
 
   // ---------------- bonecos
-  const avatars = new Map(); // key -> { x, z, r, parts, figKey, label, target, ... }
+  const avatars = new Map();
   const meKey = 'me';
-  // cada um entra num lugar diferente da frente da sala (pelo id), virado para a câmera
   const meId = String(api.me().uid || '');
   let hh = 0;
   for (const c of meId) hh = (hh * 31 + c.charCodeAt(0)) >>> 0;
-  const self = { x: -4 + (hh % 9), z: 3.2 + ((hh >> 4) % 3) * 0.6, r: 0, s: -1, w: false, run: false, e: '', et: 0 };
+  // cada um chega por um lugar diferente da trilha da frente, virado para a câmera
+  const self = { x: -1.2 + (hh % 7) * 0.4, z: 6.4 + ((hh >> 4) % 3) * 0.7, r: 0, s: -1, w: false, run: false, e: '', et: 0 };
   let walkTo = null;
-  function setFigure(a, fig) {
-    const figKey = JSON.stringify(fig);
-    if (a.figKey === figKey) return;
-    a.figKey = figKey;
-    const token = (a.token = {});
-    buildFigure(fig)
-      .then((parts) => {
-        if (!alive || a.token !== token || !avatars.has(a.key)) return;
-        if (a.parts) a.holder.remove(a.parts.root);
-        a.parts = parts;
-        a.holder.add(parts.root);
-        a.label.position.y = parts.height + 0.25;
-        play(parts, 'idle', 0);
-      })
-      .catch((err) => console.warn('boneco', err));
-  }
   function ensureAvatar(key, p) {
     let a = avatars.get(key);
     if (!a) {
-      a = { key, x: p.pos?.x ?? 0, z: p.pos?.z ?? 3, r: p.pos?.r ?? 0, holder: new THREE.Group() };
+      a = { key, x: p.pos?.x ?? 0, z: p.pos?.z ?? 6.5, r: p.pos?.r ?? 0, phase: Math.random() * 6, walkAmt: 0, holder: new THREE.Group() };
       avatars.set(key, a);
       scene.add(a.holder);
-      const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.36, 24), new THREE.MeshBasicMaterial({ color: '#000', transparent: true, opacity: 0.18, depthWrite: false }));
-      shadow.rotation.x = -Math.PI / 2;
-      shadow.position.y = 0.012;
-      a.holder.add(shadow);
     }
-    setFigure(a, cleanFig(p.fig, p.color, p.uid));
+    const fig = cleanFig(p.fig, p.color, p.uid);
+    const figKey = JSON.stringify(fig);
+    if (a.figKey !== figKey) {
+      if (a.parts) {
+        a.holder.remove(a.parts.root);
+        disposeTree(a.parts.root);
+      }
+      a.parts = buildFigure(fig);
+      a.holder.add(a.parts.root);
+      a.figKey = figKey;
+    }
     const labelKey = p.name + p.color;
     if (a.labelKey !== labelKey) {
       if (a.label) {
         a.holder.remove(a.label);
-        disposeOwn(a.label);
+        disposeTree(a.label);
       }
       a.label = labelSprite(p.name, p.color || '#5b7bf0');
-      a.label.position.y = 0.8 * S + 0.25;
+      a.label.position.y = a.parts.height + 0.45;
       a.holder.add(a.label);
       a.labelKey = labelKey;
     }
@@ -501,26 +767,22 @@ export function mount(box, api) {
       keep.add(p.key);
       if (!avatars.has(p.key)) {
         i++;
-        const st = p.pos || { x: -3 + (i % 5) * 1.5, z: 3.8 + Math.floor(i / 5) * 0.8, r: 0, s: -1, w: false, e: '' };
+        const st = p.pos || { x: -1.2 + (i % 5) * 0.7, z: 7 + Math.floor(i / 5) * 0.8, r: 0, s: -1, w: false, e: '' };
         ensureAvatar(p.key, { ...p, pos: st }).target = st;
       } else ensureAvatar(p.key, p);
     }
     for (const [key, a] of avatars)
       if (!keep.has(key)) {
         scene.remove(a.holder);
-        disposeOwn(a.holder);
+        disposeTree(a.holder);
         avatars.delete(key);
       }
   }
 
-  // ---------------- colisão
+  // ---------------- colisão (clareira redonda + trilha da frente + obstáculos redondos)
   function blocked(x, z) {
-    if (x < ROOM.x0 || x > ROOM.x1 || z < ROOM.z0 || z > ROOM.z1) return true;
-    for (const o of R.obstacles) {
-      if (Array.isArray(o)) {
-        if (x > o[0] - RADIUS && x < o[2] + RADIUS && z > o[1] - RADIUS && z < o[3] + RADIUS) return true;
-      } else if (Math.hypot(x - o.c[0], z - o.c[1]) < o.r + RADIUS) return true;
-    }
+    if (Math.hypot(x, z) > CLEARING && !(Math.abs(x) < 1.4 && z > 0 && z < 12)) return true;
+    for (const o of CAMP.circles) if (Math.hypot(x - o.x, z - o.z) < o.r + RADIUS) return true;
     return false;
   }
 
@@ -532,7 +794,7 @@ export function mount(box, api) {
   };
   const visible = () => box.offsetParent !== null && !document.hidden;
   const MOVE = { KeyW: 1, KeyA: 1, KeyS: 1, KeyD: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };
-  const EMOTE_KEYS = { Digit1: 'tchau', Digit2: 'sim', Digit3: 'nao', Digit4: 'pulo' };
+  const EMOTE_KEYS = { Digit1: 'tchau', Digit2: 'danca', Digit3: 'pulo', Digit4: 'sim' };
   const onKeyDown = (e) => {
     if (!visible() || typing() || e.ctrlKey || e.metaKey || e.altKey) return;
     if (MOVE[e.code]) {
@@ -556,59 +818,64 @@ export function mount(box, api) {
   addEventListener('blur', onBlur);
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
-  const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const hitPoint = new THREE.Vector3();
   renderer.domElement.addEventListener('pointerdown', (e) => {
     renderer.domElement.focus();
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    if (!ray.ray.intersectPlane(ground, hitPoint)) return;
-    const seat = nearestSeat(hitPoint.x, hitPoint.z, 1.3);
-    walkTo = seat != null ? { x: R.seats[seat].x, z: R.seats[seat].z, sit: seat } : { x: hitPoint.x, z: hitPoint.z };
+    if (!ray.ray.intersectPlane(groundPlane, hitPoint)) return;
+    const seat = nearestSeat(hitPoint.x, hitPoint.z, 1.1);
+    walkTo = seat != null ? { x: CAMP.seats[seat].x, z: CAMP.seats[seat].z, sit: seat } : { x: hitPoint.x, z: hitPoint.z };
     if (self.s >= 0) standUp();
   });
   renderer.domElement.addEventListener(
     'wheel',
     (e) => {
-      zoom = Math.min(1.6, Math.max(0.55, zoom * (e.deltaY > 0 ? 1.08 : 0.93)));
+      zoom = Math.min(1.7, Math.max(0.5, zoom * (e.deltaY > 0 ? 1.08 : 0.93)));
       e.preventDefault();
     },
     { passive: false },
   );
-
   function nearestSeat(x, z, max) {
     let best = null;
     let bd = max;
     const taken = new Set([...avatars.entries()].filter(([k]) => k !== meKey).map(([, a]) => a.target?.s));
-    R.seats.forEach((s, i) => {
+    CAMP.seats.forEach((s, i) => {
       const d = Math.hypot(s.x - x, s.z - z);
       if (d < bd && !taken.has(i)) (bd = d), (best = i);
     });
     return best;
   }
   function sitOn(i) {
-    const s = R.seats[i];
+    const s = CAMP.seats[i];
     Object.assign(self, { s: i, x: s.x, z: s.z, r: s.r, e: '' });
     walkTo = null;
     sendNow();
   }
   function standUp() {
     if (self.s < 0) return;
-    const s = R.seats[self.s];
+    const s = CAMP.seats[self.s];
     self.s = -1;
-    const fx = s.x + Math.sin(s.r) * 0.9;
-    const fz = s.z + Math.cos(s.r) * 0.9;
-    if (!blocked(fx, fz)) Object.assign(self, { x: fx, z: fz });
+    // levanta para trás do tronco (longe do fogo); se não der, para a frente
+    for (const k of [-0.9, 0.9]) {
+      const fx = s.x + Math.sin(s.r) * k;
+      const fz = s.z + Math.cos(s.r) * k;
+      if (!blocked(fx, fz)) {
+        Object.assign(self, { x: fx, z: fz });
+        break;
+      }
+    }
     sendNow();
   }
   function toggleSit() {
     if (self.s >= 0) return standUp();
-    const i = nearestSeat(self.x, self.z, 2.4);
+    const i = nearestSeat(self.x, self.z, 1.6);
     if (i != null) sitOn(i);
   }
   function emote(e) {
-    if (self.s >= 0 && e === 'pulo') return;
+    if (self.s >= 0 && (e === 'pulo' || e === 'danca')) return;
     self.e = e;
     self.et = performance.now();
     sendNow();
@@ -634,100 +901,11 @@ export function mount(box, api) {
     }
   }
 
-  // ---------------- TV e fliperama
-  let tvKey = '';
-  let tvImg = null;
-  function drawTv() {
-    const info = api.tv();
-    const key = info ? info.title + '|' + info.thumb + '|' + info.playing : 'none';
-    if (key === tvKey) return;
-    tvKey = key;
-    const g = R.tvCanvas.getContext('2d');
-    const { width: w, height: h } = R.tvCanvas;
-    const paint = () => {
-      const grad = g.createLinearGradient(0, 0, w, h);
-      grad.addColorStop(0, '#3a0ca3');
-      grad.addColorStop(1, '#f72585');
-      g.fillStyle = grad;
-      g.fillRect(0, 0, w, h);
-      g.fillStyle = '#fff';
-      g.textBaseline = 'middle';
-      if (!info) {
-        g.font = '800 54px system-ui, sans-serif';
-        g.textAlign = 'center';
-        g.fillText('janjahaters', w / 2, h / 2 - 18);
-        g.font = '500 24px system-ui, sans-serif';
-        g.fillText('ponha uma música na call para ver aqui', w / 2, h / 2 + 34);
-        g.textAlign = 'left';
-      } else {
-        if (tvImg?.complete && tvImg.naturalWidth) g.drawImage(tvImg, 24, 44, 200, 200);
-        else {
-          g.fillStyle = 'rgba(255,255,255,.18)';
-          g.fillRect(24, 44, 200, 200);
-          g.fillStyle = '#fff';
-          g.font = '90px system-ui';
-          g.textAlign = 'center';
-          g.fillText('♪', 124, 150);
-          g.textAlign = 'left';
-        }
-        g.font = '600 20px system-ui, sans-serif';
-        g.fillStyle = 'rgba(255,255,255,.8)';
-        g.fillText(info.playing ? 'TOCANDO AGORA' : 'PAUSADA', 248, 80);
-        g.fillStyle = '#fff';
-        g.font = '800 30px system-ui, sans-serif';
-        let line = '';
-        let y = 128;
-        for (const wd of info.title.split(' ')) {
-          const t = line ? line + ' ' + wd : wd;
-          if (g.measureText(t).width > 240 && line) {
-            g.fillText(line, 248, y);
-            y += 36;
-            line = wd;
-            if (y > 200) break;
-          } else line = t;
-        }
-        if (y <= 200) g.fillText(line, 248, y);
-        g.font = '500 22px system-ui, sans-serif';
-        g.fillStyle = 'rgba(255,255,255,.85)';
-        g.fillText((info.artist || '').slice(0, 26), 248, Math.min(y + 40, 250));
-      }
-      R.tvTex.needsUpdate = true;
-    };
-    tvImg = null;
-    if (info?.thumb) {
-      tvImg = new Image();
-      tvImg.crossOrigin = 'anonymous';
-      tvImg.onload = paint;
-      tvImg.onerror = () => {
-        tvImg = null;
-        paint();
-      };
-      tvImg.src = info.thumb;
-    }
-    paint();
-  }
-  function drawArcade(t) {
-    const g = R.arcCanvas.getContext('2d');
-    g.fillStyle = '#0b0b1a';
-    g.fillRect(0, 0, 128, 112);
-    const bx = 64 + Math.sin(t * 1.7) * 52;
-    const by = 56 + Math.sin(t * 2.3) * 44;
-    g.fillStyle = '#4cc9f0';
-    g.fillRect(8, 30 + Math.sin(t * 2.3) * 30, 6, 26);
-    g.fillRect(114, 30 + Math.sin(t * 2.3 + 0.6) * 30, 6, 26);
-    g.fillStyle = '#ffd166';
-    g.fillRect(bx - 4, by - 4, 8, 8);
-    g.fillStyle = '#f72585';
-    for (let y = 0; y < 112; y += 12) g.fillRect(63, y, 2, 6);
-    R.arcTex.needsUpdate = true;
-  }
-
   // ---------------- animação
   const clock = new THREE.Clock();
   let raf = 0;
   let running = true;
-  let lastTv = 0;
-  let arcT = 0;
+  let lastRadio = 0;
   function animate(a, dt, t, isMe) {
     const st = isMe ? self : a.target || { x: a.x, z: a.z, r: a.r, s: -1, w: false, e: '' };
     if (!isMe) {
@@ -741,32 +919,46 @@ export function mount(box, api) {
     let dr = st.r - a.r;
     dr = Math.atan2(Math.sin(dr), Math.cos(dr));
     a.r += dr * (1 - Math.exp(-dt * 12));
-    const seat = st.s >= 0 ? R.seats[st.s] : null;
-    a.holder.position.set(a.x, seat ? seat.y : 0, a.z);
-    a.holder.rotation.y = a.r;
+    const seat = st.s >= 0 ? CAMP.seats[st.s] : null;
     const P = a.parts;
-    if (P) {
-      const moving = !seat && (isMe ? self.w : st.w || Math.hypot(st.x - a.x, st.z - a.z) > 0.08);
-      let anim = 'idle';
-      if (seat) anim = 'sit';
-      else if (moving) anim = st.run ? 'sprint' : 'walk';
-      else if (st.e && EMOTES[st.e]) anim = EMOTES[st.e];
-      play(P, anim);
-      P.mixer.update(dt);
-      // falando na call: anel verde e a cabeça balança de leve
-      P.ring.visible = !!a.speaking;
-      if (P.head) P.head.rotation.z = a.speaking ? Math.sin(t * 9) * 0.08 : P.head.rotation.z * 0.8;
-    }
+    const moving = !seat && (isMe ? self.w : st.w || Math.hypot(st.x - a.x, st.z - a.z) > 0.06);
+    a.walkAmt += ((moving ? 1 : 0) - a.walkAmt) * (1 - Math.exp(-dt * 10));
+    a.phase += dt * (moving ? (st.run ? 15 : 10) : 2);
+    const sw = Math.sin(a.phase) * a.walkAmt;
+    // sentado: o quadril (y = 5U) fica na altura do assento
+    a.holder.position.set(a.x, seat ? seat.y - 5 * U + 0.02 : 0, a.z);
+    a.holder.rotation.y = a.r;
+    P.body.position.y = Math.abs(Math.sin(a.phase)) * 0.07 * a.walkAmt + (moving ? 0 : Math.sin(t * 2 + a.phase) * 0.008);
+    P.body.rotation.y *= 0.85;
+    P.legL.rotation.x = seat ? -Math.PI / 2 : sw * 0.7;
+    P.legR.rotation.x = seat ? -Math.PI / 2 : -sw * 0.7;
+    P.armL.rotation.set(seat ? -0.5 : -sw * 0.8, 0, 0);
+    P.armR.rotation.set(seat ? -0.5 : sw * 0.8, 0, 0);
+    P.head.rotation.set(0, 0, 0);
+    const e = st.e;
+    if (e === 'tchau') P.armR.rotation.set(0, 0, 2.7 + Math.sin(t * 14) * 0.35);
+    else if (e === 'danca') {
+      P.body.rotation.y = Math.sin(t * 6) * 0.6;
+      P.body.position.y = Math.abs(Math.sin(t * 6)) * 0.14;
+      P.armL.rotation.set(0, 0, -2.4 + Math.sin(t * 12) * 0.4);
+      P.armR.rotation.set(0, 0, 2.4 - Math.sin(t * 12) * 0.4);
+    } else if (e === 'pulo') {
+      P.body.position.y = Math.abs(Math.sin(t * 7)) * 0.5;
+      P.armL.rotation.set(0, 0, -2.8);
+      P.armR.rotation.set(0, 0, 2.8);
+    } else if (e === 'sim') P.head.rotation.x = Math.sin(t * 12) * 0.25;
+    // falando na call: boca abre e fecha, cabeça balança e anel verde no chão
+    const talk = a.speaking;
+    P.mouth.scale.y = talk ? 1 + Math.abs(Math.sin(t * 18)) * 1.8 : 1;
+    if (talk && e !== 'sim') P.head.rotation.z = Math.sin(t * 5) * 0.06;
+    P.ring.visible = !!talk;
     if (a.bubble) {
       if (t > a.bubbleUntil) {
         a.holder.remove(a.bubble);
-        disposeOwn(a.bubble);
+        disposeTree(a.bubble);
         a.bubble = null;
         a.label.visible = true;
-      } else {
-        a.bubble.position.y = (P ? P.height : 1.9) + 0.2;
-        a.label.visible = false;
-      }
+      } else a.label.visible = false;
     }
   }
   function frame() {
@@ -803,21 +995,23 @@ export function mount(box, api) {
       const vx = (mx / len) * sp;
       const vz = (mz / len) * sp;
       let moved = false;
-      const stuck = blocked(self.x, self.z);
-      if (stuck) {
+      if (blocked(self.x, self.z)) {
+        // nasceu ou ficou dentro de algo: deixa sair
         self.x += vx;
         self.z += vz;
         moved = true;
-      } else if (!blocked(self.x + vx, self.z)) {
-        self.x += vx;
-        moved = true;
-      }
-      if (!stuck && !blocked(self.x, self.z + vz)) {
-        self.z += vz;
-        moved = true;
+      } else {
+        if (!blocked(self.x + vx, self.z)) {
+          self.x += vx;
+          moved = true;
+        }
+        if (!blocked(self.x, self.z + vz)) {
+          self.z += vz;
+          moved = true;
+        }
       }
       if (!moved && walkTo) {
-        if (walkTo.sit != null && Math.hypot(walkTo.x - self.x, walkTo.z - self.z) < 2.4) sitOn(walkTo.sit);
+        if (walkTo.sit != null && Math.hypot(walkTo.x - self.x, walkTo.z - self.z) < 1.6) sitOn(walkTo.sit);
         walkTo = null;
       }
       self.r = Math.atan2(mx, mz);
@@ -825,26 +1019,26 @@ export function mount(box, api) {
       self.run = moved && run;
       if (moved) self.e = '';
     }
-    if (self.e && now - self.et > (self.e === 'pulo' ? 1100 : 2200)) self.e = '';
+    if (self.e && now - self.et > 2400) self.e = '';
     maybeSend(now);
 
     const mine = avatars.get(meKey);
     if (mine) mine.speaking = api.me().speaking;
     for (const [key, a] of avatars) animate(a, dt, t, key === meKey);
 
-    const focus = new THREE.Vector3(self.x * 0.7, 0.8, self.z * 0.6 - 0.6);
+    fire(dt, t);
+    flies(dt, t);
+    CAMP.lanternLight.intensity = 3 + Math.sin(t * 2.3) * 0.3;
+
+    const focus = new THREE.Vector3(self.x * 0.6, 0.8, self.z * 0.55 - 0.4);
     camTarget.lerp(focus, 1 - Math.exp(-dt * 4));
-    camera.position.set(camTarget.x, camTarget.y + 7.6 * zoom, camTarget.z + 8.4 * zoom);
+    camera.position.set(camTarget.x, camTarget.y + 7.6 * zoom, camTarget.z + 9.4 * zoom);
     camera.lookAt(camTarget);
 
-    if (now - lastTv > 1000) {
-      lastTv = now;
-      drawTv();
+    if (now - lastRadio > 1000) {
+      lastRadio = now;
+      drawRadio();
     }
-    arcT += dt;
-    if (Math.floor(arcT * 20) !== Math.floor((arcT - dt) * 20)) drawArcade(arcT);
-    R.bulbs.forEach((b, i) => b.scale.setScalar(0.8 + Math.max(0, Math.sin(t * 2 + i)) * 0.5));
-    R.tvLight.intensity = tvKey === 'none' ? 1.2 : 2.5 + Math.sin(t * 3) * 0.4;
     renderer.render(scene, camera);
   }
   const ro = new ResizeObserver(() => {
@@ -853,7 +1047,7 @@ export function mount(box, api) {
     if (!w || !h) return;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    camera.fov = w / h < 1 ? 58 : 44; // celular em pé: abre mais
+    camera.fov = w / h < 1 ? 60 : 44; // celular em pé: abre mais
     camera.updateProjectionMatrix();
   });
   ro.observe(box);
@@ -875,33 +1069,24 @@ export function mount(box, api) {
       if (!a || !text) return;
       if (a.bubble) {
         a.holder.remove(a.bubble);
-        disposeOwn(a.bubble);
+        disposeTree(a.bubble);
       }
       a.bubble = bubbleSprite(text.slice(0, 140));
-      a.bubble.position.y = (a.parts ? a.parts.height : 1.9) + 0.2;
+      a.bubble.position.y = a.parts.height + 0.35;
       a.bubbleUntil = clock.elapsedTime + Math.min(9, 3 + text.length / 15);
       a.holder.add(a.bubble);
     },
     refresh,
     resendPos: sendNow,
-    debug: () => [...avatars].map(([k, a]) => ({ k, x: +a.x.toFixed(2), z: +a.z.toFixed(2), parts: !!a.parts, model: a.parts && a.parts.model.getWorldPosition(new THREE.Vector3()).toArray().map((v) => +v.toFixed(2)), label: a.label.getWorldPosition(new THREE.Vector3()).toArray().map((v) => +v.toFixed(2)) })),
+    debug: () => [...avatars].map(([k, a]) => ({ k, x: +a.x.toFixed(2), z: +a.z.toFixed(2), s: k === meKey ? self.s : a.target?.s })),
     destroy() {
-      alive = false;
       running = false;
       cancelAnimationFrame(raf);
       ro.disconnect();
       removeEventListener('keydown', onKeyDown);
       removeEventListener('keyup', onKeyUp);
       removeEventListener('blur', onBlur);
-      // modelos ficam no cache (abrir a sala de novo é rápido); o resto sai da placa de vídeo
-      scene.traverse((o) => {
-        if (o.isSkinnedMesh) return;
-        if (o.isSprite || o.geometry?.type?.endsWith('Geometry')) {
-          o.geometry?.dispose();
-          for (const m of [].concat(o.material || [])) (m.map?.dispose(), m.dispose());
-        }
-      });
-      mats.clear();
+      disposeTree(scene);
       renderer.dispose();
       renderer.forceContextLoss();
       renderer.domElement.remove();
@@ -914,30 +1099,26 @@ export function preview(box, fig) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'low-power' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
   box.append(renderer.domElement);
   const scene = new THREE.Scene();
-  scene.add(new THREE.HemisphereLight('#fff3e0', '#6b5a7a', 1.8));
-  const key = new THREE.DirectionalLight('#ffffff', 2);
+  scene.add(new THREE.HemisphereLight('#fff3e0', '#6b5a7a', 2.2));
+  const key = new THREE.DirectionalLight('#ffffff', 1.6);
   key.position.set(2, 3, 4);
   scene.add(key);
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
-  camera.position.set(0, 1.2, 4.6);
-  camera.lookAt(0, 0.9, 0);
+  camera.position.set(0, 1.2, 6.2);
+  camera.lookAt(0, 1.05, 0);
   let parts = null;
-  let token = 0;
   let drag = null;
   let rot = 0.4;
   function set(f) {
-    const my = ++token;
-    buildFigure(cleanFig(f)).then((p) => {
-      if (my !== token) return;
-      if (parts) scene.remove(parts.root);
-      parts = p;
-      parts.ring.visible = false;
-      scene.add(parts.root);
-      play(parts, 'idle', 0);
-    });
+    if (parts) {
+      scene.remove(parts.root);
+      disposeTree(parts.root);
+    }
+    parts = buildFigure(cleanFig(f));
+    parts.ring.visible = false;
+    scene.add(parts.root);
   }
   set(fig);
   const c = renderer.domElement;
@@ -952,12 +1133,10 @@ export function preview(box, fig) {
   const clock = new THREE.Clock();
   const loop = () => {
     raf = requestAnimationFrame(loop);
-    const dt = clock.getDelta();
+    const t = clock.getElapsedTime();
     if (drag == null) rot += 0.006;
-    if (parts) {
-      parts.root.rotation.y = rot;
-      parts.mixer.update(dt);
-    }
+    parts.root.rotation.y = rot;
+    parts.body.position.y = Math.sin(t * 2) * 0.01;
     renderer.render(scene, camera);
   };
   const ro = new ResizeObserver(() => {
@@ -973,9 +1152,9 @@ export function preview(box, fig) {
   return {
     set,
     destroy() {
-      token++;
       cancelAnimationFrame(raf);
       ro.disconnect();
+      disposeTree(scene);
       renderer.dispose();
       renderer.forceContextLoss();
       c.remove();

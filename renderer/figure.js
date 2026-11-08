@@ -1,55 +1,73 @@
-// Boneco da sala de games: o que dá para escolher e a validação do que chega dos amigos.
-// Os bonecos são os "Mini Characters" do Kenney (CC0, renderer/room/chars). Fica fora do room.js (que traz o
-// three.js) para o app validar e guardar o boneco mesmo com a sala desligada.
+// Boneco do acampamento (voxel): o que dá para escolher e a validação do que chega dos amigos.
+// Fica fora do room.js (que traz o three.js) para o app validar e guardar o boneco mesmo com a sala desligada.
 export const FIG = {
-  char: [
-    ['female-a', 'Ela A'],
-    ['female-b', 'Ela B'],
-    ['female-c', 'Ela C'],
-    ['female-d', 'Ela D'],
-    ['female-e', 'Ela E'],
-    ['female-f', 'Ela F'],
-    ['male-a', 'Ele A'],
-    ['male-b', 'Ele B'],
-    ['male-c', 'Ele C'],
-    ['male-d', 'Ele D'],
-    ['male-e', 'Ele E'],
-    ['male-f', 'Ele F'],
-    ['male-g', 'Ele G'],
-    ['worker', 'Operário'],
-    ['soldier', 'Soldado'],
-    ['knight', 'Cavaleiro'],
-    ['raider', 'Saqueador'],
-    ['robot', 'Robô'],
-    ['alien', 'Alien'],
-    ['zombie', 'Zumbi'],
+  skin: ['#ffe3cc', '#f7cba4', '#e3aa7c', '#c08156', '#8e5a37', '#5e3b22', '#b8e0c8', '#c9c2f2'],
+  hair: [
+    ['curto', 'Curto'],
+    ['franja', 'Franja'],
+    ['espetado', 'Espetado'],
+    ['moicano', 'Moicano'],
+    ['coque', 'Coque'],
+    ['longo', 'Longo'],
+    ['rabo', 'Rabo de cavalo'],
+    ['careca', 'Sem cabelo'],
+  ],
+  hairColor: ['#2b1d14', '#5a3a22', '#a8642b', '#e8c06a', '#f2efe9', '#e0567a', '#5b7bf0', '#3dbf8a', '#9b5de5', '#ff7a1a'],
+  eyes: [
+    ['bolinha', 'Bolinha'],
+    ['feliz', 'Feliz'],
+    ['brilho', 'Brilhando'],
+    ['sono', 'Sonolento'],
   ],
   acc: [
     ['nada', 'Nada'],
-    ['glasses', 'Óculos'],
-    ['sunglasses', 'Óculos escuros'],
-    ['mask', 'Máscara'],
+    ['gorro', 'Gorro'],
+    ['bone', 'Boné'],
+    ['chapeu', 'Chapéu'],
+    ['oculos', 'Óculos'],
+    ['fone', 'Fone'],
+    ['flor', 'Flor'],
   ],
 };
+const HEX = /^#[0-9a-f]{6}$/i;
 const ids = (list) => list.map((x) => x[0]);
 const pick = (v, list, def) => (list.includes(v) ? v : def);
+const color = (v, def) => (typeof v === 'string' && HEX.test(v) ? v.toLowerCase() : def);
 
-// boneco inicial: cada um já começa com um diferente (sai do id)
-export function defaultFig(seed, id = '') {
+// boneco inicial: sai do id e da cor do perfil, para cada um já começar diferente
+export function defaultFig(seed = '#5b7bf0', id = '') {
   let h = 0;
   for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return { char: FIG.char[h % 13][0], acc: 'nada' };
+  return {
+    skin: FIG.skin[h % 6],
+    hair: ids(FIG.hair)[h % 7],
+    hairColor: FIG.hairColor[(h >> 3) % FIG.hairColor.length],
+    eyes: ids(FIG.eyes)[(h >> 5) % 3],
+    acc: 'nada',
+    shirt: color(seed, '#5b7bf0'),
+    pants: '#3a4258',
+    shoes: '#f2efe9',
+  };
 }
 export function cleanFig(f, seed, id) {
   const d = defaultFig(seed, id);
   if (!f || typeof f !== 'object') return d;
-  return { char: pick(f.char, ids(FIG.char), d.char), acc: pick(f.acc, ids(FIG.acc), d.acc) };
+  return {
+    skin: color(f.skin, d.skin),
+    hair: pick(f.hair, ids(FIG.hair), d.hair),
+    hairColor: color(f.hairColor, d.hairColor),
+    eyes: pick(f.eyes, ids(FIG.eyes), d.eyes),
+    acc: pick(f.acc, ids(FIG.acc), d.acc),
+    shirt: color(f.shirt, d.shirt),
+    pants: color(f.pants, d.pants),
+    shoes: color(f.shoes, d.shoes),
+  };
 }
-// posição na sala que chega dos amigos (ação 'pos')
+// posição no acampamento que chega dos amigos (ação 'pos')
 export function cleanPos(p) {
   const n = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null);
   if (!p || typeof p !== 'object') return null;
-  const x = n(p.x, -7, 7), z = n(p.z, -6, 6), r = n(p.r, -10, 10);
+  const x = n(p.x, -12, 12), z = n(p.z, -12, 12), r = n(p.r, -10, 10);
   if (x == null || z == null) return null;
   return { x, z, r: r ?? 0, s: Number.isInteger(p.s) && p.s >= 0 && p.s < 16 ? p.s : -1, w: !!p.w, run: !!p.run, e: typeof p.e === 'string' ? p.e.slice(0, 12) : '' };
 }
