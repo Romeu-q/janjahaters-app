@@ -495,6 +495,14 @@ async function webGet(url) {
   const r = await fetch(url, { headers: { 'User-Agent': WEB_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' }, signal: AbortSignal.timeout(15000) });
   return { url: r.url, text: await r.text() };
 }
+// modelo de servidor do Discord (público, sem login): nome, categorias, canais e cargos
+ipcMain.handle('discord-template', async (e, code) => {
+  if (!/^[A-Za-z0-9-]{2,40}$/.test(String(code))) throw new Error('Link de modelo inválido');
+  const r = await fetch('https://discord.com/api/v10/guilds/templates/' + code, { headers: { 'User-Agent': 'janjahaters (https://github.com/Romeu-q/janjahaters-app)' }, signal: AbortSignal.timeout(15000) });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('O Discord respondeu ' + r.status);
+  return r.json();
+});
 ipcMain.handle('music-link', async (e, url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)));
 // prévia de link no chat (título, descrição, imagem): sem cookies, 5 s e no máximo 512 KB por página
 const preview = require('./preview');

@@ -42,6 +42,8 @@
   <div id="app">
     <!-- ===== esquerda: grupo e canais ===== -->
     <aside id="side">
+      <nav id="servers" aria-label="Servidores"></nav>
+      <div class="side-main">
       <div class="group-card">
         <div class="group-avatar" id="groupAvatar" title="Perfil do servidor">T</div>
         <div class="group-info">
@@ -80,6 +82,7 @@
         <button class="icon-btn" id="btnMute" title="Microfone"><i data-icon="mic"></i></button>
         <button class="icon-btn" id="btnDeafen" title="Áudio"><i data-icon="headphones"></i></button>
         <button class="icon-btn" id="btnSettings" title="Configurações"><i data-icon="settings"></i></button>
+      </div>
       </div>
     </aside>
 
@@ -309,6 +312,27 @@
         <form id="dmForm" class="dm-form"><input id="dmInput" maxlength="2000" autocomplete="off" placeholder="Escolha uma conversa" disabled></form>
       </section>
     </div>
+  </dialog>
+
+  <dialog id="newSrvDlg">
+    <form id="newSrvForm">
+      <h2>Novo servidor</h2>
+      <p class="muted">Você continua nos servidores em que já está. Dá para trocar pelos ícones da esquerda.</p>
+      <div class="seg">
+        <label><input type="radio" name="nsMode" value="create" checked><span>Criar</span></label>
+        <label><input type="radio" name="nsMode" value="join"><span>Entrar com convite</span></label>
+        <label><input type="radio" name="nsMode" value="discord"><span>Importar do Discord</span></label>
+      </div>
+      <div data-ns="create"><label>Nome do servidor<input id="nsName" maxlength="32" placeholder="Os Brabos"></label></div>
+      <div data-ns="join" hidden><label>Link ou código de convite<input id="nsCode" autocomplete="off" placeholder="JANJA-XXXX-…"></label></div>
+      <div data-ns="discord" hidden>
+        <p class="muted small">No Discord: Configurações do servidor → Modelo de servidor → gerar o link. Vêm o nome, as categorias, os canais e os cargos. Mensagens e membros não vêm: mande o convite do janja para a galera.</p>
+        <label>Link do modelo<span class="code-box"><input id="nsDiscord" autocomplete="off" placeholder="https://discord.new/…"><button type="button" class="ghost" id="nsDiscordLoad">Ver</button></span></label>
+        <p class="small" id="nsPreview" hidden></p>
+      </div>
+      <p class="error small" id="nsError"></p>
+      <menu><button type="button" class="ghost" data-close>Cancelar</button><button class="primary" id="nsGo">Criar servidor</button></menu>
+    </form>
   </dialog>
 
   <dialog id="inviteDlg">

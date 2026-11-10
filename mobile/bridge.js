@@ -116,6 +116,12 @@ window.desk = {
   pick: async () => {},
   ytSearch: async (q) => yt.search(await ytClient(), q),
   ytRelated: async (id) => yt.related(await ytClient(), id),
+  discordTemplate: async (code) => {
+    if (!/^[A-Za-z0-9-]{2,40}$/.test(String(code))) throw new Error('Link de modelo inválido');
+    const r = await webGet('https://discord.com/api/v10/guilds/templates/' + code);
+    const j = JSON.parse(r.text);
+    return j?.serialized_source_guild ? j : null;
+  },
   musicLink: async (url) => links.readLink(webGet, await ytClient(), String(url).slice(0, 500)),
   linkPreview: async (url) =>
     preview

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('desk', {
   onPtt: (fn) => ipcRenderer.on('ptt', (e, down) => fn(down)),
   ytSearch: (q) => ipcRenderer.invoke('yt-search', q),
   musicLink: (url) => ipcRenderer.invoke('music-link', url),
+  discordTemplate: (code) => ipcRenderer.invoke('discord-template', code),
   linkPreview: (url) => ipcRenderer.invoke('link-preview', url),
   musicGain: (g) => ipcRenderer.invoke('music-gain', g),
   musicMatch: (track) => ipcRenderer.invoke('music-match', track),

@@ -4696,6 +4696,7 @@ function renderSidebar() {
     $('#groupAvatar').dataset.look = gLook;
     paintGroupAvatar($('#groupAvatar'), g);
     paintGroupBanner($('.group-card'), g);
+    rememberServer({ name: gname, color: g.color || '', icon: g.icon || '', by: g.by || '' });
   }
   $('#groupDesc').hidden = !g.desc;
   $('#groupDesc').textContent = g.desc || '';
@@ -5583,6 +5584,7 @@ async function onRekey(r) {
   const olds = store.get('oldRooms', []).filter((o) => o.until > Date.now() && o.hash !== R.hash);
   olds.push({ key: R.key, hash: R.hash, rec: r, until: Date.now() + 14 * 864e5 });
   store.set('oldRooms', olds);
+  saveServers(servers().map((x) => (x.hash === R.hash ? { ...x, key, hash } : x)));
   R = { key, hash };
   store.set('room', R);
   if (C.ch) leaveVoice();
@@ -6896,11 +6898,15 @@ $('#stGoogle').onclick = async () => {
 renderGoogleAcc();
 
 $('#btnLeaveGroup').onclick = () => {
-  if (!confirm('Sair deste grupo? Você vai precisar do código de convite para voltar.')) return;
+  if (!confirm('Sair deste servidor? Você vai precisar do código de convite para voltar.')) return;
   leaveVoice();
   room?.leave();
   store.del('recs:' + R.hash);
-  store.del('room');
+  const rest = servers().filter((x) => x.hash !== R.hash);
+  saveServers(rest);
+  if (rest[0]) store.set('room', { key: rest[0].key, hash: rest[0].hash });
+  else store.del('room');
+  store.del('rejoin');
   location.reload();
 };
 
@@ -7844,10 +7850,19 @@ function start() {
   for (const r of recs.values()) clock = Math.max(clock, Math.min(r.v, Date.now()));
   seed();
   connectRoom();
+  rememberServer({});
+  const fresh = store.get('newSrv:' + R.hash, null);
+  if (fresh) {
+    store.del('newSrv:' + R.hash);
+    put({ k: 'grp', id: 'grp', name: cleanName(fresh.name) || `Servidor de ${me.name}`, owner: me.id });
+    if (fresh.tpl) applyDiscordTemplate(fresh.tpl);
+  }
   openView(store.get('view:' + R.hash, 'c:geral'));
   renderPresence();
   renderMusic();
   renderSounds();
+  renderServers();
+  if (fresh) setTimeout(() => $('#btnInvite').click(), 400);
   setInterval(sendHi, 15_000);
   const rj = store.get('rejoin');
   if (rj?.hash === R.hash && Date.now() - rj.at < REJOIN_MS && channel(rj.ch)?.type === 'voice') {
@@ -7878,12 +7893,198 @@ async function onInvite(code) {
     $('#suName').focus();
     return;
   }
-  if (!confirm('Você recebeu um convite para outro grupo. Sair do grupo atual e entrar no novo?')) return;
-  leaveVoice();
+  const known = servers().find((x) => x.key === key);
+  if (known) return switchServer(known);
+  if (!confirm('Você recebeu um convite para outro servidor. Entrar nele? (você continua nos que já está)')) return;
+  joinServer(key);
+}
+
+// ============================================================ servidores
+// Cada servidor é um grupo com o próprio código. A pessoa pode estar em vários, com um aberto por vez: trocar
+// recarrega o app naquele servidor (os registros de cada um ficam guardados separados, por hash).
+const servers = () => store.get('servers', []);
+const saveServers = (list) => store.set('servers', list);
+function rememberServer(info) {
+  if (!R?.key) return;
+  const list = servers();
+  const i = list.findIndex((x) => x.hash === R.hash);
+  const next = { ...(i >= 0 ? list[i] : {}), key: R.key, hash: R.hash, ...info };
+  if (!next.name) next.name = groupName();
+  if (i >= 0 && JSON.stringify(list[i]) === JSON.stringify(next)) return;
+  if (i >= 0) list[i] = next;
+  else list.push(next);
+  saveServers(list);
+  renderServers();
+}
+function renderServers() {
+  const box = $('#servers');
+  const nodes = servers().map((sv) => {
+    const b = el('button', 'srv' + (sv.hash === R?.hash ? ' active' : ''));
+    b.type = 'button';
+    b.title = sv.name || 'Servidor';
+    const av = el('span', 'srv-av');
+    paintGroupAvatar(av, sv);
+    b.append(av);
+    b.onclick = () => switchServer(sv);
+    b.oncontextmenu = (e) => {
+      e.preventDefault();
+      if (sv.hash === R?.hash) return $('#btnLeaveGroup').click();
+      if (!confirm(`Sair do servidor "${sv.name || 'Servidor'}"? Você vai precisar do convite para voltar.`)) return;
+      saveServers(servers().filter((x) => x.hash !== sv.hash));
+      store.del('recs:' + sv.hash);
+      renderServers();
+    };
+    return b;
+  });
+  const add = el('button', 'srv add');
+  add.type = 'button';
+  add.title = 'Criar ou entrar em um servidor';
+  add.append(icon('plus'));
+  add.onclick = openNewServer;
+  box.replaceChildren(...nodes, add);
+}
+function switchServer(sv) {
+  if (sv.hash === R?.hash) return;
+  if (C.ch && !confirm('Você está numa call. Trocar de servidor sai dela. Trocar mesmo assim?')) return;
+  if (C.ch) leaveVoice();
   room?.leave();
-  R = { key, hash: (await sha256('toca-room:' + key)).slice(0, 40) };
-  store.set('room', R);
+  store.set('room', { key: sv.key, hash: sv.hash });
+  store.del('rejoin');
   location.reload();
+}
+async function joinServer(key, fresh) {
+  const hash = (await sha256('toca-room:' + key)).slice(0, 40);
+  const list = servers();
+  if (!list.some((x) => x.hash === hash)) saveServers([...list, { key, hash, name: fresh?.name || 'Servidor' }]);
+  if (fresh) store.set('newSrv:' + hash, fresh);
+  switchServer({ key, hash });
+}
+
+// ----- criar, entrar ou importar do Discord -----
+let dcTemplate = null;
+function openNewServer() {
+  dcTemplate = null;
+  $('#nsName').value = '';
+  $('#nsCode').value = '';
+  $('#nsDiscord').value = '';
+  $('#nsError').textContent = '';
+  $('#nsPreview').hidden = true;
+  syncNewServer();
+  openDialog($('#newSrvDlg'));
+}
+function syncNewServer() {
+  const mode = $('input[name=nsMode]:checked').value;
+  for (const p of $$('[data-ns]')) p.hidden = p.dataset.ns !== mode;
+  $('#nsGo').textContent = mode === 'join' ? 'Entrar' : mode === 'discord' ? 'Importar e criar' : 'Criar servidor';
+}
+$$('input[name=nsMode]').forEach((r) => (r.onchange = syncNewServer));
+const discordCode = (s) => String(s || '').trim().match(/(?:discord\.new\/|discord(?:app)?\.com\/template\/|^)([A-Za-z0-9-]{2,40})\/?$/)?.[1] || null;
+const DC_TEXT = new Set([0, 5, 15]);
+const DC_VOICE = new Set([2, 13]);
+async function loadDiscordTemplate() {
+  const code = discordCode($('#nsDiscord').value);
+  if (!code) throw new Error('Cole o link do modelo (discord.new/…)');
+  if (!window.desk?.discordTemplate) throw new Error('A importação só funciona no app');
+  const tpl = await window.desk.discordTemplate(code);
+  const g = tpl?.serialized_source_guild;
+  if (!g) throw new Error('Não achei esse modelo. Confira o link.');
+  dcTemplate = g;
+  const ch = g.channels || [];
+  const n = (set) => ch.filter((c) => set.has(c.type)).length;
+  $('#nsPreview').hidden = false;
+  $('#nsPreview').textContent = `"${g.name}": ${ch.filter((c) => c.type === 4).length} categorias, ${n(DC_TEXT)} canais de texto, ${n(DC_VOICE)} de voz e ${Math.max(0, (g.roles || []).length - 1)} cargos.`;
+  return g;
+}
+$('#nsDiscordLoad').onclick = () => loadDiscordTemplate().then(() => ($('#nsError').textContent = ''), (err) => ($('#nsError').textContent = ipcError(err)));
+$('#newSrvForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const mode = $('input[name=nsMode]:checked').value;
+  try {
+    if (mode === 'join') {
+      const raw = $('#nsCode').value.trim();
+      const key = parseCode(raw.split('/').pop());
+      if (!key) throw new Error('Código inválido. Confira o que te mandaram.');
+      if (servers().some((x) => x.key === key)) throw new Error('Você já está nesse servidor.');
+      return joinServer(key);
+    }
+    if (mode === 'discord') {
+      const g = dcTemplate || (await loadDiscordTemplate());
+      return joinServer(newKey(), { name: g.name, tpl: g });
+    }
+    joinServer(newKey(), { name: cleanName($('#nsName').value) || `Servidor de ${me.name}` });
+  } catch (err) {
+    $('#nsError').textContent = ipcError(err);
+  }
+};
+// permissões do Discord (bits) nas do janja; administrador = todas
+function discordPerms(str) {
+  let b = 0n;
+  try {
+    b = BigInt(str || 0);
+  } catch {}
+  const has = (n) => ((b >> BigInt(n)) & 1n) === 1n;
+  if (has(3)) return ALL_PERMS;
+  const map = [
+    [4, P.ManageChannel],
+    [5, P.ManageServer],
+    [28, P.ManageRole | P.ManagePermissions],
+    [30, P.ManageCustomisation],
+    [1, P.KickMembers],
+    [2, P.BanMembers],
+    [13, P.ManageMessages],
+    [11, P.SendMessage],
+    [6, P.React],
+    [20, P.Connect],
+    [21, P.Speak],
+    [9, P.Video | P.Stream],
+    [22, P.MuteMembers],
+    [24, P.MoveMembers],
+  ];
+  let p = 0;
+  for (const [bit, perm] of map) if (has(bit)) p |= perm;
+  return p;
+}
+// monta o servidor a partir do modelo: descrição, permissões de todos, cargos, categorias e canais
+function applyDiscordTemplate(g) {
+  const roles = (g.roles || []).slice(0, 60);
+  const everyone = roles.find((r) => r.id === 0);
+  put({ ...grpRec(), desc: String(g.description || '').slice(0, 200), ...(everyone ? { perms: discordPerms(everyone.permissions) } : {}) });
+  roles
+    .filter((r) => r.id !== 0)
+    .forEach((r, i) => {
+      const color = r.color ? '#' + Number(r.color).toString(16).padStart(6, '0') : '#99aab5';
+      put({ k: 'role', id: 'role:' + randId(6), name: String(r.name || 'Cargo').slice(0, 32), color, perms: discordPerms(r.permissions), order: i + 1, hoist: !!r.hoist });
+    });
+  const chans = [...(g.channels || [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).slice(0, 120);
+  const cats = new Map();
+  chans
+    .filter((c) => c.type === 4)
+    .forEach((c, i) => {
+      const id = 'cat:' + randId();
+      cats.set(c.id, id);
+      put({ k: 'cat', id, name: String(c.name || 'Categoria').slice(0, 40), order: i + 1 });
+    });
+  // no Discord a posição conta separada para texto e voz: ordena por categoria, texto antes de voz, posição
+  const catPos = new Map(chans.filter((c) => c.type === 4).map((c, i) => [c.id, i]));
+  const rank = (c) => [c.parent_id == null ? -1 : catPos.get(c.parent_id) ?? 999, DC_VOICE.has(c.type) ? 1 : 0, c.position ?? 0];
+  chans.sort((x, y) => {
+    const a = rank(x), b = rank(y);
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  });
+  let order = 1;
+  let text = 0;
+  let voice = 0;
+  for (const c of chans) {
+    const type = DC_TEXT.has(c.type) ? 'text' : DC_VOICE.has(c.type) ? 'voice' : null;
+    if (!type) continue;
+    type === 'text' ? text++ : voice++;
+    put({ k: 'ch', id: 'c:' + randId(), name: fixName(type, String(c.name || 'canal')), type, order: order++, cat: cats.get(c.parent_id) || null });
+  }
+  // os canais de exemplo saem quando o modelo trouxe os dele
+  if (text) put({ ...recs.get('c:geral'), del: true });
+  if (voice) put({ ...recs.get('c:sala'), del: true });
+  if (text) store.del('view:' + R.hash);
+  toast(`Servidor "${g.name}" importado do Discord: ${text} canais de texto, ${voice} de voz e ${Math.max(0, roles.length - 1)} cargos`);
 }
 
 (async () => {
