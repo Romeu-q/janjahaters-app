@@ -89,6 +89,7 @@ import {
   GripVertical,
   Tent,
   Swords,
+  Gamepad2,
 } from 'lucide';
 
 // ============================================================ utilidades
@@ -223,6 +224,7 @@ const ICONS = {
   'grip-vertical': GripVertical,
   tent: Tent,
   swords: Swords,
+  'gamepad-2': Gamepad2,
 };
 function icon(name, cls = '') {
   return createElement(ICONS[name] || Square, { class: ('lucide ' + cls).trim() });
@@ -953,7 +955,7 @@ function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), act: myActivity(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -1125,6 +1127,7 @@ function onHi(pid, d) {
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
   if (d?.user?.fig) p.user.fig = cleanFig(d.user.fig, p.user.color, p.user.id);
+  p.user.act = cleanAct(d?.user?.act);
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
   verifyHi(p, d?.user);
@@ -4418,6 +4421,26 @@ function profileCard(user, prof = profileOf(user.id), opts = {}) {
   body.append(nameRow);
   if (prof.pronouns) body.append(el('div', 'pc-pron', prof.pronouns));
   if (prof.status || prof.statusEmoji) body.append(el('div', 'pc-status', `${prof.statusEmoji || ''} ${prof.status || ''}`.trim()));
+  const act = !opts.preview && actOf(user.id);
+  if (act) {
+    body.append(el('div', 'pc-sec', act.k === 'music' ? 'Ouvindo agora' : 'Jogando agora'));
+    const box = el('div', 'pc-act');
+    const pic = el('div', 'pc-act-img');
+    if (act.i) {
+      const img = el('img');
+      img.referrerPolicy = 'no-referrer';
+      img.onerror = () => img.remove();
+      img.src = act.i;
+      pic.append(img);
+    } else pic.append(icon(act.k === 'music' ? 'list-music' : 'gamepad-2'));
+    const txt = el('div', 'pc-act-txt');
+    txt.append(el('b', '', act.n));
+    if (act.d) txt.append(el('span', '', act.d));
+    if (act.s) txt.append(el('span', '', act.s));
+    if (act.t) txt.append(el('span', 'muted', 'há ' + sinceText(act.t)));
+    box.append(pic, txt);
+    body.append(box);
+  }
   if (g && !opts.preview) body.append(el('div', 'pc-mail', g.email));
   if (prof.bio) {
     body.append(el('div', 'pc-sec', 'Sobre mim'));
@@ -4898,6 +4921,13 @@ function renderPeopleList() {
         sub.append(el('span', '', st.status || st.statusEmoji ? `${st.statusEmoji} ${st.status}`.trim() : 'Online'));
       }
       who.append(sub);
+      const act = actOf(m.user.id);
+      if (act) {
+        const line = el('div', 'pact');
+        line.append(icon(act.k === 'music' ? 'list-music' : 'gamepad-2', 'sm'), el('span', '', actLabel(act)));
+        line.title = [actLabel(act), act.d, act.s].filter(Boolean).join(' · ');
+        who.append(line);
+      }
       li.append(avatar(m.user.name, m.user.color, '', m.user.id), who, flagsEl(m.voice));
       li.onclick = () => openProfile(m.user, li);
       return li;
@@ -7028,19 +7058,46 @@ function checkFriendVersion(ver) {
   toast(`Um amigo está na versão ${ver}. Para atualizar, clique no ícone ↻ lá em cima quando quiser.`);
 }
 let updVersion = '';
+let updState = ''; // '' | 'available' (tem versão nova) | 'downloading' | 'ready' (baixada, falta reiniciar)
 function showUpdate(version) {
   updVersion = version;
+  updState = 'ready';
   $('#tbUpdate').hidden = false;
+  $('#tbUpdate').classList.remove('avail');
   $('#tbUpdateText').textContent = isMobile ? `Baixar a versão ${version}` : `Reiniciar para a ${version}`;
 }
-$('#tbUpdate').onclick = () => {
+// tem versão nova: só avisa; baixa quando a pessoa clicar
+function showAvailable(version) {
+  if (!version || updState === 'ready' || updState === 'downloading') return;
+  const first = updState !== 'available' || updVersion !== version;
+  updVersion = version;
+  updState = 'available';
+  $('#tbUpdate').hidden = false;
+  $('#tbUpdate').classList.add('avail');
+  $('#tbUpdateText').textContent = `Atualizar para a ${version}`;
+  if (first) toast(`Tem uma versão nova do janja (${version}). Clique em "Atualizar" lá em cima quando quiser.`);
+}
+$('#tbUpdate').onclick = async () => {
+  if (updState === 'available' && window.desk?.downloadUpdate) {
+    updState = 'downloading';
+    $('#tbUpdateText').textContent = 'Baixando…';
+    try {
+      await window.desk.downloadUpdate();
+    } catch (err) {
+      updState = 'available';
+      $('#tbUpdateText').textContent = `Atualizar para a ${updVersion}`;
+      toast('Não consegui baixar a atualização: ' + ipcError(err));
+    }
+    return;
+  }
+  if (updState === 'downloading') return;
   if (!isMobile && C.ch && !confirm('O app vai reiniciar para atualizar e te colocar de volta na call. Atualizar agora?')) return;
   keepRejoin = true;
   saveRejoin();
   if (isMobile) toast('Baixando… quando terminar, abra o arquivo para instalar por cima');
   window.desk?.installUpdate();
 };
-// o app não procura sozinho: só por este botão (ou pelo ícone da barra de título)
+// o app procura sozinho ao abrir (só avisa); este botão procura na hora
 const setUpdStatus = (t) => ($('#updStatus').textContent = t);
 async function checkUpdateNow() {
   const b = $('#btnCheckUpdate');
@@ -7052,6 +7109,9 @@ async function checkUpdateNow() {
     if (r.status === 'ready') {
       showUpdate(r.version);
       setUpdStatus(`Versão ${r.version} pronta: clique em Reiniciar lá em cima`);
+    } else if (r.status === 'available') {
+      showAvailable(r.version);
+      setUpdStatus(`Versão ${r.version} disponível: clique em Atualizar lá em cima`);
     } else if (r.status === 'downloading') setUpdStatus(`Baixando a versão ${r.version}…`);
     else if (r.status === 'latest') setUpdStatus('Você já está na versão mais nova');
     else setUpdStatus('Modo de desenvolvimento: sem atualizações');
@@ -7076,6 +7136,7 @@ if (window.desk?.checkUpdate) {
       const r = await checkUpdateNow();
       if (r?.status === 'latest') toast(`Você já está na versão mais nova${appVersion ? ` (${appVersion})` : ''}`);
       else if (r?.status === 'downloading') toast(`Baixando a versão ${r.version}…`);
+      else if (r?.status === 'available') toast(`Versão ${r.version} disponível: clique em "Atualizar" lá em cima`);
       else if (r?.status === 'dev') toast('Modo de desenvolvimento: sem atualizações');
       else if (!r) toast('Não consegui procurar atualizações agora');
     } finally {
@@ -7088,19 +7149,26 @@ let desktopPrefs = { tray: true, hotkeys: true, autostart: false };
 if (window.desk?.appInfo) {
   $$('[data-desk]').forEach((e) => (e.hidden = false));
   window.desk.onUpdateReady((v) => showUpdate(v));
-  window.desk.onUpdateAvailable?.((v) => {
-    updVersion = v;
-    toast(`Baixando a versão ${v}… quando terminar aparece o botão para reiniciar`);
+  window.desk.onUpdateAvailable?.((v) => showAvailable(v));
+  window.desk.onUpdateProgress((pct) => {
+    setUpdStatus(`Baixando atualização… ${pct}%`);
+    if (updState === 'downloading') $('#tbUpdateText').textContent = `Baixando… ${pct}%`;
   });
-  window.desk.onUpdateProgress((pct) => setUpdStatus(`Baixando atualização… ${pct}%`));
-  window.desk.onUpdateError?.((msg) => updVersion && toast('Não consegui baixar a atualização: ' + msg));
-  window.desk.appInfo().then(({ version, updateReady, google, prefs }) => {
+  window.desk.onUpdateReady((v) => toast(`Versão ${v} baixada. Clique em "Reiniciar" lá em cima quando quiser.`));
+  window.desk.onUpdateError?.((msg) => {
+    if (updState !== 'downloading') return;
+    updState = 'available';
+    $('#tbUpdateText').textContent = `Atualizar para a ${updVersion}`;
+    toast('Não consegui baixar a atualização: ' + msg);
+  });
+  window.desk.appInfo().then(({ version, updateReady, updateAvail, google, prefs }) => {
     appVersion = version;
     $('#appVersion').textContent = `janjahaters v${version}`;
     $('#sbVersion').textContent = `v${version}`;
     $$('[data-google]').forEach((e) => (e.hidden = !google));
     if (prefs) desktopPrefs = prefs;
     if (updateReady) showUpdate(updateReady);
+    else if (updateAvail) showAvailable(updateAvail);
   });
   // atalhos globais e menu da bandeja
   window.desk.onHotkey((action) => {
@@ -8258,6 +8326,97 @@ $('#btnDcImport').onclick = () => {
   closeDialog($('#serverDlg'));
   openDcImport();
 };
+
+// ============================================================ atividade ("Jogando X")
+// O app do PC detecta o jogo aberto (lista de jogos do Discord) e o rich presence dos jogos (activity.js).
+// Sem jogo e com música tocando na call, aparece "Ouvindo". Vai para os amigos no "hi"; dá para desligar.
+settings.activity = { on: true, custom: [], ...settings.activity };
+let gameAct = null;
+const ACT_IMG = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net|i\.ytimg\.com|yt3\.googleusercontent\.com|lh3\.googleusercontent\.com)\//;
+function cleanAct(a) {
+  if (!a || typeof a !== 'object' || typeof a.n !== 'string' || !a.n.trim()) return null;
+  const s = (v, n) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : undefined);
+  return {
+    k: a.k === 'music' ? 'music' : 'game',
+    n: a.n.trim().slice(0, 80),
+    d: s(a.d, 128),
+    s: s(a.s, 128),
+    t: Number.isFinite(a.t) && a.t > 0 && a.t <= Date.now() + 60_000 ? a.t : undefined,
+    i: typeof a.i === 'string' && a.i.length < 400 && ACT_IMG.test(a.i) ? a.i : undefined,
+  };
+}
+function myActivity() {
+  if (!settings.activity.on) return null;
+  if (gameAct) return gameAct;
+  if (C.ch) {
+    const { pb, item } = pbOf(C.ch);
+    if (item && pb.pausedAt == null) return { k: 'music', n: item.title, d: item.artist || undefined, i: THUMB_OK.test(item.thumb || '') ? item.thumb : `https://i.ytimg.com/vi/${item.ref}/mqdefault.jpg` };
+  }
+  return null;
+}
+function actOf(uid) {
+  if (uid === me.id) return cleanAct(myActivity());
+  for (const p of peers.values()) if (p.user?.id === uid && p.user.act) return p.user.act;
+  return null;
+}
+const actLabel = (a) => (a.k === 'music' ? 'Ouvindo ' : 'Jogando ') + a.n;
+function sinceText(t) {
+  const min = Math.max(0, Math.floor((Date.now() - t) / 60000));
+  if (min < 1) return 'menos de 1 min';
+  if (min < 60) return min + ' min';
+  const h = Math.floor(min / 60);
+  return h + ' h' + (min % 60 ? ' ' + (min % 60) + ' min' : '');
+}
+if (window.desk?.onActivity) {
+  window.desk.onActivity((a) => {
+    gameAct = cleanAct(a);
+    sendHi();
+    renderPresence();
+  });
+  window.desk.activityConfig?.(settings.activity).catch(() => {});
+  window.desk.activityNow?.().then((a) => (gameAct = cleanAct(a)), () => {});
+}
+// configurações: mostrar ou não, e jogos cadastrados à mão
+function renderActSettings() {
+  $('#stAct').checked = settings.activity.on;
+  $('#stActList').replaceChildren(
+    ...settings.activity.custom.map((c, i) => {
+      const row = el('div', 'act-row');
+      const rm = el('button', 'icon-btn sm');
+      rm.type = 'button';
+      rm.title = 'Tirar';
+      rm.append(icon('x', 'sm'));
+      rm.onclick = () => {
+        settings.activity.custom.splice(i, 1);
+        saveActSettings();
+      };
+      row.append(icon('gamepad-2', 'sm'), el('b', '', c.name), el('span', 'muted', c.exe), rm);
+      return row;
+    }),
+  );
+}
+function saveActSettings() {
+  saveSettings();
+  window.desk?.activityConfig?.(settings.activity).catch(() => {});
+  renderActSettings();
+  sendHi();
+  renderPresence();
+}
+$('#stAct').onchange = () => {
+  settings.activity.on = $('#stAct').checked;
+  if (!settings.activity.on) gameAct = null;
+  saveActSettings();
+};
+$('#stActAdd').onclick = () => {
+  const exe = $('#stActExe').value.trim().split(/[\\/]/).pop().toLowerCase();
+  const name = $('#stActName').value.trim();
+  if (!exe.endsWith('.exe') || !name) return toast('Coloque o nome do jogo e o arquivo .exe (ex.: jogo.exe)');
+  settings.activity.custom = [...settings.activity.custom.filter((c) => c.exe !== exe), { exe, name: name.slice(0, 60) }].slice(-30);
+  $('#stActExe').value = '';
+  $('#stActName').value = '';
+  saveActSettings();
+};
+renderActSettings();
 
 // ============================================================ servidores
 // Cada servidor é um grupo com o próprio código. A pessoa pode estar em vários, com um aberto por vez: trocar

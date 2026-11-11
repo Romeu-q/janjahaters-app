@@ -23,6 +23,7 @@
       "yt.js",
       "links.js",
       "preview.js",
+      "activity.js",
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",

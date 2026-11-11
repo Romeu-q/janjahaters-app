@@ -1433,3 +1433,24 @@ body.no-anim .ob-bubbles { display: none; }
 .dc-tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: #5865f2; color: #fff; margin-left: 6px; vertical-align: 1px; }
 .load-older { display: flex; align-items: center; gap: 6px; margin: 10px auto; }
 .flip-v { transform: scaleY(-1); }
+
+/* tem versão nova: botão de atualizar chamando atenção (sem piscar demais) */
+.tb-update.avail { background: var(--accent); color: var(--on-accent, #fff); animation: upd-pulse 2.4s ease-in-out infinite; }
+@keyframes upd-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+body.no-anim .tb-update.avail { animation: none; }
+
+/* atividade ("Jogando X") */
+.pact { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--green, #3ddc84); min-width: 0; }
+.pact span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pact svg.lucide { width: 12px; height: 12px; flex: none; }
+.pc-act { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 14px; background: var(--panel-2); }
+.pc-act-img { flex: none; width: 56px; height: 56px; border-radius: 12px; overflow: hidden; display: grid; place-items: center; background: var(--panel-3); color: var(--muted); }
+.pc-act-img img { width: 100%; height: 100%; object-fit: cover; }
+.pc-act-txt { display: flex; flex-direction: column; min-width: 0; font-size: 12.5px; }
+.pc-act-txt b { font-size: 14px; }
+.pc-act-txt span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-add { display: flex; gap: 6px; margin: 6px 0; }
+.act-add input { flex: 1; min-width: 0; }
+.act-list { display: flex; flex-direction: column; gap: 4px; }
+.act-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--panel-2); }
+.act-row .muted { margin-left: auto; font-size: 12px; }

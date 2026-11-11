@@ -238,18 +238,23 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit());
 
 // ----- atualização pelas Releases do GitHub (só no app instalado) -----
-// Só quando a pessoa pede ("Procurar atualizações" ou o ícone na barra de título): baixa e mostra o botão
-// "Reiniciar para atualizar". Nada de procurar sozinho, travar a tela ou reiniciar sem a pessoa mandar.
+// Procura ao abrir o app e a cada 6 horas. Achou: só avisa (botão "Atualizar" na barra de título). Baixa quando
+// a pessoa clica e instala quando ela clicar em "Reiniciar". Nada de travar a tela ou reiniciar sozinho.
 let updateReady = null;
+let updateAvail = null;
 let updater = null;
 let checking = null;
+let downloading = null;
 function setupAutoUpdate() {
   if (!app.isPackaged) return;
   const { autoUpdater } = require('electron-updater');
   updater = autoUpdater;
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false; // só baixa quando a pessoa clicar em "Atualizar"
   autoUpdater.autoInstallOnAppQuit = false; // só instala quando a pessoa clicar em reiniciar
-  autoUpdater.on('update-available', (info) => win?.webContents.send('update-available', info.version));
+  autoUpdater.on('update-available', (info) => {
+    updateAvail = info.version;
+    win?.webContents.send('update-available', info.version);
+  });
   autoUpdater.on('download-progress', (p) => win?.webContents.send('update-progress', Math.round(p.percent)));
   autoUpdater.on('update-downloaded', (info) => {
     updateReady = info.version;
@@ -259,6 +264,8 @@ function setupAutoUpdate() {
     console.warn('atualização:', err?.message);
     win?.webContents.send('update-error', String(err?.message || err));
   });
+  setTimeout(() => checkForUpdates().catch(() => {}), 4000);
+  setInterval(() => checkForUpdates().catch(() => {}), 6 * 3600e3);
 }
 // resposta: { status: 'dev' | 'latest' | 'downloading' | 'ready', version }
 async function checkForUpdates() {
@@ -268,9 +275,24 @@ async function checkForUpdates() {
   const res = await checking;
   const next = res?.isUpdateAvailable ? res.updateInfo?.version : null;
   if (updateReady) return { status: 'ready', version: updateReady };
-  return next ? { status: 'downloading', version: next } : { status: 'latest', version: app.getVersion() };
+  return next ? { status: 'available', version: next } : { status: 'latest', version: app.getVersion() };
 }
+ipcMain.handle('download-update', async () => {
+  if (!updater) return false;
+  if (updateReady) return true;
+  downloading ||= updater.downloadUpdate().finally(() => (downloading = null));
+  await downloading;
+  return true;
+});
 app.whenReady().then(setupAutoUpdate);
+// ----- atividade ("Jogando X" e rich presence dos jogos): activity.js -----
+let activity = null;
+app.whenReady().then(() => {
+  activity = require('./activity')({ userData: app.getPath('userData'), send: (a) => win?.webContents.send('activity', a) });
+});
+ipcMain.handle('activity-config', (e, cfg) => activity?.config(cfg) ?? null);
+ipcMain.handle('activity-now', () => activity?.current() ?? null);
+app.on('will-quit', () => activity?.stop());
 ipcMain.handle('check-update', async () => {
   try {
     return await checkForUpdates();
@@ -282,7 +304,7 @@ ipcMain.on('install-update', () => {
   quitting = true;
   updater?.quitAndInstall(true, true);
 });
-ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, google: !!oauthConfig(), prefs: prefs() }));
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, updateAvail, google: !!oauthConfig(), prefs: prefs() }));
 
 // ----- bandeja, atalhos globais e iniciar com o Windows -----
 const { Tray, Menu, globalShortcut, nativeImage } = require('electron');

@@ -698,6 +698,11 @@
             <label class="check"><input type="checkbox" id="stTray"> O X esconde na bandeja (a call e a música continuam)</label>
             <label class="check"><input type="checkbox" id="stAutostart"> Abrir junto com o Windows</label>
             </div>
+            <h3>Atividade</h3>
+            <label class="check"><input type="checkbox" id="stAct"> Mostrar para os amigos o que estou jogando ou ouvindo</label>
+            <p class="muted small">O janja reconhece uns 25 mil jogos sozinho. Só o nome do jogo aparece, nunca o que mais está aberto no seu PC. Jogo que não aparece? Cadastre aqui (o nome do .exe aparece no Gerenciador de Tarefas, em Detalhes).</p>
+            <div class="act-add"><input id="stActName" maxlength="60" placeholder="Nome do jogo"><input id="stActExe" maxlength="80" placeholder="jogo.exe"><button type="button" class="ghost sm" id="stActAdd"><i data-icon="plus"></i>Cadastrar</button></div>
+            <div id="stActList" class="act-list"></div>
             <h3>Atualizações</h3>
           </div>
           <div class="update-row">
