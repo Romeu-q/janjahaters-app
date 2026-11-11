@@ -60,9 +60,11 @@ jobs:
 
   # App Android (Capacitor). A chave de assinatura fica nos secrets ANDROID_KEYSTORE_B64 e
   # ANDROID_KEYSTORE_PASSWORD: tem que ser sempre a mesma para a atualização instalar por cima.
+  # Pausado: as versões novas saem só para Windows. Para voltar a publicar o APK, devolva a condição
+  # "needs.release.result == 'success' ||" aqui. Rodar à mão (aba Actions) continua montando o APK de teste.
   android:
     needs: release
-    if: ${{ !cancelled() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
