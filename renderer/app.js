@@ -3,40 +3,6 @@ import { TURN } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain } from './mic-chain.js';
 import { FIG, ONE_HAND, cleanFig, cleanPos } from './figure.js';
-import {
-  ATTRS,
-  ATTR_BY_ID,
-  SKILLS,
-  SKILL_BY_ID,
-  RACES,
-  CLASSES,
-  PATHS,
-  THREAT_MARGINS,
-  CONDITIONS,
-  ACTION_TYPES,
-  ACTION_TYPE_BY_ID,
-  CALLED_SHOTS,
-  CALLED_SHOT_BY_ID,
-  COMBAT_ACTIONS,
-  COMBAT_ACTION_BY_ID,
-  ptsSymbols,
-  skillBaseDice,
-  skillRankLabel,
-  unlockedPerks,
-  resolveAttr,
-  cleanSheet,
-  calcDerived,
-  sheetSummary,
-  cleanSheetSummary,
-  defaultTurnState,
-  canUseAction,
-  consumeAction,
-  rollFromSheet,
-  formatRollText,
-  cleanRpgPayload,
-  parseDiscordSheet,
-  exportDiscordSheet,
-} from './rpg.js';
 import * as ident from './identity.js';
 import { initDM } from './dm.js';
 import {
@@ -125,6 +91,9 @@ import {
   Swords,
   Gamepad2,
   Dices,
+  BookOpen,
+  Ruler,
+  Target,
   Scroll,
   Heart,
   Flame,
@@ -265,6 +234,9 @@ const ICONS = {
   swords: Swords,
   'gamepad-2': Gamepad2,
   dices: Dices,
+  book: BookOpen,
+  ruler: Ruler,
+  target: Target,
   scroll: Scroll,
   heart: Heart,
   flame: Flame,
@@ -586,7 +558,7 @@ const sfx = {
 //   grp  nome do grupo            ch  canal (texto/voz)       msg  mensagem
 //   q    música na fila de um canal de voz                   pb   o que está tocando num canal de voz
 //   snd  som do soundboard (o áudio em si vai pelo armazenamento de arquivos)
-const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban', 'rekey']);
+const KINDS = new Set(['grp', 'ch', 'msg', 'q', 'pb', 'snd', 'rx', 'emo', 'pin', 'cat', 'role', 'mem', 'ban', 'rekey', 'rpgc', 'rpgk', 'rpgs', 'rpgr']);
 const recs = new Map();
 let clock = 0;
 const tick = () => (clock = Math.max(Date.now(), clock + 1));
@@ -594,7 +566,7 @@ const newer = (a, b) => !b || a.v > b.v || (a.v === b.v && String(a.by) > String
 
 function validRec(r) {
   if (!r || typeof r !== 'object' || !KINDS.has(r.k) || typeof r.id !== 'string' || r.id.length > 80 || !Number.isFinite(r.v)) return false;
-  return JSON.stringify(r).length < 8000;
+  return JSON.stringify(r).length < (r.k === 'rpgc' ? 40000 : r.k === 'rpgs' || r.k === 'rpgk' ? 16000 : 8000); // ficha de RPG é maior
 }
 function seed() {
   merge(
@@ -800,6 +772,15 @@ function permitted(r, cur) {
       return can(by, P.Connect);
     case 'rekey':
       return can(by, P.BanMembers);
+    // mesa de RPG: o Mestre (dono) mexe em tudo; cada um só na própria ficha, no próprio token e nas próprias rolagens
+    case 'rpgs':
+      return by === groupOwner();
+    case 'rpgc':
+      return by === groupOwner() || (cur ? cur.uid === by && r.uid === by : r.uid === by);
+    case 'rpgk':
+      return by === groupOwner() || (!!r.uid && r.uid === by && (!cur || cur.uid === by) && !r.npc);
+    case 'rpgr':
+      return cur ? r.uid === cur.uid || by === groupOwner() : r.uid === by;
   }
   return true;
 }
@@ -942,6 +923,7 @@ function onRecsChanged(list) {
     if ($('#serverDlg').open) renderAdmin();
   }
   if (kinds.has('rekey')) onRekey(list.find((r) => r.k === 'rekey'));
+  if (kinds.has('rpgc') || kinds.has('rpgk') || kinds.has('rpgs') || kinds.has('rpgr') || kinds.has('grp')) onRpgRecs(list);
   if (kinds.has('emo') || kinds.has('pin')) for (const { box, ch } of chatBoxes()) renderChat(box, ch, true);
   if (kinds.has('rx')) refreshReactions(new Set(list.filter((r) => r.k === 'rx').map((r) => r.msg)));
   if (kinds.has('msg')) {
@@ -1002,7 +984,7 @@ function myVoice() {
   return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), act: myActivity(), rpg: myRpgSummary(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), act: myActivity(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -1177,9 +1159,6 @@ function onHi(pid, d) {
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
   if (d?.user?.fig) p.user.fig = cleanFig(d.user.fig, p.user.color, p.user.id);
   p.user.act = cleanAct(d?.user?.act);
-  const cleanRpg = cleanSheetSummary(d?.user?.rpg);
-  if (cleanRpg) cleanRpg.gm = p.user.id === groupOwner();
-  p.user.rpg = cleanRpg;
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
   verifyHi(p, d?.user);
@@ -4987,8 +4966,8 @@ function renderPeopleList() {
       const rpgSum = rpgOf(m.user.id);
       if (rpgSum) {
         const rline = el('div', 'pact rpg-mini-line');
-        rline.append(icon('dices', 'sm'), el('span', '', rpgSum.gm ? `Mestre · ${rpgSum.cn}` : `${rpgSum.cn} (${rpgSum.cl} Nv.${rpgSum.lv}) · PV ${rpgSum.pv}/${rpgSum.pvm}`));
-        rline.title = `${rpgSum.cn} · ${rpgSum.rc} ${rpgSum.cl} Nv.${rpgSum.lv} · PV ${rpgSum.pv}/${rpgSum.pvm} · PM ${rpgSum.pm}/${rpgSum.pmm} · Esq ${rpgSum.esq} / Blq ${rpgSum.blq} / Det ${rpgSum.det}`;
+        rline.append(icon('dices', 'sm'), el('span', '', rpgSum.pvm ? `${rpgSum.gm ? 'Mestre · ' : ''}${rpgSum.cn} (${rpgSum.cl} nv. ${rpgSum.lv}) · PV ${rpgSum.pv}/${rpgSum.pvm}` : 'Mestre da mesa'));
+        if (rpgSum.pvm) rline.title = `${rpgSum.cn} · ${rpgSum.rc} ${rpgSum.cl} nv. ${rpgSum.lv} · PV ${rpgSum.pv}/${rpgSum.pvm} · PM ${rpgSum.pm}/${rpgSum.pmm}`;
         who.append(rline);
       }
       li.append(avatar(m.user.name, m.user.color, '', m.user.id), who, flagsEl(m.voice));
@@ -5276,7 +5255,7 @@ function renderStage() {
         const rSum = rpgOf(m.user.id);
         if (rSum) {
           const pill = el('div', 'pc-rpg' + (rSum.pv <= 0 ? ' danger' : ''));
-          pill.append(icon('dices', 'sm'), el('span', '', rSum.gm ? `Mestre · ${rSum.cn}` : `${rSum.cn} · PV ${rSum.pv}/${rSum.pvm} · PM ${rSum.pm}/${rSum.pmm}`));
+          pill.append(icon('dices', 'sm'), el('span', '', rSum.pvm ? `${rSum.cn} · PV ${rSum.pv}/${rSum.pvm} · PM ${rSum.pm}/${rSum.pmm}` : 'Mestre da mesa'));
           card.append(pill);
         }
       }
@@ -5868,13 +5847,13 @@ function renderAdmin() {
     const rpgRow = el('div', 'adm-rpg-row');
     const rpgInfo = el('div', 'adm-rpg-info');
     rpgInfo.append(
-      el('b', '', '🎲 Sistema de RPG de Mesa (d2Trinities)'),
-      el('span', 'muted small', isRpgEnabled() ? 'Ativo neste servidor — você é o Mestre da Mesa.' : 'Desativado — somente o dono do servidor pode ativar o modo RPG.'),
+      el('b', '', 'Mesa de RPG (d2Trinities)'),
+      el('span', 'muted small', isRpgEnabled() ? 'Aberta neste servidor: você é o Mestre.' : 'Fechada. Só o dono do servidor abre a mesa, e vira o Mestre.'),
     );
     const rpgBtn = el('button', (isRpgEnabled() ? 'ghost' : 'primary') + ' sm');
     rpgBtn.type = 'button';
     rpgBtn.id = 'admRpgToggleBtn';
-    rpgBtn.append(icon('dices', 'sm'), document.createTextNode(isRpgEnabled() ? 'Desativar RPG' : 'Ativar modo RPG'));
+    rpgBtn.append(icon('dices', 'sm'), document.createTextNode(isRpgEnabled() ? 'Encerrar a mesa' : 'Abrir a mesa'));
     rpgBtn.onclick = () => setServerRpg(!isRpgEnabled());
     rpgRow.append(rpgInfo, rpgBtn);
     so.append(rpgRow);
@@ -8937,1728 +8916,168 @@ function stopCam(notify) {
 }
 $('#ctlCam').onclick = toggleCam;
 
-// ============================================================ RPG de mesa: d2Trinities V1.2 (Interface de Sessão Separada + Combate)
-let rpgSheet = cleanSheet(store.get('rpgSheet', null), me.name);
-const rpgUi = {
-  open: false, // se a tela da Mesa de RPG (#rpgSessionView) está aberta no centro
-  subTab: 'skills', // 'skills' | 'combat' | 'edit'
-  filter: '',
-  diceMod: 0, // -1 = Inapto/Desvantagem, 0 = Normal, +1 = Vantagem
-  flatBonus: 0,
-  dif: 0, // dificuldade opcional informada pelo jogador quando o Mestre pede por voz
-  helping: false,
-  targetId: '', // id do combatente alvo na mesa (para calcular Esquiva / Bloqueio / RD automaticamente)
-  calledShot: 'none', // 'none' | 'vital' | 'leg' | 'arm' | 'wing' (Cap. 1.9 Ataque Localizado)
-  chargeMeters: 3, // metros no Encontrão (mín 3m, Cap. 1.9)
-  grappleTwoHands: false, // +2 em Agarrar com 2 mãos (Cap. 1.9)
-  enforceTurn: true, // aplica limite de ações por turno (Cap. 1.11)
-  turn: defaultTurnState(), // economia de ações do turno atual (Padrão, Movimento, Livre, Reação)
-  combat: {
-    active: false,
-    round: 1,
-    turnIdx: 0,
-    order: [], // [{ id, uid, name, init, pv, pvMax, esq, blq, rd, npc }]
-  },
-  feed: [], // histórico exclusivo de rolagens e ações da sessão (separado do chat da call)
-  seenEvents: new Set(),
-  toastTimer: 0,
-};
-let rpgHiTimer = 0;
-let prevRpgEnabled = false;
-
-// O sistema de RPG só pode ser ativado pelo dono do servidor (Mestre da Mesa)
-function isRpgEnabled() {
-  return !!recs.get('grp')?.rpg;
-}
+// ============================================================ mesa de RPG (rpg/table.js)
+// d2Trinities V1.2: mapa com tokens, fichas, iniciativa, rolagens, livro e painel do Mestre. A tela e as regras
+// ficam no rpg.bundle.js e o livro em rpg-data.json; os dois só carregam quando alguém abre a mesa.
+// O dono do servidor é o Mestre: é ele quem liga a mesa (grp.rpg). Fichas (rpgc), tokens (rpgk), a cena (rpgs) e
+// as rolagens (rpgr) são registros do grupo, assinados e replicados como o resto.
+const RPG = { ctl: null, loading: null, data: null, open: false };
+const isRpgEnabled = () => !!recs.get('grp')?.rpg;
 function canToggleServerRpg() {
   const owner = groupOwner();
   return owner ? owner === me.id : canClaimOwner(me.id);
 }
-function isRpgGm() {
-  return isRpgEnabled() && groupOwner() === me.id;
-}
-
+const isRpgGm = () => isRpgEnabled() && groupOwner() === me.id;
 function setServerRpg(on) {
-  if (!canToggleServerRpg()) {
-    toast('Somente o dono do servidor (Mestre da Mesa) pode iniciar ou encerrar a sessão de RPG.');
-    return false;
-  }
+  if (!canToggleServerRpg()) return toast('Só o dono do servidor (o Mestre) liga ou desliga a mesa de RPG');
   const g = grpRec();
   put({ ...g, k: 'grp', id: 'grp', owner: g.owner || me.id, rpg: !!on });
-  rpgSheet.isGm = !!on;
-  saveRpgSheet(false);
-  if (on) {
-    openRpgSession();
-  } else {
-    closeRpgSession(true);
-  }
+  if (on) openRpgSession();
+  else closeRpgSession(true);
   syncRpgVisibility();
   if ($('#serverDlg')?.open) renderAdmin();
-  toast(on ? '🎲 Sessão de RPG d2Trinities iniciada! A Mesa de RPG foi aberta.' : 'Sessão de RPG encerrada neste servidor.');
-  return true;
+  toast(on ? 'Mesa de RPG aberta. Você é o Mestre.' : 'Mesa de RPG encerrada neste servidor.');
 }
-
-function openRpgSession() {
-  if (!isRpgEnabled() && !canToggleServerRpg()) {
-    toast('A sessão de RPG não está ativa neste servidor.');
-    return false;
-  }
+function loadRpg() {
+  if (window.JanjaRpg) return Promise.resolve(window.JanjaRpg);
+  return (RPG.loading ||= new Promise((ok, no) => {
+    const s = document.createElement('script');
+    s.src = 'rpg.bundle.js';
+    s.onload = () => ok(window.JanjaRpg);
+    s.onerror = () => {
+      RPG.loading = null;
+      no(new Error('não carregou a mesa de RPG'));
+    };
+    document.head.append(s);
+  }));
+}
+const rpgApi = {
+  me: () => ({ id: me.id, name: me.name || 'Eu', color: me.color }),
+  gm: () => groupOwner(),
+  isGm: isRpgGm,
+  user: (uid) => (uid === me.id ? { id: me.id, name: me.name, color: me.color } : knownUsers().find((u) => u.id === uid) || null),
+  recs: (k) => all(k),
+  get: (id) => {
+    const r = recs.get(id);
+    return r && !r.del ? r : null;
+  },
+  put,
+  send: (d) => A.rpg?.send(d),
+  icon,
+  toast,
+  sfx: (crit) => sfx.dice(crit),
+  fileUrl,
+  async addFile(file) {
+    const id = 'f:' + randId(12);
+    await blobPut(id, file);
+    blobUrls.set(id, URL.createObjectURL(file));
+    return id;
+  },
+  loadData: () => (RPG.data ||= fetch('rpg-data.json').then((r) => r.json())),
+  // a rolagem também aparece em cima do boneco no acampamento
+  onRoll(d) {
+    G3.ctl?.roll?.('me', rollForRoom(d));
+  },
+  // ficha feita na mesa antiga (2.9.1 e 2.9.2), que ficava só neste PC: entregue uma vez para virar personagem
+  legacy() {
+    const old = store.get('rpgSheet', null);
+    if (!old || store.get('rpgSheetMoved', false)) return null;
+    store.set('rpgSheetMoved', true);
+    return old;
+  },
+  close: () => closeRpgSession(true),
+  endSession: () => confirm('Encerrar a sessão de RPG? As fichas e o mapa ficam guardados.') && setServerRpg(false),
+};
+function rollForRoom(d) {
+  const p = d.parts?.[0] || {};
+  return { label: d.label || 'Rolagem', ptsSym: '', dice: d.dice || [], bonus: (d.parts || []).slice(1).reduce((s, x) => s + x.v, 0), attrVal: p.v ?? 0, attrShort: p.l || '', total: d.total, crit: d.crit, passed: d.df ? !!d.ok : null, dif: d.df || 0 };
+}
+async function openRpgSession() {
+  if (!isRpgEnabled() && !canToggleServerRpg()) return toast('A mesa de RPG não está aberta neste servidor');
   closeRoom();
   setPane('center');
-  $('#textView').hidden = true;
-  $('#voiceView').hidden = true;
-  $('#roomView').hidden = true;
-  $('#viewHead').hidden = true;
+  for (const id of ['#textView', '#voiceView', '#roomView', '#viewHead']) $(id).hidden = true;
   const view = $('#rpgSessionView');
-  if (view) view.hidden = false;
-  rpgUi.open = true;
+  view.hidden = false;
+  RPG.open = true;
+  document.body.classList.add('rpg-open');
   for (const b of $$('[data-rpg-session], #ctlRpg')) b.classList.add('on');
-  renderRpgSession();
-  return true;
+  if (!isRpgEnabled()) {
+    // mesa desligada: só o dono chega aqui, e vê o convite para abrir
+    RPG.ctl?.destroy();
+    RPG.ctl = null;
+    const start = el('button', 'primary');
+    start.type = 'button';
+    start.append(icon('crown', 'sm'), document.createTextNode('Abrir a mesa de RPG'));
+    start.onclick = () => setServerRpg(true);
+    const back = el('button', 'ghost', 'Voltar');
+    back.type = 'button';
+    back.onclick = () => closeRpgSession(true);
+    const card = el('div', 'rpg-start');
+    const row = el('div', 'rpg-start-row');
+    row.append(start, back);
+    card.append(icon('dices'), el('b', '', 'Mesa de RPG · d2Trinities V1.2'), el('p', 'muted', 'Você é o dono deste servidor, então é o Mestre. Abrindo a mesa, todos ganham o mapa com tokens, as fichas, a iniciativa, as rolagens e o livro de regras.'), row);
+    view.replaceChildren(card);
+    return;
+  }
+  if (RPG.ctl) return;
+  view.replaceChildren(el('div', 'rpg-start', 'Abrindo a mesa…'));
+  try {
+    const mod = await loadRpg();
+    if (!RPG.open || RPG.ctl) return;
+    view.replaceChildren();
+    RPG.ctl = mod.mount(view, rpgApi);
+  } catch (err) {
+    view.replaceChildren(el('div', 'rpg-start', 'Não consegui abrir a mesa de RPG: ' + (err?.message || err)));
+  }
 }
-
 function closeRpgSession(back = true) {
-  if (!rpgUi.open) return;
-  rpgUi.open = false;
-  const view = $('#rpgSessionView');
-  if (view) view.hidden = true;
+  if (!RPG.open) return;
+  RPG.open = false;
+  RPG.ctl?.destroy();
+  RPG.ctl = null;
+  document.body.classList.remove('rpg-open');
+  $('#rpgSessionView').hidden = true;
   $('#viewHead').hidden = false;
   for (const b of $$('[data-rpg-session], #ctlRpg')) b.classList.toggle('on', isRpgEnabled());
   if (back) openView(S.view);
 }
-
 function syncRpgVisibility() {
   const on = isRpgEnabled();
-  const canManage = canToggleServerRpg();
-  const showBtn = on || canManage;
-  for (const b of $$('[data-rpg-session]')) {
-    b.hidden = !showBtn;
-    b.classList.toggle('on', rpgUi.open || on);
+  const show = on || canToggleServerRpg();
+  for (const b of $$('[data-rpg-session], #ctlRpg')) {
+    b.hidden = !show;
+    b.classList.toggle('on', RPG.open || on);
   }
-  const ctlBtn = $('#ctlRpg');
-  if (ctlBtn) {
-    ctlBtn.hidden = !showBtn;
-    ctlBtn.classList.toggle('on', rpgUi.open || on);
-  }
-  const roomBtn = $('#roomRpg');
-  if (roomBtn) roomBtn.hidden = !on;
-
-  // Sincroniza estado de combate salvo no registro do grupo, se houver
-  const grpCombat = cleanRpgPayload(recs.get('grp')?.rpgCombat);
-  if (grpCombat?.t === 'combat') {
-    rpgUi.combat = {
-      active: grpCombat.active,
-      round: grpCombat.round,
-      turnIdx: grpCombat.turnIdx,
-      order: grpCombat.order,
-    };
-  }
-
-  // Quando a sessão de RPG começa no servidor, abre automaticamente a interface da Mesa de RPG
-  if (on && !prevRpgEnabled) {
-    prevRpgEnabled = true;
-    openRpgSession();
-  } else if (!on) {
-    prevRpgEnabled = false;
-    const toastBox = $('#rpgRollToast');
-    if (toastBox) toastBox.hidden = true;
-    if (rpgUi.open && !canManage) closeRpgSession(true);
-    else if (rpgUi.open) renderRpgSession();
-  } else if (rpgUi.open) {
-    renderRpgSession();
-  }
+  if ($('#roomRpg')) $('#roomRpg').hidden = !on;
+  if (RPG.open && !on && !canToggleServerRpg()) closeRpgSession(true); // o Mestre encerrou
+  else if (RPG.open && on && !RPG.ctl) openRpgSession(); // o Mestre acabou de abrir
+  else if (RPG.open && !on && RPG.ctl) openRpgSession();
 }
-
-// Defesas efetivas considerando postura de combate ativa (Defesa Total +4 Esq, Encontrão -2 Esq - Cap. 1.9)
-function effectiveDefenses(sheet = rpgSheet, turn = rpgUi.turn) {
-  const d = calcDerived(sheet);
-  const stanceMod = turn?.stance === 'total_def' ? 4 : turn?.stance === 'charge' ? -2 : 0;
-  return {
-    ...d,
-    esquiva: Math.max(0, d.esquiva + stanceMod),
-    rd: sheet?.rd?.fisico || sheet?.defBonus?.armadura || 0,
-    stanceMod,
-  };
-}
-
-function myRpgSummary() {
-  if (!isRpgEnabled()) return null;
-  return sheetSummary({ ...rpgSheet, isGm: isRpgGm() });
-}
+// resumo do personagem de alguém, para a lista de pessoas e o cartão na call
 function rpgOf(uid) {
   if (!isRpgEnabled()) return null;
-  if (uid === me.id) return myRpgSummary();
-  for (const p of peers.values()) {
-    if (p.user?.id === uid && p.user.rpg) return { ...p.user.rpg, gm: uid === groupOwner() };
-  }
-  return null;
+  const mine = all('rpgc').filter((r) => r.uid === uid && r.d);
+  const c = (mine.find((r) => r.d.on) || mine[0])?.d;
+  const gm = uid === groupOwner();
+  if (!c) return gm ? { gm, cn: 'Mesa de RPG' } : null;
+  return { gm, cn: String(c.name || 'Sem nome').slice(0, 40), rc: String(c.race || '').slice(0, 30), cl: String(c.cls || '').slice(0, 30), lv: c.lv | 0, pv: c.pv | 0, pvm: c.pvMax | 0, pm: c.pm | 0, pmm: c.pmMax | 0 };
 }
-function saveRpgSheet(rerender = true) {
-  rpgSheet = cleanSheet({ ...rpgSheet, isGm: isRpgGm() }, me.name);
-  store.set('rpgSheet', rpgSheet);
-  // Atualiza meus status na ordem de iniciativa se eu estiver no combate
-  const meInOrder = rpgUi.combat.order.find((c) => c.uid === me.id && !c.npc);
-  if (meInOrder) {
-    const d = effectiveDefenses(rpgSheet, rpgUi.turn);
-    meInOrder.name = rpgSheet.charName;
-    meInOrder.pv = rpgSheet.pv;
-    meInOrder.pvMax = rpgSheet.pvMax;
-    meInOrder.esq = d.esquiva;
-    meInOrder.blq = d.bloqueio;
-    meInOrder.rd = rpgSheet.rd?.fisico || 0;
-  }
-  if (rerender && rpgUi.open) renderRpgSession();
-  renderPresence();
-  clearTimeout(rpgHiTimer);
-  rpgHiTimer = setTimeout(sendHi, 500);
-}
-
-// Formata a prévia da fórmula de uma perícia ou atributo para o jogador saber exatamente o que vai rolar
-function previewFormula(kind, id, extraDiceMod = rpgUi.diceMod, extraFlat = rpgUi.flatBonus) {
-  if (kind === 'skill') {
-    const sk = SKILL_BY_ID.get(id) || SKILL_BY_ID.get('percepcao');
-    const pts = rpgSheet.skills[sk.id] || 0;
-    const attr = resolveAttr(rpgSheet, sk.attr);
-    const numDice = Math.max(0, skillBaseDice(pts) + extraDiceMod);
-    const mod = attr.val + extraFlat;
-    return numDice > 0 ? `${numDice}d6 + ${mod}` : `= ${mod} (${attr.short})`;
-  }
-  const attr = resolveAttr(rpgSheet, id);
-  const numDice = Math.max(0, 2 + extraDiceMod);
-  const mod = attr.val + extraFlat;
-  return numDice > 0 ? `${numDice}d6 + ${mod}` : `= ${mod}`;
-}
-
-// Adiciona um item ao Feed exclusivo da Sessão de RPG (nunca vai para o chat da call!)
-function pushRpgFeed(entry) {
-  rpgUi.feed.unshift({ ...entry, ts: Date.now() });
-  if (rpgUi.feed.length > 80) rpgUi.feed.length = 80;
-  if (rpgUi.open) renderRpgFeedList();
-}
-
-// Resolve o alvo selecionado na mesa para comparar ataque vs Esquiva / Bloqueio / RD (Cap. 1.12)
-function resolveSelectedTarget() {
-  if (!rpgUi.targetId) return null;
-  const fromOrder = rpgUi.combat.order.find((c) => c.id === rpgUi.targetId);
-  if (fromOrder) {
-    return {
-      id: fromOrder.id,
-      uid: fromOrder.uid,
-      name: fromOrder.name,
-      esq: fromOrder.esq,
-      blq: fromOrder.blq,
-      rd: fromOrder.rd || 0,
-      npc: fromOrder.npc,
-    };
-  }
-  if (rpgUi.targetId.startsWith('u:')) {
-    const uid = rpgUi.targetId.slice(2);
-    const sum = rpgOf(uid);
-    if (sum) return { id: rpgUi.targetId, uid, name: sum.cn, esq: sum.esq, blq: sum.blq, rd: 0, npc: false };
-  }
-  return null;
-}
-
-// Rola um teste baseado na ficha do jogador e publica exclusivamente na Mesa de RPG (sem poluir o chat da call)
-function doRpgRoll(opts = {}) {
-  if (!isRpgEnabled()) {
-    toast('A sessão de RPG não está ativa. O dono do servidor (Mestre) precisa iniciá-la.');
-    return null;
-  }
-  // Se o personagem estiver com 0 PM (Exausto) ou com condição que deixa Inapto e o modificador estiver em 0,
-  // aplica -1d6 de Inaptidão automaticamente, a menos que o jogador tenha escolhido outro modificador
-  const autoInapto =
-    opts.diceMod === undefined &&
-    rpgUi.diceMod === 0 &&
-    (rpgSheet.pm <= 0 || (rpgSheet.conditions || []).some((cid) => CONDITIONS.find((c) => c.id === cid)?.inapto));
-  const feintExtra = opts.kind === 'weapon' && opts.maneuverId !== 'feint' && rpgUi.turn.feintBonus ? 1 : 0;
-  const baseMod = opts.diceMod ?? (autoInapto ? -1 : rpgUi.diceMod);
-  const target = opts.target !== undefined ? opts.target : resolveSelectedTarget();
-
-  const roll = rollFromSheet(rpgSheet, {
-    ...opts,
-    target,
-    calledShot: opts.calledShot ?? rpgUi.calledShot,
-    chargeMeters: opts.chargeMeters ?? rpgUi.chargeMeters,
-    twoHands: opts.twoHands ?? rpgUi.grappleTwoHands,
-    diceMod: baseMod + feintExtra,
-    flatBonus: opts.flatBonus ?? rpgUi.flatBonus,
-    dif: opts.dif ?? rpgUi.dif,
-    helping: opts.helping ?? rpgUi.helping,
-  });
-  const rollKey = `${me.id}:${Date.now()}:${roll.label}:${roll.total}`;
-  rpgUi.seenEvents.add(rollKey);
-  sfx.dice(roll.crit);
-  showRpgRollToast(roll, { name: me.name || rpgSheet.charName, color: me.color });
-  if (G3.ctl) G3.ctl.roll('me', roll);
-
-  // Se rolou Iniciativa, já entra/atualiza automaticamente no Rastreador de Combate da mesa
-  if (roll.kind === 'skill' && roll.id === 'iniciativa') {
-    upsertCombatantFromInit(me.id, rpgSheet.charName, roll.total);
-  }
-
-  pushRpgFeed(roll);
-  A.rpg?.send({ ...roll, _k: rollKey, byName: me.name, byColor: me.color, uid: me.id });
-  return roll;
-}
-
-// Executa uma Ação de Combate diferenciando Ação Padrão, Movimento, Rodada Completa, Ação Livre e Reação (Cap. 1.9 e 1.11)
-function doRpgCombatAction(actionId, extra = {}) {
-  if (!isRpgEnabled()) {
-    toast('Inicie a sessão de RPG antes de usar ações de combate.');
-    return null;
-  }
-  const act = COMBAT_ACTION_BY_ID.get(actionId);
-  if (!act) return null;
-
-  // Verifica economia de ações do turno (Cap. 1.11)
-  if (rpgUi.enforceTurn && !canUseAction(rpgUi.turn, act.type, act.id)) {
-    const typeName = ACTION_TYPE_BY_ID.get(act.type)?.name || 'Ação';
-    if (act.type === 'free') {
-      toast(`Você já usou "${act.name}" neste turno (Cap. 1.11.1: máx. 1x cada Ação Livre por turno).`);
-    } else if (act.type === 'full') {
-      toast('Ação de Rodada Completa exige sua Ação Padrão + Ação de Movimento livres no turno (Cap. 1.11.4).');
-    } else if (act.id === 'feint') {
-      toast('Fintar exige 1 Reação e consome sua Ação de Movimento do turno (Cap. 1.9).');
-    } else {
-      toast(`Sem ${typeName} disponível neste turno! Clique em "Novo Turno" quando chegar sua vez.`);
-    }
-    return null;
-  }
-
-  // Consome a ação no rastreador do turno
-  rpgUi.turn = consumeAction(rpgUi.turn, act.type, act.id);
-
-  // Efeitos diretos na ficha (ex.: Levantar-se remove condição Caído)
-  if (act.id === 'stand_up' && rpgSheet.conditions.includes('caido')) {
-    rpgSheet.conditions = rpgSheet.conditions.filter((c) => c !== 'caido');
-  }
-
-  let result = null;
-  if (act.roll) {
-    if (act.id === 'attack') {
-      const wId = extra.weaponId || rpgSheet.weapons[0]?.id || 'w0';
-      result = doRpgRoll({ kind: 'weapon', id: wId, actionType: 'standard', calledShot: extra.calledShot ?? rpgUi.calledShot });
-    } else if (act.id === 'charge') {
-      const wId = extra.weaponId || rpgSheet.weapons[0]?.id || 'w0';
-      result = doRpgRoll({
-        kind: 'weapon',
-        id: wId,
-        actionType: 'full',
-        maneuverId: 'charge',
-        chargeMeters: Math.max(3, Number(extra.chargeMeters ?? rpgUi.chargeMeters) || 3),
-      });
-    } else if (act.id === 'feint') {
-      const wId = extra.weaponId || rpgSheet.weapons[0]?.id || 'w0';
-      result = doRpgRoll({ kind: 'weapon', id: wId, actionType: 'reaction', maneuverId: 'feint' });
-    } else if (act.id === 'cast_skill') {
-      const pmCost = Math.max(0, Number(extra.pmCost) || 0);
-      if (pmCost > 0) rpgSheet.pm = Math.max(0, rpgSheet.pm - pmCost);
-      result = doRpgRoll({
-        kind: 'skill',
-        id: extra.skillId || 'arcano',
-        actionType: 'standard',
-      });
-    } else {
-      result = doRpgRoll({
-        kind: 'maneuver',
-        id: act.id,
-        maneuverId: act.id,
-        actionType: act.type,
-        twoHands: extra.twoHands ?? rpgUi.grappleTwoHands,
-      });
-    }
-  } else {
-    const d = effectiveDefenses(rpgSheet, rpgUi.turn);
-    let detail = act.desc;
-    if (act.id === 'total_def') detail = `Postura defensiva ativa: Esquiva subiu para ${d.esquiva} (+4 Esquiva até o próximo turno).`;
-    else if (act.id === 'std_to_move') detail = 'Converteu a Ação Padrão em +1 Ação de Movimento neste turno.';
-    else if (act.id === 'move_walk') detail = `Deslocou-se até ${d.deslocamento}m (${Math.floor(d.deslocamento / 2)}m em terreno difícil).`;
-    else if (act.id === 'stand_up') detail = 'Levantou-se do chão (removeu condição Caído).';
-    else if (act.id === 'free_speak' && extra.speech) detail = `"${String(extra.speech).slice(0, 80)}"`;
-
-    const ev = cleanRpgPayload({
-      t: 'act',
-      actId: 'ac:' + randId(6),
-      actionType: act.type,
-      actBadge: ACTION_TYPE_BY_ID.get(act.type)?.badge || 'AÇÃO',
-      charName: rpgSheet.charName,
-      label: act.name,
-      detail,
-    });
-    const k = `${me.id}:${ev.actId}`;
-    rpgUi.seenEvents.add(k);
-    pushRpgFeed(ev);
-    A.rpg?.send({ ...ev, _k: k, uid: me.id });
-    result = ev;
-  }
-
-  saveRpgSheet();
-  return result;
-}
-
-function resetMyTurnActions(notify = true) {
-  rpgUi.turn = defaultTurnState();
-  saveRpgSheet();
-  if (notify) toast('🔄 Novo turno: Ação Padrão, Movimento, Reação e Ações Livres restauradas!');
-}
-
-// ============================================================ RASTREADOR DE COMBATE & INICIATIVA
-function syncCombatState(broadcast = true) {
-  const payload = cleanRpgPayload({
-    t: 'combat',
-    active: rpgUi.combat.active,
-    round: rpgUi.combat.round,
-    turnIdx: rpgUi.combat.turnIdx,
-    order: rpgUi.combat.order,
-  });
-  if (!payload) return;
-  rpgUi.combat = {
-    active: payload.active,
-    round: payload.round,
-    turnIdx: payload.turnIdx,
-    order: payload.order,
-  };
-  if (broadcast) {
-    A.rpg?.send({ ...payload, _k: `cb:${Date.now()}:${me.id}` });
-    if (isRpgGm()) {
-      const g = grpRec();
-      put({ ...g, k: 'grp', id: 'grp', rpgCombat: payload });
-    }
-  }
-  if (rpgUi.open) renderRpgSession();
-}
-
-function upsertCombatantFromInit(uid, name, initTotal) {
-  const d = effectiveDefenses(rpgSheet, rpgUi.turn);
-  const existing = rpgUi.combat.order.find((c) => c.uid === uid && !c.npc);
-  if (existing) {
-    existing.name = name;
-    existing.init = initTotal;
-    existing.pv = rpgSheet.pv;
-    existing.pvMax = rpgSheet.pvMax;
-    existing.esq = d.esquiva;
-    existing.blq = d.bloqueio;
-    existing.rd = rpgSheet.rd?.fisico || 0;
-  } else {
-    rpgUi.combat.order.push({
-      id: 'p:' + uid,
-      uid,
-      name,
-      init: initTotal,
-      pv: rpgSheet.pv,
-      pvMax: rpgSheet.pvMax,
-      esq: d.esquiva,
-      blq: d.bloqueio,
-      rd: rpgSheet.rd?.fisico || 0,
-      npc: false,
-    });
-  }
-  rpgUi.combat.order.sort((a, b) => b.init - a.init);
-  syncCombatState(true);
-}
-
-function nextCombatTurn() {
-  if (!isRpgGm()) return toast('Somente o Mestre da Mesa pode avançar o turno do combate.');
-  if (!rpgUi.combat.order.length) return toast('Adicione combatentes ou peça para rolarem Iniciativa primeiro.');
-  rpgUi.combat.active = true;
-  rpgUi.combat.turnIdx = (rpgUi.combat.turnIdx + 1) % rpgUi.combat.order.length;
-  if (rpgUi.combat.turnIdx === 0) rpgUi.combat.round += 1;
-  const cur = rpgUi.combat.order[rpgUi.combat.turnIdx];
-  if (cur?.uid === me.id && !cur.npc) resetMyTurnActions(false);
-  syncCombatState(true);
-  if (cur) {
-    const ev = cleanRpgPayload({
-      t: 'act',
-      actId: 'turn:' + randId(5),
-      actionType: 'free',
-      actBadge: `RODADA ${rpgUi.combat.round}`,
-      charName: cur.name,
-      label: `Início do Turno de ${cur.name}`,
-      detail: `Iniciativa ${cur.init} · PV ${cur.pv}/${cur.pvMax} · Esq ${cur.esq} / Blq ${cur.blq}`,
-    });
-    pushRpgFeed(ev);
-    A.rpg?.send({ ...ev, _k: `trn:${Date.now()}` });
-  }
-}
-
-function addCombatNpc({ name = 'Inimigo', init = 12, pv = 50, esq = 9, blq = 12, rd = 2 } = {}) {
-  if (!isRpgGm()) return null;
-  const npc = {
-    id: 'npc:' + randId(5),
-    uid: '',
-    name: String(name || 'Inimigo').trim().slice(0, 32),
-    init: Number(init) || 10,
-    pv: Number(pv) || 50,
-    pvMax: Math.max(1, Number(pv) || 50),
-    esq: Number(esq) || 8,
-    blq: Number(blq) || 10,
-    rd: Number(rd) || 0,
-    npc: true,
-  };
-  rpgUi.combat.order.push(npc);
-  rpgUi.combat.order.sort((a, b) => b.init - a.init);
-  syncCombatState(true);
-  return npc;
-}
-
-// Alerta visual rápido no topo quando alguém rola os dados
-function showRpgRollToast(r, who = {}) {
-  const box = $('#rpgRollToast');
-  if (!box) return;
-  clearTimeout(rpgUi.toastTimer);
-  box.hidden = false;
-  box.className = 'rpg-roll-toast crit-' + (r.crit || 'normal');
-  const diceBox = el('div', 'rpg-dice-row');
-  if (r.dice.length) {
-    for (const d of r.dice) {
-      const die = el('span', 'rpg-die d-' + d, String(d));
-      diceBox.append(die);
-    }
-  } else {
-    diceBox.append(el('span', 'rpg-die d-0', '0d6'));
-  }
-  const modTxt = r.bonus ? (r.bonus > 0 ? ` + ${r.bonus}` : ` - ${Math.abs(r.bonus)}`) : '';
-  diceBox.append(
-    el('span', 'rpg-math', `+ ${r.attrVal} ${r.attrShort}${modTxt} =`),
-    el('b', 'rpg-total', String(r.total)),
-  );
-
-  const head = el('div', 'rpg-toast-head');
-  head.append(
-    icon('dices', 'sm'),
-    el('b', '', r.charName || who.name || 'Jogador'),
-    el('span', 'muted', 'rolou'),
-    el('b', 'rpg-toast-skill', r.label),
-    r.ptsSym ? el('span', 'rpg-gems-badge', r.ptsSym) : '',
-  );
-  if (r.crit === 'crit') head.append(el('span', 'rpg-tag crit', 'SUCESSO DECISIVO!'));
-  else if (r.crit === 'fumble') head.append(el('span', 'rpg-tag fumble', 'FALHA CRÍTICA!'));
-  else if (r.crit === 'clash') head.append(el('span', 'rpg-tag clash', 'CONFRONTO CRÍTICO'));
-  if (r.dif > 0) head.append(el('span', 'rpg-tag ' + (r.passed ? 'pass' : 'fail'), r.passed ? `PASSOU (Dif ${r.dif})` : `FALHOU (Dif ${r.dif})`));
-  if (r.helping) head.append(el('span', 'rpg-tag help', `🤝 Ajudou: +${r.helpBonus}`));
-  if (r.dmg) head.append(el('span', 'rpg-tag dmg', `⚔️ Dano: ${r.dmg.total}${r.dmg.doubled ? ' (2x!)' : ''}`));
-
-  const x = el('button', 'icon-btn sm');
-  x.type = 'button';
-  x.append(icon('x', 'sm'));
-  x.onclick = () => (box.hidden = true);
-
-  box.replaceChildren(head, diceBox, x);
-  popIn(box, { duration: 0.18 });
-  rpgUi.toastTimer = setTimeout(() => {
-    box.hidden = true;
-  }, 8000);
-}
-
 function onRpgNet(d, pid) {
-  if (!isRpgEnabled()) return;
-  const p = peers.get(pid);
-  if (!p?.user?.verified || !d) return;
-  const clean = cleanRpgPayload(d);
-  if (!clean) return;
-
-  if (clean.t === 'roll') {
-    const k = d._k || `${p.user.id}:${clean.label}:${clean.total}:${clean.ts || ''}`;
-    if (rpgUi.seenEvents.has(k)) return;
-    rpgUi.seenEvents.add(k);
-    sfx.dice(clean.crit);
-    pushRpgFeed(clean);
-    showRpgRollToast(clean, p.user);
-    if (G3.ctl) G3.ctl.roll?.(pid, clean);
-    if (clean.kind === 'skill' && clean.id === 'iniciativa') {
-      upsertCombatantFromInit(p.user.id, clean.charName || p.user.name, clean.total);
-    }
-  } else if (clean.t === 'act') {
-    const k = d._k || `${p.user.id}:${clean.actId}:${clean.ts || ''}`;
-    if (rpgUi.seenEvents.has(k)) return;
-    rpgUi.seenEvents.add(k);
-    pushRpgFeed(clean);
-  } else if (clean.t === 'combat') {
-    rpgUi.combat = {
-      active: Boolean(clean.active),
-      round: clean.round || 1,
-      turnIdx: clean.turnIdx || 0,
-      order: clean.order || [],
-    };
-    renderRpgSession();
-  }
+  const uid = peers.get(pid)?.user?.id;
+  if (uid && d && typeof d === 'object') RPG.ctl?.onNet(d, uid);
 }
-
-// Card individual no Feed exclusivo da Sessão de RPG (sem poluir o chat de texto/call)
-function renderRpgFeedCard(item) {
-  if (!item) return el('div');
-
-  // Card de Ação Livre / Movimento / Reação / Turno sem rolagem de dados
-  if (item.t === 'act') {
-    const card = el('div', `rpg-feed-card rpg-act-card type-${item.actionType || 'free'}`);
-    const top = el('div', 'rpg-card-top');
-    const badge = el('span', `rpg-act-pill type-${item.actionType || 'free'}`, item.actBadge || 'AÇÃO');
-    const timeStr = new Date(item.ts || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    top.append(
-      badge,
-      el('b', 'rpg-card-char', item.charName || item.userName || 'Jogador'),
-      el('span', 'muted', '·'),
-      el('b', 'rpg-card-label', item.label),
-      el('span', 'rpg-feed-time', timeStr),
-    );
-    card.append(top);
-    if (item.detail || item.effect) card.append(el('div', 'rpg-act-effect', item.detail || item.effect));
-    if (item.note) card.append(el('div', 'rpg-card-note', `"${item.note}"`));
-    return card;
+function onRpgRecs(list) {
+  const kinds = new Set(list.map((r) => r.k));
+  // rolagem nova de um amigo: som (com a mesa aberta) e balão no acampamento
+  for (const r of list) {
+    if (r.k !== 'rpgr' || r.del || r.by === me.id || !r.d || Date.now() - r.ts > 15_000 || r.d.ap) continue;
+    if (RPG.open && r.d.total != null) sfx.dice(r.d.crit);
+    const p = [...peers.values()].find((x) => x.user?.id === r.uid);
+    if (p && r.d.total != null) G3.ctl?.roll?.(p.pid, rollForRoom(r.d));
   }
-
-  // Card de Rolagem de Dados / Ataque / Manobra
-  const r = item;
-  const card = el('div', `rpg-feed-card rpg-roll-card crit-${r.crit || 'normal'}`);
-  const top = el('div', 'rpg-card-top');
-  if (r.actBadge) {
-    top.append(el('span', `rpg-act-pill type-${r.actionType || 'standard'}`, r.actBadge));
-  } else if (r.kind === 'skill' && r.id === 'iniciativa') {
-    top.append(el('span', 'rpg-act-pill type-reaction', 'INICIATIVA'));
-  } else {
-    top.append(icon(r.kind === 'weapon' || r.kind === 'maneuver' ? 'swords' : 'dices', 'sm'));
-  }
-  const timeStr = new Date(r.ts || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  top.append(
-    el('b', 'rpg-card-char', r.charName || r.userName || 'Jogador'),
-    el('span', 'muted', '·'),
-    el('b', 'rpg-card-label', r.label),
-  );
-  if (r.ptsSym) top.append(el('span', 'rpg-gems-badge', `${r.ptsSym} ${r.rank}`));
-  else if (r.rank) top.append(el('span', 'rpg-gems-badge', r.rank));
-  top.append(el('span', 'rpg-feed-time', timeStr));
-  card.append(top);
-
-  const mid = el('div', 'rpg-card-mid');
-  const diceWrap = el('div', 'rpg-dice-row');
-  if (r.dice?.length) {
-    for (const d of r.dice) diceWrap.append(el('span', 'rpg-die d-' + d, String(d)));
-  } else {
-    diceWrap.append(el('span', 'rpg-die d-0', '0d6'));
-  }
-  const modTxt = r.bonus ? (r.bonus > 0 ? ` + ${r.bonus}` : ` - ${Math.abs(r.bonus)}`) : '';
-  diceWrap.append(el('span', 'rpg-math', `+ ${r.attrVal} (${r.attrShort})${modTxt}`));
-  const totalBox = el('div', 'rpg-total-box');
-  totalBox.append(el('span', 'rpg-total-lbl', 'Total'), el('b', 'rpg-total-num', String(r.total)));
-  mid.append(diceWrap, totalBox);
-  card.append(mid);
-
-  const tags = el('div', 'rpg-card-tags');
-  if (r.crit === 'crit') tags.append(el('span', 'rpg-tag crit', '🔥 SUCESSO DECISIVO!'));
-  else if (r.crit === 'fumble') tags.append(el('span', 'rpg-tag fumble', '💀 FALHA CRÍTICA!'));
-  else if (r.crit === 'clash') tags.append(el('span', 'rpg-tag clash', '⚖️ CONFRONTO CRÍTICO (Anulado)'));
-  if (r.dif > 0) tags.append(el('span', 'rpg-tag ' + (r.passed ? 'pass' : 'fail'), r.passed ? `✓ PASSOU (Dif ${r.dif})` : `✗ FALHOU (Dif ${r.dif})`));
-  if (r.helping) tags.append(el('span', 'rpg-tag help', `🤝 Ajudando aliado: +${r.helpBonus} no teste`));
-  const csMeta = r.calledShot && r.calledShot !== 'none' ? CALLED_SHOT_BY_ID.get(r.calledShot) : null;
-  if (csMeta) {
-    tags.append(el('span', 'rpg-tag clash', `🎯 Mira: ${csMeta.name}`));
-  }
-  if (r.hit) {
-    const h = r.hit;
-    const hCls = h.outcome === 'miss' ? 'fail' : h.outcome === 'block' ? 'clash' : 'pass';
-    tags.append(el('span', 'rpg-tag ' + hCls, `🛡️ vs ${h.targetName}: ${h.label}`));
-    if (h.outcome !== 'miss' && r.dmg) {
-      tags.append(el('span', 'rpg-tag dmg', `💥 Dano Final: ${h.finalDmg}${h.calledEffect ? ` · ${h.calledEffect}` : ''}`));
-    }
-  } else if (r.dmg) {
-    tags.append(el('span', 'rpg-tag dmg', `⚔️ Dano: ${r.dmg.total} (${r.dmg.formula}${r.dmg.doubled ? ' · 2x!' : ''})`));
-  }
-  if (tags.children.length) card.append(tags);
-
-  if (r.perks?.length) {
-    const perkRow = el('div', 'rpg-card-perks');
-    perkRow.append(el('span', 'muted small', 'Perks: '), ...r.perks.map((p) => el('span', 'rpg-perk-pill', p)));
-    card.append(perkRow);
-  }
-  return card;
+  RPG.ctl?.onRecs(kinds);
+  if (kinds.has('rpgc')) renderPresence();
 }
-
-function renderRpgFeedList() {
-  const feedEl = $('#rpgSessionFeed');
-  if (!feedEl) return;
-  if (!rpgUi.feed.length) {
-    const empty = el('div', 'rpg-feed-empty');
-    empty.append(
-      icon('dices'),
-      el('b', '', 'Nenhuma rolagem ou ação ainda'),
-      el('span', 'muted small', 'Quando o Mestre pedir um teste por voz na call ou durante o combate, clique nas suas perícias, atributos ou ações ao lado. Tudo aparece aqui em tempo real separado do chat!'),
-    );
-    feedEl.replaceChildren(empty);
-    return;
-  }
-  feedEl.replaceChildren(...rpgUi.feed.map((item) => renderRpgFeedCard(item)));
-}
-
-// Renderiza a interface dedicada da Sessão de RPG (#rpgSessionView)
-function renderRpgSession() {
-  const view = $('#rpgSessionView');
-  if (!view) return;
-
-  // Se a sessão não está ativa, mostra tela de ativação para o Dono do Servidor (Mestre da Mesa)
-  if (!isRpgEnabled()) {
-    const wrap = el('div', 'rpg-disabled-screen');
-    const box = el('div', 'rpg-disabled-box');
-    const ic = el('div', 'rpg-disabled-icon');
-    ic.append(icon('dices'));
-    const title = el('b', 'rpg-disabled-title', 'Mesa de RPG · d2Trinities V1.2');
-    const desc = el(
-      'p',
-      'rpg-disabled-desc',
-      canToggleServerRpg()
-        ? 'Você é o dono deste servidor (Mestre da Mesa). Inicie a sessão de RPG para abrir a interface dedicada de fichas, testes e combate por turnos para todos na chamada.'
-        : 'Nenhuma sessão de RPG ativa no momento. Somente o dono do servidor (Mestre da Mesa) pode iniciar a sessão.',
-    );
-    box.append(ic, title, desc);
-    const btnRow = el('div', 'row gap');
-    if (canToggleServerRpg()) {
-      const actBtn = el('button', 'primary rpg-activate-btn');
-      actBtn.id = 'rpgActivateServerBtn';
-      actBtn.type = 'button';
-      actBtn.append(icon('crown', 'sm'), el('span', '', '🎲 Iniciar Sessão de RPG na Mesa'));
-      actBtn.onclick = () => setServerRpg(true);
-      btnRow.append(actBtn);
-    }
-    const backBtn = el('button', 'ghost');
-    backBtn.type = 'button';
-    backBtn.textContent = 'Voltar ao Chat / Call';
-    backBtn.onclick = () => closeRpgSession(true);
-    btnRow.append(backBtn);
-    box.append(btnRow);
-    wrap.append(box);
-    view.replaceChildren(wrap);
-    return;
-  }
-
-  const d = effectiveDefenses();
-  const frag = document.createDocumentFragment();
-
-  // ==================== TOP BAR DA SESSÃO ====================
-  const topBar = el('header', 'rpg-session-head');
-  const titleWrap = el('div', 'rpg-session-title');
-  const badge = el('span', 'rpg-live-pill', rpgUi.combat.active ? `⚔️ COMBATE · RODADA ${rpgUi.combat.round}` : '🎲 EM SESSÃO');
-  const charTitle = el('b', 'rpg-char-name', rpgSheet.charName);
-  const charSub = el('span', 'rpg-char-sub', `${rpgSheet.race} · ${rpgSheet.cls}${rpgSheet.path ? ' (' + rpgSheet.path + ')' : ''} · Nv. ${rpgSheet.level}`);
-  titleWrap.append(badge, charTitle, charSub);
-
-  // Status rápidos no topo (PV, PM, Esquiva, Bloqueio, Determinação, RD)
-  const vitals = el('div', 'rpg-vitals-strip');
-  const pvPill = el('div', 'rpg-vital pv' + (rpgSheet.pv <= 0 ? ' danger' : ''));
-  pvPill.innerHTML = `<span>PV</span><b>${rpgSheet.pv}/${rpgSheet.pvMax}</b>${rpgSheet.pv <= 0 ? ' <em>Por um Fio</em>' : ''}`;
-  const pmPill = el('div', 'rpg-vital pm' + (rpgSheet.pm <= 0 ? ' warn' : ''));
-  pmPill.innerHTML = `<span>PM</span><b>${rpgSheet.pm}/${rpgSheet.pmMax}</b>${rpgSheet.pm <= 0 ? ' <em>Exausto</em>' : ''}`;
-  const defPill = el('div', 'rpg-vital def');
-  defPill.title = 'Esquiva / Bloqueio / Determinação / RD (Cap. 1.12)';
-  const stanceNote = rpgUi.turn.stance === 'total_def' ? ' (+4 Esq Def.Total)' : rpgUi.turn.stance === 'charge' ? ' (-2 Esq Encontrão)' : '';
-  defPill.innerHTML = `<span>Esq/Blq/Det/RD</span><b>${d.esquiva} · ${d.bloqueio} · ${d.determinacao} · RD ${d.rd}${stanceNote}</b>`;
-  vitals.append(pvPill, pmPill, defPill);
-
-  const headBtns = el('div', 'rpg-head-btns');
-  const impBtn = el('button', 'ghost sm');
-  impBtn.type = 'button';
-  impBtn.title = 'Importar ou exportar ficha no formato do Discord (Apêndice C)';
-  impBtn.append(icon('scroll', 'sm'), el('span', '', 'Ficha Discord'));
-  impBtn.onclick = () => openRpgImportDialog();
-  headBtns.append(impBtn);
-
-  if (canToggleServerRpg()) {
-    const gmBtn = el('button', 'ghost sm on');
-    gmBtn.id = 'rpgServerToggleBtn';
-    gmBtn.type = 'button';
-    gmBtn.title = 'Encerrar a sessão de RPG para o servidor';
-    gmBtn.append(icon('crown', 'sm'), el('span', '', 'Encerrar Sessão'));
-    gmBtn.onclick = () => setServerRpg(false);
-    headBtns.append(gmBtn);
-  } else {
-    const ownerName = knownUsers().find((u) => u.id === groupOwner())?.name || 'Mestre';
-    const gmBadge = el('span', 'rpg-gm-badge');
-    gmBadge.append(icon('crown', 'sm'), el('span', '', `Mestre: ${ownerName}`));
-    headBtns.append(gmBadge);
-  }
-
-  const exitBtn = el('button', 'ghost sm');
-  exitBtn.id = 'rpgMinimizeSessionBtn';
-  exitBtn.type = 'button';
-  exitBtn.title = 'Minimizar a Mesa de RPG e olhar o chat/call (você pode voltar clicando no dado 🎲)';
-  exitBtn.append(icon('x', 'sm'), el('span', '', 'Ver Call/Chat'));
-  exitBtn.onclick = () => closeRpgSession(true);
-  headBtns.append(exitBtn);
-
-  topBar.append(titleWrap, vitals, headBtns);
-  frag.append(topBar);
-
-  // ==================== GRID DE 3 COLUNAS ====================
-  const grid = el('div', 'rpg-session-grid');
-
-  // -------------------- COLUNA 1: COMBATE, INICIATIVA & MESA --------------------
-  const colTable = el('aside', 'rpg-col-table');
-
-  const initCard = el('div', 'rpg-panel-card');
-  const initHead = el('div', 'rpg-panel-head');
-  initHead.append(icon('swords', 'sm'), el('b', '', 'Ordem de Iniciativa & Combate'));
-  const rollInitBtn = el('button', 'primary sm');
-  rollInitBtn.id = 'rpgRollInitBtn';
-  rollInitBtn.type = 'button';
-  rollInitBtn.title = 'Rola Iniciativa (Agilidade/Inteligência) e entra na Ordem de Combate';
-  rollInitBtn.textContent = '⚡ Rolar Iniciativa';
-  rollInitBtn.onclick = () => doRpgRoll({ kind: 'skill', id: 'iniciativa' });
-  initHead.append(rollInitBtn);
-  initCard.append(initHead);
-
-  // Controles do Mestre para o Combate (Iniciar/Encerrar, Próximo Turno, + Inimigo/NPC)
-  if (isRpgGm()) {
-    const gmCombatBar = el('div', 'rpg-gm-combat-bar');
-    const toggleCombatBtn = el('button', (rpgUi.combat.active ? 'ghost' : 'primary') + ' sm');
-    toggleCombatBtn.id = 'rpgToggleCombatBtn';
-    toggleCombatBtn.type = 'button';
-    toggleCombatBtn.textContent = rpgUi.combat.active ? '🛑 Fim do Combate' : '⚔️ Iniciar Combate';
-    toggleCombatBtn.onclick = () => {
-      rpgUi.combat.active = !rpgUi.combat.active;
-      if (rpgUi.combat.active && rpgUi.combat.round < 1) rpgUi.combat.round = 1;
-      syncCombatState(true);
-    };
-
-    const nextTurnBtn = el('button', 'primary sm');
-    nextTurnBtn.id = 'rpgNextTurnBtn';
-    nextTurnBtn.type = 'button';
-    nextTurnBtn.textContent = '▶ Próximo Turno';
-    nextTurnBtn.disabled = !rpgUi.combat.order.length;
-    nextTurnBtn.onclick = () => nextCombatTurn();
-
-    const clearOrderBtn = el('button', 'ghost sm');
-    clearOrderBtn.type = 'button';
-    clearOrderBtn.title = 'Limpar lista de iniciativa';
-    clearOrderBtn.textContent = 'Limpar';
-    clearOrderBtn.onclick = () => {
-      rpgUi.combat = { active: false, round: 1, turnIdx: 0, order: [] };
-      syncCombatState(true);
-    };
-
-    gmCombatBar.append(toggleCombatBtn, nextTurnBtn, clearOrderBtn);
-    initCard.append(gmCombatBar);
-
-    // Formulário rápido do Mestre para adicionar NPC / Inimigo no combate
-    const npcForm = el('div', 'rpg-npc-add');
-    const npcName = el('input');
-    npcName.id = 'rpgNpcNameInp';
-    npcName.placeholder = 'Inimigo/NPC';
-    const npcInit = el('input');
-    npcInit.id = 'rpgNpcInitInp';
-    npcInit.type = 'number';
-    npcInit.placeholder = 'Inic';
-    npcInit.title = 'Iniciativa do NPC';
-    npcInit.value = '12';
-    const npcPv = el('input');
-    npcPv.id = 'rpgNpcPvInp';
-    npcPv.type = 'number';
-    npcPv.placeholder = 'PV';
-    npcPv.title = 'Pontos de Vida (PV)';
-    npcPv.value = '50';
-    const npcEsq = el('input');
-    npcEsq.id = 'rpgNpcEsqInp';
-    npcEsq.type = 'number';
-    npcEsq.placeholder = 'Esq';
-    npcEsq.title = 'Esquiva do NPC';
-    npcEsq.value = '9';
-    const npcBlq = el('input');
-    npcBlq.id = 'rpgNpcBlqInp';
-    npcBlq.type = 'number';
-    npcBlq.placeholder = 'Blq';
-    npcBlq.title = 'Bloqueio do NPC';
-    npcBlq.value = '12';
-    const npcRd = el('input');
-    npcRd.id = 'rpgNpcRdInp';
-    npcRd.type = 'number';
-    npcRd.placeholder = 'RD';
-    npcRd.title = 'Redução de Dano (RD da Armadura)';
-    npcRd.value = '2';
-    const npcAddBtn = el('button', 'ghost sm', '+ NPC');
-    npcAddBtn.id = 'rpgAddNpcBtn';
-    npcAddBtn.type = 'button';
-    npcAddBtn.onclick = () => {
-      addCombatNpc({
-        name: npcName.value.trim() || 'Inimigo',
-        init: Number(npcInit.value) || 10,
-        pv: Number(npcPv.value) || 50,
-        esq: Number(npcEsq.value) || 8,
-        blq: Number(npcBlq.value) || 10,
-        rd: Number(npcRd.value) || 0,
-      });
-      npcName.value = '';
-    };
-    npcForm.append(npcName, npcInit, npcPv, npcEsq, npcBlq, npcRd, npcAddBtn);
-    initCard.append(npcForm);
-  }
-
-  // Lista de combatentes ordenada por Iniciativa
-  const initList = el('div', 'rpg-init-list');
-  if (!rpgUi.combat.order.length) {
-    initList.append(el('div', 'muted small rpg-init-empty', 'Clique em "⚡ Rolar Iniciativa" para entrar na ordem de turno.'));
-  } else {
-    rpgUi.combat.order.forEach((c, idx) => {
-      const isCurrent = rpgUi.combat.active && rpgUi.combat.turnIdx === idx;
-      const isTarget = rpgUi.targetId === c.id;
-      const row = el('div', 'rpg-init-row' + (isCurrent ? ' active-turn' : '') + (isTarget ? ' targeted' : '') + (c.npc ? ' is-npc' : ''));
-      const badgeInit = el('span', 'rpg-init-val', String(c.init));
-      const info = el('div', 'rpg-init-info');
-      const nameLine = el('div', 'rpg-init-name');
-      nameLine.append(
-        el('b', '', c.name),
-        c.npc ? el('span', 'rpg-npc-tag', 'NPC') : '',
-        isCurrent ? el('span', 'rpg-turn-now', '◀ TURNO ATUAL') : '',
-      );
-      const statsLine = el('div', 'rpg-init-stats', `PV ${c.pv}/${c.pvMax} · Esq ${c.esq} · Blq ${c.blq}${c.rd ? ` · RD ${c.rd}` : ''}`);
-      info.append(nameLine, statsLine);
-
-      const actions = el('div', 'rpg-init-actions');
-      const targetBtn = el('button', 'chip sm' + (isTarget ? ' on' : ''), isTarget ? '🎯 Alvo' : '🎯 Mirar');
-      targetBtn.type = 'button';
-      targetBtn.title = 'Selecionar como alvo dos seus ataques e manobras';
-      targetBtn.onclick = () => {
-        rpgUi.targetId = isTarget ? '' : c.id;
-        renderRpgSession();
-      };
-      actions.append(targetBtn);
-
-      if (isRpgGm() || c.uid === me.id) {
-        const minusPv = el('button', 'icon-btn sm', '−5');
-        minusPv.type = 'button';
-        minusPv.title = '-5 PV';
-        minusPv.onclick = () => {
-          c.pv = Math.max(-99, c.pv - 5);
-          if (c.uid === me.id) {
-            rpgSheet.pv = c.pv;
-            saveRpgSheet();
-          }
-          syncCombatState(isRpgGm());
-        };
-        const plusPv = el('button', 'icon-btn sm', '+5');
-        plusPv.type = 'button';
-        plusPv.title = '+5 PV';
-        plusPv.onclick = () => {
-          c.pv = Math.min(c.pvMax, c.pv + 5);
-          if (c.uid === me.id) {
-            rpgSheet.pv = c.pv;
-            saveRpgSheet();
-          }
-          syncCombatState(isRpgGm());
-        };
-        actions.append(minusPv, plusPv);
-      }
-      if (isRpgGm()) {
-        const rmBtn = el('button', 'icon-btn sm');
-        rmBtn.type = 'button';
-        rmBtn.title = 'Remover do combate';
-        rmBtn.append(icon('x', 'sm'));
-        rmBtn.onclick = () => {
-          rpgUi.combat.order = rpgUi.combat.order.filter((x) => x.id !== c.id);
-          if (rpgUi.combat.turnIdx >= rpgUi.combat.order.length) rpgUi.combat.turnIdx = 0;
-          syncCombatState(true);
-        };
-        actions.append(rmBtn);
-      }
-
-      row.append(badgeInit, info, actions);
-      initList.append(row);
-    });
-  }
-  initCard.append(initList);
-  colTable.append(initCard);
-
-  // Jogadores conectados na sessão
-  const partyCard = el('div', 'rpg-panel-card');
-  const partyHead = el('div', 'rpg-panel-head');
-  partyHead.append(icon('users', 'sm'), el('b', '', 'Jogadores na Mesa'));
-  partyCard.append(partyHead);
-  const partyList = el('div', 'rpg-party-list');
-  const allPlayers = [
-    { id: me.id, name: me.name, charName: rpgSheet.charName, isGm: me.id === groupOwner() },
-    ...[...peers.values()]
-      .filter((p) => p.user?.verified)
-      .map((p) => ({
-        id: p.user.id,
-        name: p.user.name,
-        charName: rpgUi.combat.order.find((c) => c.uid === p.user.id)?.name || p.user.name,
-        isGm: p.user.id === groupOwner(),
-      })),
-  ];
-  for (const pl of allPlayers) {
-    const pr = el('div', 'rpg-party-row');
-    pr.append(
-      el('span', 'rpg-party-dot'),
-      el('b', '', pl.charName),
-      el('span', 'muted small', `(${pl.name})`),
-      pl.isGm ? el('span', 'rpg-npc-tag', 'Mestre') : '',
-    );
-    partyList.append(pr);
-  }
-  partyCard.append(partyList);
-  colTable.append(partyCard);
-
-  // -------------------- COLUNA 2: TESTES, ECONOMIA DE AÇÕES & COMBATE, FICHA --------------------
-  const colMain = el('div', 'rpg-col-main');
-
-  const subNav = el('div', 'rpg-subtabs');
-  for (const [id, label] of [
-    ['skills', '🎲 Testes & Perícias (25)'],
-    ['combat', '⚔️ Combate & Ações de Turno'],
-    ['edit', '📋 Editar Ficha'],
-  ]) {
-    const b = el('button', 'rpg-subtab' + (rpgUi.subTab === id ? ' active' : ''), label);
-    b.type = 'button';
-    b.dataset.subtab = id;
-    b.onclick = () => {
-      rpgUi.subTab = id;
-      renderRpgSession();
-    };
-    subNav.append(b);
-  }
-  colMain.append(subNav);
-
-  const body = el('div', 'rpg-main-body');
-
-  if (rpgUi.subTab === 'skills') {
-    // Barra de modificadores do jogador (o Mestre pede por voz na call e o jogador ajusta se tiver vantagem/dificuldade)
-    const modCard = el('div', 'rpg-mod-card');
-    const modBar = el('div', 'rpg-mod-bar');
-    for (const [val, txt, title] of [
-      [-1, 'Inapto (-1d6)', 'Desvantagem / Inaptidão (Cap. 2.3): rola -1d6'],
-      [0, 'Normal', 'Rolagem padrão dos seus pontos na perícia'],
-      [1, 'Vantagem (+1d6)', 'Vantagem situacional: rola +1d6'],
-    ]) {
-      const mb = el('button', 'rpg-mod-btn' + (rpgUi.diceMod === val ? ' on' : ''), txt);
-      mb.type = 'button';
-      mb.title = title;
-      mb.onclick = () => {
-        rpgUi.diceMod = val;
-        renderRpgSession();
-      };
-      modBar.append(mb);
-    }
-
-    const modRow2 = el('div', 'rpg-mod-row2');
-    const bonusWrap = el('div', 'rpg-bonus-stepper');
-    const bMinus = el('button', 'icon-btn sm', '−');
-    bMinus.type = 'button';
-    bMinus.onclick = () => {
-      rpgUi.flatBonus = Math.max(-20, rpgUi.flatBonus - 1);
-      renderRpgSession();
-    };
-    const bVal = el('span', 'rpg-bonus-val', `Bônus: ${rpgUi.flatBonus >= 0 ? '+' + rpgUi.flatBonus : rpgUi.flatBonus}`);
-    const bPlus = el('button', 'icon-btn sm', '+');
-    bPlus.type = 'button';
-    bPlus.onclick = () => {
-      rpgUi.flatBonus = Math.min(20, rpgUi.flatBonus + 1);
-      renderRpgSession();
-    };
-    bonusWrap.append(bMinus, bVal, bPlus);
-
-    const difWrap = el('label', 'rpg-dif-input-wrap', 'Dif:');
-    const difInp = el('input', 'rpg-self-dif');
-    difInp.type = 'number';
-    difInp.min = '0';
-    difInp.max = '40';
-    difInp.placeholder = '—';
-    difInp.title = 'Se o Mestre disser a Dificuldade por voz, informe aqui (opcional)';
-    difInp.value = rpgUi.dif || '';
-    difInp.oninput = () => (rpgUi.dif = Math.max(0, Math.min(40, Number(difInp.value) || 0)));
-    difWrap.append(difInp);
-
-    const helpToggle = el('button', 'rpg-help-toggle' + (rpgUi.helping ? ' on' : ''), '🤝 Ajudar Aliado');
-    helpToggle.type = 'button';
-    helpToggle.title = 'Ajudando (Cap. 2.1): cada 5 pontos no seu resultado soma +1 na rolagem do amigo';
-    helpToggle.onclick = () => {
-      rpgUi.helping = !rpgUi.helping;
-      renderRpgSession();
-    };
-    modRow2.append(bonusWrap, difWrap, helpToggle);
-    modCard.append(modBar, modRow2);
-    body.append(modCard);
-
-    // 4 Botões de Atributos Puros (Força, Agilidade, Inteligência, Vontade)
-    const attrGrid = el('div', 'rpg-attr-grid');
-    for (const a of ATTRS) {
-      const val = rpgSheet.attrs[a.id] ?? 3;
-      const ab = el('button', 'rpg-attr-btn');
-      ab.type = 'button';
-      ab.style.setProperty('--attr-c', a.color);
-      ab.title = `Rolar teste puro de ${a.name} (${previewFormula('attr', a.id)})`;
-      ab.append(
-        el('span', 'rpg-attr-short', a.short),
-        el('b', 'rpg-attr-val', String(val)),
-        el('small', 'rpg-attr-dice', previewFormula('attr', a.id)),
-      );
-      ab.onclick = () => doRpgRoll({ kind: 'attr', id: a.id });
-      attrGrid.append(ab);
-    }
-    body.append(attrGrid);
-
-    // Busca rápida de perícia ou perk
-    const searchWrap = el('div', 'rpg-skill-search');
-    searchWrap.append(icon('search', 'sm'));
-    const sInp = el('input');
-    sInp.placeholder = 'Filtrar perícia ou perk (ex.: Percepção, Iniciativa, Ouvir)…';
-    sInp.value = rpgUi.filter;
-    sInp.oninput = () => {
-      rpgUi.filter = sInp.value;
-      renderSkillList(skillListEl);
-    };
-    searchWrap.append(sInp);
-    body.append(searchWrap);
-
-    const skillListEl = el('div', 'rpg-skill-list');
-    renderSkillList(skillListEl);
-    body.append(skillListEl);
-  } else if (rpgUi.subTab === 'combat') {
-    // ==================== 1. ECONOMIA DE AÇÕES DO TURNO (Cap. 1.11) ====================
-    const turnBox = el('div', 'rpg-turn-box');
-    const turnHead = el('div', 'rpg-turn-head');
-    turnHead.append(
-      el('b', '', 'Economia de Ações do Seu Turno (Cap. 1.11)'),
-      el('span', 'muted small', '1 Ação Completa OU 1 Padrão + 1 Movimento · Ações Livres (1x cada)'),
-    );
-    const resetTurnBtn = el('button', 'primary sm');
-    resetTurnBtn.id = 'rpgResetTurnBtn';
-    resetTurnBtn.type = 'button';
-    resetTurnBtn.textContent = '🔄 Novo Turno';
-    resetTurnBtn.title = 'Restaurar Ação Padrão, Movimento, Ações Livres e Reação para o novo turno';
-    resetTurnBtn.onclick = () => resetMyTurnActions(true);
-    turnHead.append(resetTurnBtn);
-    turnBox.append(turnHead);
-
-    const slotsRow = el('div', 'rpg-turn-slots');
-    const stdAvail = canUseAction(rpgUi.turn, 'standard');
-    const movAvail = canUseAction(rpgUi.turn, 'move');
-    const fullAvail = canUseAction(rpgUi.turn, 'full');
-    const reactAvail = canUseAction(rpgUi.turn, 'reaction');
-
-    for (const [cls, badgeTxt, stateTxt, avail] of [
-      ['standard', '🔶 Ação Padrão', `${rpgUi.turn.standard}/1`, stdAvail],
-      ['move', '🔷 Movimento', `${rpgUi.turn.move} disp.`, movAvail],
-      ['full', '🟣 Completa', fullAvail ? 'Disponível' : 'Indisponível', fullAvail],
-      ['free', '🟢 Ações Livres', `${rpgUi.turn.freeUsed.length} usadas (1x cada)`, true],
-      ['reaction', '⚡ Reação', `${rpgUi.turn.reaction}/1`, reactAvail],
-    ]) {
-      const slot = el('div', `rpg-slot-pill type-${cls}` + (avail ? ' on' : ' spent'));
-      slot.append(el('b', '', badgeTxt), el('span', '', stateTxt));
-      slotsRow.append(slot);
-    }
-    turnBox.append(slotsRow);
-
-    if (rpgUi.turn.feintBonus || rpgUi.turn.stance) {
-      const activeEffects = el('div', 'rpg-turn-effects');
-      if (rpgUi.turn.feintBonus) activeEffects.append(el('span', 'rpg-tag crit', '✨ Finta Ativa: +1d6 em todos os ataques deste turno!'));
-      if (rpgUi.turn.stance === 'total_def') activeEffects.append(el('span', 'rpg-tag pass', '🛡️ Defesa Total Ativa (+4 Esquiva até o próximo turno)'));
-      if (rpgUi.turn.stance === 'charge') activeEffects.append(el('span', 'rpg-tag clash', '🐎 Encontrão (-2 Esquiva até o próximo turno)'));
-      turnBox.append(activeEffects);
-    }
-    body.append(turnBox);
-
-    // ==================== 2. SELETOR DE ALVO & MIRA (GOLPE VISADO - Cap. 1.9) ====================
-    const targetBar = el('div', 'rpg-target-bar');
-    const tgtLabel = el('label', 'rpg-tgt-field', '🎯 Alvo na Mesa:');
-    const tgtSelect = el('select', 'rpg-target-select');
-    tgtSelect.id = 'rpgTargetSelect';
-    const noneOpt = el('option', '', 'Sem alvo fixo (apenas rolar)');
-    noneOpt.value = '';
-    tgtSelect.append(noneOpt);
-    for (const c of rpgUi.combat.order) {
-      const o = el('option', '', `${c.name} (Esq ${c.esq} / Blq ${c.blq}${c.rd ? ` / RD ${c.rd}` : ''})`);
-      o.value = c.id;
-      if (rpgUi.targetId === c.id) o.selected = true;
-      tgtSelect.append(o);
-    }
-    tgtSelect.onchange = () => {
-      rpgUi.targetId = tgtSelect.value;
-      renderRpgSession();
-    };
-    tgtLabel.append(tgtSelect);
-
-    const shotLabel = el('label', 'rpg-tgt-field', '🗡️ Parte do Corpo (Cap. 1.9):');
-    const shotSelect = el('select', 'rpg-shot-select');
-    shotSelect.id = 'rpgCalledShotSelect';
-    for (const cs of CALLED_SHOTS) {
-      const o = el('option', '', cs.name);
-      o.value = cs.id;
-      if (rpgUi.calledShot === cs.id) o.selected = true;
-      shotSelect.append(o);
-    }
-    shotSelect.onchange = () => {
-      rpgUi.calledShot = shotSelect.value;
-    };
-    shotLabel.append(shotSelect);
-    targetBar.append(tgtLabel, shotLabel);
-    body.append(targetBar);
-
-    // ==================== 3. AÇÕES DIFERENCIADAS POR CATEGORIA (Padrão, Movimento, Completa, Livre, Reação) ====================
-    // 3A. AÇÕES PADRÃO (Armas + Manobras Padrão)
-    const stdSec = el('div', 'rpg-act-group type-standard');
-    const stdTitle = el('div', 'rpg-act-group-head');
-    stdTitle.append(
-      el('span', 'rpg-act-pill type-standard', '🔶 AÇÕES PADRÃO'),
-      el('span', 'muted small', 'Consome 1 Ação Padrão (1 por turno)'),
-    );
-    stdSec.append(stdTitle);
-
-    // Lista de Armas para Atacar (Ação Padrão)
-    const wpList = el('div', 'rpg-wp-list');
-    for (const w of rpgSheet.weapons) {
-      const wRow = el('div', 'rpg-wp-row');
-      const attrInfo = resolveAttr(rpgSheet, w.attr);
-      const canAtk = canUseAction(rpgUi.turn, 'standard', 'attack');
-      const atkBtn = el('button', 'rpg-wp-atk' + (!canAtk ? ' spent' : ''));
-      atkBtn.type = 'button';
-      const hitMod = attrInfo.val + (w.prof || 0);
-      atkBtn.append(icon('swords', 'sm'), el('div', 'rpg-wp-meta', ''));
-      atkBtn.querySelector('.rpg-wp-meta').innerHTML = `<b>Atacar: ${escapeHtml(w.name)}</b><small>Acerto: 2d6+${hitMod} (${attrInfo.short}${w.prof ? ` +${w.prof} Prof` : ''}) · Dano: ${escapeHtml(w.dmg)}+${attrInfo.val} · Crít (${escapeHtml(w.threat)}) · FN ${w.fn ?? 1}</small>`;
-      atkBtn.onclick = () => doRpgCombatAction('attack', { weaponId: w.id });
-
-      const delBtn = el('button', 'icon-btn sm');
-      delBtn.type = 'button';
-      delBtn.title = 'Remover arma';
-      delBtn.append(icon('trash-2', 'sm'));
-      delBtn.onclick = () => {
-        rpgSheet.weapons = rpgSheet.weapons.filter((x) => x.id !== w.id);
-        saveRpgSheet();
-      };
-      wRow.append(atkBtn, delBtn);
-      wpList.append(wRow);
-    }
-    stdSec.append(wpList);
-
-    // Demais Ações Padrão (Agarrar, Apertar, Desarmar, Defesa Total, Habilidade, Converter Padrão -> Movimento)
-    const renderActionButtons = (typeId, containerEl) => {
-      const actions = COMBAT_ACTIONS.filter((a) => a.type === typeId && a.id !== 'attack');
-      const btnGrid = el('div', 'rpg-act-btn-grid');
-      for (const act of actions) {
-        const ok = canUseAction(rpgUi.turn, act.type, act.id);
-        const b = el('button', `rpg-act-btn type-${act.type}` + (!ok ? ' spent' : ''));
-        b.type = 'button';
-        b.dataset.actionId = act.id;
-        b.title = act.desc;
-        b.innerHTML = `<b>${escapeHtml(act.name)}</b><small>${escapeHtml(act.desc)}</small>`;
-        b.onclick = () => doRpgCombatAction(act.id);
-        btnGrid.append(b);
-      }
-      containerEl.append(btnGrid);
-    };
-    renderActionButtons('standard', stdSec);
-    body.append(stdSec);
-
-    // 3B. AÇÕES DE MOVIMENTO
-    const movSec = el('div', 'rpg-act-group type-move');
-    const movTitle = el('div', 'rpg-act-group-head');
-    movTitle.append(
-      el('span', 'rpg-act-pill type-move', '🔷 AÇÕES DE MOVIMENTO'),
-      el('span', 'muted small', `Consome 1 Ação de Movimento (Deslocamento base: ${d.deslocamento}m)`),
-    );
-    movSec.append(movTitle);
-    renderActionButtons('move', movSec);
-    body.append(movSec);
-
-    // 3C. AÇÕES DE RODADA COMPLETA
-    const fullSec = el('div', 'rpg-act-group type-full');
-    const fullTitle = el('div', 'rpg-act-group-head');
-    fullTitle.append(
-      el('span', 'rpg-act-pill type-full', '🟣 AÇÕES DE RODADA COMPLETA'),
-      el('span', 'muted small', 'Consome Ação Padrão + Ação de Movimento do turno'),
-    );
-    const chargeWrap = el('label', 'rpg-charge-meters-wrap', 'Distância Encontrão (m):');
-    const chargeInp = el('input', 'rpg-charge-inp');
-    chargeInp.type = 'number';
-    chargeInp.min = '3';
-    chargeInp.max = '30';
-    chargeInp.value = rpgUi.chargeMeters || 3;
-    chargeInp.oninput = () => (rpgUi.chargeMeters = Math.max(3, Number(chargeInp.value) || 3));
-    chargeWrap.append(chargeInp);
-    fullTitle.append(chargeWrap);
-    fullSec.append(fullTitle);
-    renderActionButtons('full', fullSec);
-    body.append(fullSec);
-
-    // 3D. AÇÕES LIVRES (Cap. 1.11.1 — não gastam Padrão nem Movimento; máx. 1x cada por turno)
-    const freeSec = el('div', 'rpg-act-group type-free');
-    const freeTitle = el('div', 'rpg-act-group-head');
-    freeTitle.append(
-      el('span', 'rpg-act-pill type-free', '🟢 AÇÕES LIVRES'),
-      el('span', 'muted small', 'Não gastam ação Padrão nem Movimento (máx. 1 de cada tipo por turno · Cap. 1.11.1)'),
-    );
-    freeSec.append(freeTitle);
-    renderActionButtons('free', freeSec);
-    body.append(freeSec);
-
-    // 3E. REAÇÕES (Fintar + Contra-ataque / Reação)
-    const reactSec = el('div', 'rpg-act-group type-reaction');
-    const reactTitle = el('div', 'rpg-act-group-head');
-    reactTitle.append(
-      el('span', 'rpg-act-pill type-reaction', '⚡ REAÇÕES & FINTA'),
-      el('span', 'muted small', '1 Reação por rodada (Fintar usa Reação + Ação de Movimento)'),
-    );
-    reactSec.append(reactTitle);
-    renderActionButtons('reaction', reactSec);
-    body.append(reactSec);
-
-    // ==================== 4. PV, PM, DESCANSO, ARSENAL & CONDIÇÕES ====================
-    const resBox = el('div', 'rpg-card-sec');
-    resBox.append(el('h4', '', 'Pontos de Vida (PV), Mana (PM) e Descanso'));
-    for (const [key, maxKey, label, clsName] of [
-      ['pv', 'pvMax', 'Vida (PV)', 'pv'],
-      ['pm', 'pmMax', 'Mana (PM)', 'pm'],
-    ]) {
-      const cur = rpgSheet[key];
-      const max = rpgSheet[maxKey];
-      const pct = max > 0 ? Math.max(0, Math.min(100, (cur / max) * 100)) : 0;
-      const row = el('div', 'rpg-bar-block ' + clsName);
-      const barBg = el('div', 'rpg-bar-bg');
-      const barFill = el('div', 'rpg-bar-fill');
-      barFill.style.width = pct + '%';
-      const barTxt = el('div', 'rpg-bar-txt', `${label}: ${cur} / ${max}`);
-      barBg.append(barFill, barTxt);
-
-      const stepRow = el('div', 'rpg-step-row');
-      for (const delta of [-10, -5, -1, +1, +5, +10]) {
-        const sb = el('button', 'ghost sm', delta > 0 ? `+${delta}` : String(delta));
-        sb.type = 'button';
-        sb.onclick = () => {
-          rpgSheet[key] = Math.max(key === 'pv' ? -99 : 0, Math.min(rpgSheet[maxKey], rpgSheet[key] + delta));
-          saveRpgSheet();
-        };
-        stepRow.append(sb);
-      }
-      row.append(barBg, stepRow);
-      resBox.append(row);
-    }
-
-    const restRow = el('div', 'rpg-rest-row');
-    const restBtn = el('button', 'ghost sm', '🏕️ Descanso 1h (+6 PV/PM)');
-    restBtn.type = 'button';
-    restBtn.onclick = () => {
-      rpgSheet.pv = Math.min(rpgSheet.pvMax, rpgSheet.pv + 6);
-      rpgSheet.pm = Math.min(rpgSheet.pmMax, rpgSheet.pm + 6);
-      saveRpgSheet();
-      toast('Descansou 1 hora (+6 PV e +6 PM)');
-    };
-    const fullRestBtn = el('button', 'ghost sm', '🌙 Dormir (Total)');
-    fullRestBtn.type = 'button';
-    fullRestBtn.onclick = () => {
-      rpgSheet.pv = rpgSheet.pvMax;
-      rpgSheet.pm = rpgSheet.pmMax;
-      rpgSheet.tricksUsed = 0;
-      saveRpgSheet();
-      toast('Descanso longo concluído (PV, PM e Truques restaurados)');
-    };
-    restRow.append(restBtn, fullRestBtn);
-
-    if (d.hasTrocaEquivalente) {
-      const trocaBtn = el('button', 'ghost sm', '🩸 Troca Equivalente (-5 PV → +10 PM)');
-      trocaBtn.type = 'button';
-      trocaBtn.onclick = () => {
-        if (rpgSheet.pv <= 5) return toast('PV insuficiente para Troca Equivalente');
-        rpgSheet.pv -= 5;
-        rpgSheet.pm = Math.min(rpgSheet.pmMax, rpgSheet.pm + 10);
-        saveRpgSheet();
-        toast('Troca Equivalente: -5 PV → +10 PM');
-      };
-      restRow.append(trocaBtn);
-    }
-    resBox.append(restRow);
-    body.append(resBox);
-
-    // Adicionar nova arma ao Arsenal
-    const wpBox = el('div', 'rpg-card-sec');
-    wpBox.append(el('h4', '', 'Cadastrar Nova Arma / Ataque'));
-    const addWp = el('div', 'rpg-wp-add');
-    const wn = el('input');
-    wn.placeholder = 'Nome da arma (ex.: Katana)';
-    const wa = el('select');
-    for (const a of ATTRS) {
-      const o = el('option', '', a.short);
-      o.value = a.id;
-      wa.append(o);
-    }
-    const wd = el('input');
-    wd.placeholder = 'Dano (2d6)';
-    wd.value = '2d4';
-    const wp = el('input');
-    wp.type = 'number';
-    wp.min = '0';
-    wp.max = '5';
-    wp.placeholder = 'Prof';
-    wp.title = 'Pontos de Proficiência nesta arma';
-    wp.value = '1';
-    const wt = el('select');
-    wt.title = 'Margem de Ameaça (Crítico)';
-    for (const m of THREAT_MARGINS) {
-      const o = el('option', '', `(${m})`);
-      o.value = m;
-      wt.append(o);
-    }
-    const wAddBtn = el('button', 'primary sm', '+ Arma');
-    wAddBtn.type = 'button';
-    wAddBtn.onclick = () => {
-      if (!wn.value.trim()) return toast('Digite o nome da arma');
-      rpgSheet.weapons.push({
-        id: 'w:' + randId(4),
-        name: wn.value.trim(),
-        attr: wa.value,
-        dmg: wd.value.trim() || '1d6',
-        prof: Number(wp.value) || 0,
-        threat: wt.value,
-        fn: 2,
-      });
-      saveRpgSheet();
-    };
-    addWp.append(wn, wa, wd, wp, wt, wAddBtn);
-    wpBox.append(addWp);
-    body.append(wpBox);
-
-    // Condições (Cap. 2.3)
-    const condBox = el('div', 'rpg-card-sec');
-    condBox.append(el('h4', '', 'Condições Ativas (Cap. 2.3)'));
-    const condGrid = el('div', 'rpg-cond-grid');
-    for (const c of CONDITIONS) {
-      const active = rpgSheet.conditions.includes(c.id);
-      const cb = el('button', 'chip rpg-cond-chip' + (active ? ' on' : ''), c.name);
-      cb.type = 'button';
-      cb.title = c.desc;
-      cb.onclick = () => {
-        if (active) rpgSheet.conditions = rpgSheet.conditions.filter((x) => x !== c.id);
-        else rpgSheet.conditions.push(c.id);
-        saveRpgSheet();
-      };
-      condGrid.append(cb);
-    }
-    condBox.append(condGrid);
-    body.append(condBox);
-  } else if (rpgUi.subTab === 'edit') {
-    // Editor completo dos campos da ficha d2Trinities
-    const form = el('div', 'rpg-edit-form');
-    const row1 = el('div', 'rpg-form-grid');
-    const mkField = (labelTxt, inputEl) => {
-      const l = el('label', '', labelTxt);
-      l.append(inputEl);
-      return l;
-    };
-
-    const inpName = el('input');
-    inpName.value = rpgSheet.charName;
-    inpName.onchange = () => {
-      rpgSheet.charName = inpName.value;
-      saveRpgSheet();
-    };
-
-    const inpLevel = el('input');
-    inpLevel.type = 'number';
-    inpLevel.min = '1';
-    inpLevel.max = '20';
-    inpLevel.value = rpgSheet.level;
-    inpLevel.onchange = () => {
-      rpgSheet.level = Number(inpLevel.value) || 1;
-      saveRpgSheet();
-    };
-
-    const selRace = el('input');
-    selRace.setAttribute('list', 'rpgRacesList');
-    selRace.value = rpgSheet.race;
-    selRace.onchange = () => {
-      rpgSheet.race = selRace.value;
-      saveRpgSheet();
-    };
-    const dlRaces = el('datalist');
-    dlRaces.id = 'rpgRacesList';
-    for (const r of RACES) dlRaces.append(Object.assign(el('option'), { value: r }));
-
-    const selCls = el('input');
-    selCls.setAttribute('list', 'rpgClassesList');
-    selCls.value = rpgSheet.cls;
-    selCls.onchange = () => {
-      rpgSheet.cls = selCls.value;
-      saveRpgSheet();
-    };
-    const dlCls = el('datalist');
-    dlCls.id = 'rpgClassesList';
-    for (const c of CLASSES) dlCls.append(Object.assign(el('option'), { value: c }));
-
-    const selPath = el('input');
-    selPath.setAttribute('list', 'rpgPathsList');
-    selPath.placeholder = 'Opcional';
-    selPath.value = rpgSheet.path;
-    selPath.onchange = () => {
-      rpgSheet.path = selPath.value;
-      saveRpgSheet();
-    };
-    const dlPaths = el('datalist');
-    dlPaths.id = 'rpgPathsList';
-    for (const p of PATHS.filter(Boolean)) dlPaths.append(Object.assign(el('option'), { value: p }));
-
-    const inpInsp = el('input');
-    inpInsp.type = 'number';
-    inpInsp.min = '0';
-    inpInsp.max = '3';
-    inpInsp.value = rpgSheet.inspiration;
-    inpInsp.onchange = () => {
-      rpgSheet.inspiration = Number(inpInsp.value) || 0;
-      saveRpgSheet();
-    };
-
-    row1.append(
-      mkField('Nome do Personagem', inpName),
-      mkField('Nível (1-20)', inpLevel),
-      mkField('Raça (Drakon)', selRace),
-      mkField('Classe', selCls),
-      mkField('Caminho', selPath),
-      mkField('Inspiração (0-3)', inpInsp),
-      dlRaces,
-      dlCls,
-      dlPaths,
-    );
-    form.append(row1);
-
-    form.append(el('h4', '', 'Atributos'));
-    const attrEditGrid = el('div', 'rpg-form-grid');
-    for (const a of ATTRS) {
-      const inp = el('input');
-      inp.type = 'number';
-      inp.min = '0';
-      inp.max = '30';
-      inp.value = rpgSheet.attrs[a.id];
-      inp.onchange = () => {
-        rpgSheet.attrs[a.id] = Number(inp.value) || 0;
-        saveRpgSheet();
-      };
-      attrEditGrid.append(mkField(`${a.name} (${a.short})`, inp));
-    }
-    form.append(attrEditGrid);
-
-    form.append(el('h4', '', 'Vida, Mana, Armadura (RD / FN) e Defesas'));
-    const defGrid = el('div', 'rpg-form-grid');
-    const inpPvMax = el('input');
-    inpPvMax.type = 'number';
-    inpPvMax.value = rpgSheet.pvMax;
-    inpPvMax.onchange = () => {
-      rpgSheet.pvMax = Math.max(1, Number(inpPvMax.value) || 60);
-      rpgSheet.pv = Math.min(rpgSheet.pv, rpgSheet.pvMax);
-      saveRpgSheet();
-    };
-    const inpPmMax = el('input');
-    inpPmMax.type = 'number';
-    inpPmMax.value = rpgSheet.pmMax;
-    inpPmMax.onchange = () => {
-      rpgSheet.pmMax = Math.max(0, Number(inpPmMax.value) || 60);
-      rpgSheet.pm = Math.min(rpgSheet.pm, rpgSheet.pmMax);
-      saveRpgSheet();
-    };
-    const inpArm = el('input');
-    inpArm.type = 'number';
-    inpArm.min = '0';
-    inpArm.max = '8';
-    inpArm.value = rpgSheet.defBonus.armadura;
-    inpArm.onchange = () => {
-      rpgSheet.defBonus.armadura = Number(inpArm.value) || 0;
-      saveRpgSheet();
-    };
-    const inpArmFn = el('input');
-    inpArmFn.type = 'number';
-    inpArmFn.min = '0';
-    inpArmFn.max = '10';
-    inpArmFn.value = rpgSheet.armorFn || 1;
-    inpArmFn.onchange = () => {
-      rpgSheet.armorFn = Number(inpArmFn.value) || 1;
-      saveRpgSheet();
-    };
-    const inpEsq = el('input');
-    inpEsq.type = 'number';
-    inpEsq.value = rpgSheet.defBonus.esquiva;
-    inpEsq.onchange = () => {
-      rpgSheet.defBonus.esquiva = Number(inpEsq.value) || 0;
-      saveRpgSheet();
-    };
-    const inpBlq = el('input');
-    inpBlq.type = 'number';
-    inpBlq.value = rpgSheet.defBonus.bloqueio;
-    inpBlq.onchange = () => {
-      rpgSheet.defBonus.bloqueio = Number(inpBlq.value) || 0;
-      saveRpgSheet();
-    };
-    const inpDet = el('input');
-    inpDet.type = 'number';
-    inpDet.value = rpgSheet.defBonus.determinacao;
-    inpDet.onchange = () => {
-      rpgSheet.defBonus.determinacao = Number(inpDet.value) || 0;
-      saveRpgSheet();
-    };
-    defGrid.append(
-      mkField('PV Máximo', inpPvMax),
-      mkField('PM Máximo', inpPmMax),
-      mkField('Armadura+Escudo / RD (máx 8)', inpArm),
-      mkField('FN da Armadura (Encontrão)', inpArmFn),
-      mkField('Bônus Esquiva', inpEsq),
-      mkField('Bônus Bloqueio', inpBlq),
-      mkField('Bônus Determinação', inpDet),
-    );
-    form.append(defGrid);
-    body.append(form);
-  }
-
-  colMain.append(body);
-
-  // -------------------- COLUNA 3: FEED EXCLUSIVO DE ROLAGENS & AÇÕES DA SESSÃO --------------------
-  const colFeed = el('aside', 'rpg-col-feed');
-  const feedHead = el('div', 'rpg-panel-head');
-  feedHead.append(
-    icon('dices', 'sm'),
-    el('b', '', 'Rolagens & Ações da Mesa'),
-    el('span', 'muted small', 'Separado do chat'),
-  );
-  const clearFeedBtn = el('button', 'ghost sm', 'Limpar');
-  clearFeedBtn.type = 'button';
-  clearFeedBtn.onclick = () => {
-    rpgUi.feed = [];
-    renderRpgFeedList();
-  };
-  feedHead.append(clearFeedBtn);
-
-  const feedList = el('div', 'rpg-session-feed');
-  feedList.id = 'rpgSessionFeed';
-  colFeed.append(feedHead, feedList);
-
-  grid.append(colTable, colMain, colFeed);
-  frag.append(grid);
-  view.replaceChildren(frag);
-  renderRpgFeedList();
-}
-
-// Renderiza as 25 perícias com clique para rolar e pedrinhas ◈◈◈◈☗ clicáveis
-function renderSkillList(container) {
-  const q = plainText(rpgUi.filter || '');
-  const list = SKILLS.filter((s) => {
-    if (!q) return true;
-    const perkText = s.perks.map(([, p]) => p).join(' ');
-    return plainText(`${s.name} ${s.short || ''} ${perkText}`).includes(q);
-  });
-
-  container.replaceChildren(
-    ...list.map((sk) => {
-      const pts = rpgSheet.skills[sk.id] || 0;
-      const attr = resolveAttr(rpgSheet, sk.attr);
-      const formula = previewFormula('skill', sk.id);
-      const perks = unlockedPerks(sk.id, pts);
-
-      const row = el('div', 'rpg-skill-row rank-' + (pts === 0 ? '0' : pts <= 2 ? '1' : pts <= 4 ? '2' : '3'));
-      const rollBtn = el('button', 'rpg-skill-roll');
-      rollBtn.type = 'button';
-      rollBtn.dataset.skillId = sk.id;
-      rollBtn.title = `Clique para rolar ${sk.name} (${formula})`;
-
-      const top = el('div', 'rpg-sk-top');
-      top.append(
-        el('span', 'rpg-sk-name', sk.short || sk.name),
-        el('span', 'rpg-sk-attr', attr.short),
-        el('b', 'rpg-sk-formula', formula),
-      );
-      rollBtn.append(top);
-      if (perks.length) {
-        rollBtn.append(el('div', 'rpg-sk-perks', perks.join(' · ')));
-      }
-      rollBtn.onclick = () => doRpgRoll({ kind: 'skill', id: sk.id });
-
-      // 5 pedrinhas clicáveis (◈ ◈ ◈ ◈ ☗)
-      const pips = el('div', 'rpg-sk-pips');
-      for (let i = 1; i <= 5; i++) {
-        const pip = el('button', 'rpg-pip' + (pts >= i ? ' on' : '') + (i === 5 ? ' master' : ''), i === 5 ? '☗' : '◈');
-        pip.type = 'button';
-        const perkAtI = sk.perks.find(([req]) => req === i)?.[1];
-        pip.title = `${i} ${i === 1 ? 'ponto' : 'pontos'} (${skillRankLabel(i)})${perkAtI ? ` · Libera: ${perkAtI}` : ''}`;
-        pip.onclick = (e) => {
-          e.stopPropagation();
-          rpgSheet.skills[sk.id] = rpgSheet.skills[sk.id] === i ? i - 1 : i;
-          saveRpgSheet();
-        };
-        pips.append(pip);
-      }
-
-      row.append(rollBtn, pips);
-      return row;
-    }),
-  );
-}
-
-// Modal de Importar / Exportar Ficha no formato do Discord (Apêndice C)
-function openRpgImportDialog() {
-  const dlg = $('#rpgImportDlg');
-  if (!dlg) return;
-  $('#rpgImportText').value = exportDiscordSheet(rpgSheet, me.name);
-  openDialog(dlg);
-}
-$('#rpgCopyTextBtn')?.addEventListener('click', (e) => {
-  const txt = exportDiscordSheet(rpgSheet, me.name);
-  $('#rpgImportText').value = txt;
-  copyText(txt, e.currentTarget);
-  toast('Ficha copiada no formato do Discord!');
-});
-$('#rpgApplyImportBtn')?.addEventListener('click', () => {
-  const raw = $('#rpgImportText').value.trim();
-  if (!raw) return toast('Cole o texto da ficha primeiro');
-  rpgSheet = parseDiscordSheet(raw, rpgSheet);
-  saveRpgSheet();
-  closeDialog($('#rpgImportDlg'));
-  toast(`Ficha de "${rpgSheet.charName}" importada com sucesso!`);
-});
-
-for (const b of $$('[data-rpg-session]')) {
-  b.addEventListener('click', () => {
-    if (rpgUi.open) closeRpgSession(true);
-    else openRpgSession();
-  });
-}
-$('#ctlRpg')?.addEventListener('click', () => {
-  if (rpgUi.open) closeRpgSession(true);
-  else openRpgSession();
-});
-$('#roomRpg')?.addEventListener('click', () => {
-  if (rpgUi.open) closeRpgSession(true);
-  else openRpgSession();
-});
-
-// API para testes e inspeção rápida
-window.JanjaRpg = {
-  isEnabled: () => isRpgEnabled(),
-  isGm: () => isRpgGm(),
-  canToggle: () => canToggleServerRpg(),
-  setEnabled: (on) => setServerRpg(on),
-  isOpen: () => rpgUi.open,
-  openSession: () => openRpgSession(),
-  closeSession: () => closeRpgSession(true),
-  getSheet: () => rpgSheet,
-  setSheet: (s) => {
-    rpgSheet = cleanSheet(s, me.name);
-    saveRpgSheet();
-    return rpgSheet;
-  },
-  roll: (opts) => doRpgRoll(opts),
-  combatAction: (actionId, opts) => doRpgCombatAction(actionId, opts),
-  resetTurn: () => resetMyTurnActions(true),
-  addNpc: (opts) => addCombatNpc(opts),
-  nextTurn: () => nextCombatTurn(),
-  setTarget: (id) => {
-    rpgUi.targetId = id || '';
-    renderRpgSession();
-  },
-  setCalledShot: (id) => {
-    rpgUi.calledShot = id || 'none';
-    renderRpgSession();
-  },
-  getTurn: () => rpgUi.turn,
-  getCombat: () => rpgUi.combat,
-  getFeed: () => rpgUi.feed,
-  importDiscord: (text) => {
-    rpgSheet = parseDiscordSheet(text, rpgSheet);
-    saveRpgSheet();
-    return rpgSheet;
-  },
-  exportDiscord: () => exportDiscordSheet(rpgSheet, me.name),
-};
-
-
-
-
+for (const b of $$('[data-rpg-session], #ctlRpg, #roomRpg')) b.addEventListener('click', () => (RPG.open && b.id !== 'roomRpg' ? closeRpgSession(true) : openRpgSession()));
+window.__janjaRpg = { open: openRpgSession, close: closeRpgSession, enable: setServerRpg, api: rpgApi, state: RPG };

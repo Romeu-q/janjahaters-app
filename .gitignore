@@ -2,6 +2,7 @@ node_modules/
 dist/
 renderer/bundle.js
 renderer/room.bundle.js
+renderer/rpg.bundle.js
 *.log
 renderer/vendor/
 oauth.json
