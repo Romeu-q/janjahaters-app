@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('desk', {
   ytSearch: (q) => ipcRenderer.invoke('yt-search', q),
   musicLink: (url) => ipcRenderer.invoke('music-link', url),
   discordTemplate: (code) => ipcRenderer.invoke('discord-template', code),
+  discordApi: (token, path) => ipcRenderer.invoke('discord-api', token, path),
+  discordFile: (url) => ipcRenderer.invoke('discord-file', url),
   linkPreview: (url) => ipcRenderer.invoke('link-preview', url),
   musicGain: (g) => ipcRenderer.invoke('music-gain', g),
   musicMatch: (track) => ipcRenderer.invoke('music-match', track),

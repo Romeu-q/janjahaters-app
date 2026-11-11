@@ -576,7 +576,7 @@ function put(rec) {
   if (recs.get(rec.id) !== rec) return toast('Você não tem permissão para isso neste grupo');
   // assina e só então manda (a assinatura cobre o registro inteiro)
   ident.signRecord(rec).then(() => {
-    if (recs.get(rec.id) === rec) persist();
+    if (recs.get(rec.id) === rec) persist([rec]);
     A.recs?.send([rec]);
   });
 }
@@ -595,7 +595,8 @@ async function acceptRemote(list) {
         rejectedRecs++;
         return;
       }
-      if (AUTHORED.has(r.k) && r.uid && r.uid !== r.by && !(r.k === 'msg' && r.del)) {
+      const imported = r.k === 'msg' && r.imp === 'dc' && /^dc:\d{1,25}$/.test(r.uid);
+      if (AUTHORED.has(r.k) && r.uid && r.uid !== r.by && !(r.k === 'msg' && r.del) && !imported) {
         rejectedRecs++;
         return;
       }
@@ -723,6 +724,7 @@ function permitted(r, cur) {
     case 'rx':
       return !!r.del || can(by, P.React);
     case 'msg':
+      if (r.imp || cur?.imp) return r.del ? can(by, P.ManageServer) || can(by, P.ManageMessages) : can(by, P.ManageServer);
       if (!cur) return r.del || can(by, P.SendMessage);
       if (by === cur.uid) return true;
       return !!r.del && can(by, P.ManageMessages) && outranks(by, cur.uid);
@@ -771,13 +773,74 @@ function merge(list, quiet) {
     changed.push(r);
   }
   if (!changed.length) return;
-  persist();
+  persist(changed);
   if (!quiet) onRecsChanged(changed);
 }
+// Os registros de cada servidor ficam no IndexedDB, um por linha (o localStorage só aguentava uns poucos MB e
+// regravava tudo a cada mudança; com o histórico do Discord isso estourava). Só o que mudou é gravado.
+let recsDbP;
+function recsDb() {
+  return (recsDbP ||= new Promise((ok, no) => {
+    const q = indexedDB.open('janja-recs', 1);
+    q.onupgradeneeded = () => q.result.createObjectStore('r', { keyPath: 'k' }).createIndex('h', 'h');
+    q.onsuccess = () => ok(q.result);
+    q.onerror = () => no(q.error);
+  }));
+}
+async function recsLoad(hash) {
+  try {
+    const db = await recsDb();
+    return await new Promise((ok) => {
+      const q = db.transaction('r').objectStore('r').index('h').getAll(IDBKeyRange.only(hash));
+      q.onsuccess = () => ok(q.result.map((x) => x.r));
+      q.onerror = () => ok([]);
+    });
+  } catch {
+    return [];
+  }
+}
+async function recsWrite(hash, list) {
+  const db = await recsDb();
+  await new Promise((ok, no) => {
+    const t = db.transaction('r', 'readwrite');
+    const s = t.objectStore('r');
+    for (const r of list) s.put({ k: hash + '|' + r.id, h: hash, r });
+    t.oncomplete = ok;
+    t.onerror = () => no(t.error);
+  });
+}
+async function recsDrop(hash) {
+  try {
+    const db = await recsDb();
+    await new Promise((ok) => {
+      const t = db.transaction('r', 'readwrite');
+      const s = t.objectStore('r');
+      const q = s.index('h').openKeyCursor(IDBKeyRange.only(hash));
+      q.onsuccess = () => {
+        const c = q.result;
+        if (!c) return;
+        s.delete(c.primaryKey);
+        c.continue();
+      };
+      t.oncomplete = ok;
+      t.onerror = ok;
+    });
+  } catch {}
+  store.del('recs:' + hash);
+}
 let persistTimer;
-function persist() {
+const dirtyRecs = new Set();
+function persist(list) {
+  for (const r of list || []) dirtyRecs.add(r.id);
   clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => store.set('recs:' + R.hash, [...recs.values()]), 400);
+  persistTimer = setTimeout(flushRecs, 400);
+}
+function flushRecs() {
+  clearTimeout(persistTimer);
+  if (!R || !dirtyRecs.size) return Promise.resolve();
+  const list = [...dirtyRecs].map((id) => recs.get(id)).filter(Boolean);
+  dirtyRecs.clear();
+  return recsWrite(R.hash, list).catch((err) => console.warn('não salvei os registros', err));
 }
 const all = (k) => [...recs.values()].filter((r) => r.k === k && !r.del);
 const channels = (type) => all('ch').filter((c) => c.type === type).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
@@ -930,8 +993,14 @@ async function checkGoogle(p, token) {
 }
 const sendHi = () => A.hi?.send(hiPayload());
 
-function sendRecs(list, target) {
-  for (let i = 0; i < list.length; i += 300) A.recs.send(list.slice(i, i + 300), { target });
+async function sendRecs(list, target) {
+  const prio = (r) => (r.k === 'msg' ? 1 : 0);
+  list = [...list].sort((a, b) => prio(a) - prio(b) || (b.ts || 0) - (a.ts || 0));
+  for (let i = 0; i < list.length; i += 300) {
+    A.recs?.send(list.slice(i, i + 300), target ? { target } : undefined);
+    // histórico grande (importado do Discord): manda aos poucos para não travar a call
+    if (list.length > 900) await new Promise((ok) => setTimeout(ok, 60));
+  }
 }
 
 // ----- TURN (Cloudflare): quando a conexão direta entre dois amigos falha (CGNAT, 4G, roteador chato),
@@ -3554,9 +3623,16 @@ function messageEl(m, prev) {
   }
   // o DJ não usa o perfil de quem chamou o comando; bot do gateway (via: 'stoat') tem perfil próprio
   const isDJ = (x) => x.bot && !x.via;
-  const uid = isDJ(m) ? null : m.uid;
+  const uid = isDJ(m) || m.imp ? null : m.uid;
   const who = { id: m.uid, name: m.name, color: m.color };
   const av = avatar(m.name, m.color, '', uid);
+  if (m.imp && /^https:\/\/cdn\.discordapp\.com\/(avatars|embed\/avatars)\//.test(m.av || '')) {
+    const img = el('img');
+    img.referrerPolicy = 'no-referrer';
+    img.onerror = () => img.remove();
+    img.src = m.av;
+    av.append(img);
+  }
   if (uid) av.onclick = () => openProfile(who, av);
   d.append(av);
   const body = el('div');
@@ -3569,6 +3645,11 @@ function messageEl(m, prev) {
     t.title = new Date(m.ts).toLocaleString('pt-BR');
     head.append(a);
     if (m.bot) head.append(el('span', 'bot-tag', 'BOT'));
+    if (m.imp === 'dc') {
+      const tag = el('span', 'dc-tag', 'Discord');
+      tag.title = 'Mensagem importada do Discord';
+      head.append(tag);
+    }
     head.append(t);
     if (pinned) {
       const pi = icon('pin', 'sm pin-mark');
@@ -3714,6 +3795,8 @@ function chatBoxes() {
     { box: $('#callMessages'), ch: callChatCh() },
   ].filter((b) => b.ch);
 }
+const MSG_PAGE = 250;
+const msgShown = {}; // canal -> quantas mensagens mostrar
 function renderChat(box, ch, keepScroll) {
   const fromBottom = box.scrollHeight - box.scrollTop;
   const c = channel(ch);
@@ -3724,7 +3807,19 @@ function renderChat(box, ch, keepScroll) {
     list = list.filter((m) => plainText(m.text + ' ' + m.name).includes(q));
   }
   const frag = document.createDocumentFragment();
-  if (box.id === 'messages') {
+  const lim = msgShown[ch] || MSG_PAGE;
+  const older = searching ? 0 : Math.max(0, list.length - lim);
+  if (older) {
+    list = list.slice(-lim);
+    const more = el('button', 'ghost sm load-older');
+    more.type = 'button';
+    more.append(icon('arrow-down-to-line', 'sm flip-v'), document.createTextNode(`Carregar mensagens mais antigas (${older.toLocaleString('pt-BR')})`));
+    more.onclick = () => {
+      msgShown[ch] = lim + 500;
+      renderChat(box, ch, true);
+    };
+    frag.append(more);
+  } else if (box.id === 'messages') {
     const empty = el('div', 'empty-ch');
     const big = el('div', 'big');
     big.append(icon('hash'));
@@ -5579,7 +5674,7 @@ async function onRekey(r) {
   done[r.v] = 1;
   store.set('rekeyDone', done);
   const hash = (await sha256('toca-room:' + key)).slice(0, 40);
-  store.set('recs:' + hash, [...recs.values()].filter((x) => x.k !== 'rekey'));
+  await recsWrite(hash, [...recs.values()].filter((x) => x.k !== 'rekey')).catch(() => {});
   store.set('view:' + hash, S.view);
   const olds = store.get('oldRooms', []).filter((o) => o.until > Date.now() && o.hash !== R.hash);
   olds.push({ key: R.key, hash: R.hash, rec: r, until: Date.now() + 14 * 864e5 });
@@ -6897,11 +6992,11 @@ $('#stGoogle').onclick = async () => {
 };
 renderGoogleAcc();
 
-$('#btnLeaveGroup').onclick = () => {
+$('#btnLeaveGroup').onclick = async () => {
   if (!confirm('Sair deste servidor? Você vai precisar do código de convite para voltar.')) return;
   leaveVoice();
   room?.leave();
-  store.del('recs:' + R.hash);
+  await recsDrop(R.hash);
   const rest = servers().filter((x) => x.hash !== R.hash);
   saveServers(rest);
   if (rest[0]) store.set('room', { key: rest[0].key, hash: rest[0].hash });
@@ -7893,15 +7988,25 @@ $('#setupForm').onsubmit = async (e) => {
   if (tpl) store.set('newSrv:' + R.hash, { name: tpl.name, tpl });
   await animate($('#setup'), { opacity: 0 }, { duration: 0.2 });
   $('#setup').hidden = true;
-  start();
+  await start();
   if (mode === 'new') {
     put({ k: 'grp', id: 'grp', name: cleanName($('#suGroup').value) || `Servidor de ${name}`, owner: me.id });
     $('#btnInvite').click();
   }
 };
 
-function start() {
-  for (const r of store.get('recs:' + R.hash, [])) if (validRec(r)) recs.set(r.id, r);
+async function start() {
+  let saved = await recsLoad(R.hash);
+  // quem vem de uma versão antiga: os registros estavam no localStorage; passam para o IndexedDB
+  const old = store.get('recs:' + R.hash, null);
+  if (old?.length) {
+    if (!saved.length) {
+      saved = old;
+      await recsWrite(R.hash, old.filter(validRec)).catch(() => {});
+    }
+    store.del('recs:' + R.hash);
+  }
+  for (const r of saved) if (validRec(r)) recs.set(r.id, r);
   loadLogger();
   for (const r of recs.values()) clock = Math.max(clock, Math.min(r.v, Date.now()));
   seed();
@@ -7928,6 +8033,7 @@ function start() {
 }
 
 window.addEventListener('beforeunload', () => {
+  flushRecs();
   keepRejoin = true; // recarregou / fechou / atualizou: ao abrir de novo em poucos minutos, volta para a call
   saveRejoin();
   if (C.ch) leaveVoice();
@@ -7954,6 +8060,204 @@ async function onInvite(code) {
   if (!confirm('Você recebeu um convite para outro servidor. Entrar nele? (você continua nos que já está)')) return;
   joinServer(key);
 }
+
+// ============================================================ importar mensagens do Discord (bot)
+// O dono cria um bot no portal do Discord, coloca no servidor com "ver canais" e "ler histórico" e cola o token.
+// O app lê canal por canal, 100 mensagens por vez, e cria as mensagens no janja (assinadas por quem importou, com o
+// nome e a foto de quem escreveu). Imagens e anexos (até 8 MB) são baixados, porque o link do Discord expira.
+const DC = { token: '', guild: null, chans: [], busy: false, cancel: false };
+const dcColor = (id) => COLORS[[...String(id)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 0) % COLORS.length];
+function openDcImport() {
+  if (!window.desk?.discordApi) return toast('A importação só funciona no app do PC');
+  if (groupOwner() && !iCan(P.ManageServer)) return toast('Só quem gerencia o servidor pode importar mensagens');
+  Object.assign(DC, { token: '', guild: null, chans: [], cancel: false });
+  $('#dcToken').value = '';
+  $('#dcPick').hidden = true;
+  $('#dcGo').hidden = true;
+  $('#dcStatus').textContent = '';
+  $('#dcError').textContent = '';
+  $('#dcBarBox').hidden = true;
+  openDialog($('#dcImpDlg'));
+}
+const dcApi = (path) => window.desk.discordApi(DC.token, path);
+$('#dcConnect').onclick = async () => {
+  DC.token = $('#dcToken').value.trim();
+  $('#dcError').textContent = '';
+  $('#dcStatus').textContent = 'Conectando…';
+  try {
+    const bot = await dcApi('/users/@me');
+    const guilds = await dcApi('/users/@me/guilds');
+    if (!guilds.length) throw new Error(`O bot ${bot.username} ainda não está em nenhum servidor. Use o link do OAuth2 para adicionar.`);
+    $('#dcGuild').replaceChildren(...guilds.map((g) => Object.assign(el('option', '', g.name), { value: g.id })));
+    $('#dcStatus').textContent = `Conectado como ${bot.username}.`;
+    $('#dcPick').hidden = false;
+    await dcLoadChannels();
+  } catch (err) {
+    $('#dcStatus').textContent = '';
+    $('#dcError').textContent = ipcError(err);
+  }
+};
+$('#dcGuild').onchange = () => dcLoadChannels().catch((err) => ($('#dcError').textContent = ipcError(err)));
+// canais de texto do Discord e para onde vão no janja (mesmo nome = mesmo canal; senão cria)
+async function dcLoadChannels() {
+  const gid = $('#dcGuild').value;
+  DC.guild = { id: gid, name: $('#dcGuild').selectedOptions[0]?.textContent || 'Discord' };
+  const all = await dcApi(`/guilds/${gid}/channels`);
+  const cats = new Map(all.filter((c) => c.type === 4).map((c) => [c.id, c]));
+  DC.chans = all
+    .filter((c) => c.type === 0 || c.type === 5)
+    .sort((a, b) => (cats.get(a.parent_id)?.position ?? -1) - (cats.get(b.parent_id)?.position ?? -1) || a.position - b.position)
+    .map((c) => ({ id: c.id, name: c.name, cat: cats.get(c.parent_id)?.name || null }));
+  DC.names = new Map(all.map((c) => [c.id, c.name]));
+  const box = $('#dcChans');
+  box.replaceChildren(
+    ...DC.chans.map((c) => {
+      const same = channels('text').find((x) => x.name === fixName('text', c.name));
+      const row = el('label', 'check dc-ch');
+      const cb = Object.assign(el('input'), { type: 'checkbox', checked: true });
+      cb.dataset.id = c.id;
+      row.append(cb, el('span', '', '#' + c.name), el('small', 'muted', same ? `→ #${same.name}` : '→ canal novo'));
+      return row;
+    }),
+  );
+  $('#dcGo').hidden = !DC.chans.length;
+  if (!DC.chans.length) $('#dcError').textContent = 'O bot não vê nenhum canal de texto nesse servidor.';
+}
+function dcTextOf(m) {
+  const users = new Map((m.mentions || []).map((u) => [u.id, u.global_name || u.username]));
+  let t = String(m.content || '')
+    .replace(/<@!?(\d+)>/g, (_, id) => '@' + (users.get(id) || 'alguém'))
+    .replace(/<#(\d+)>/g, (_, id) => '#' + (DC.names?.get(id) || 'canal'))
+    .replace(/<@&(\d+)>/g, '@cargo')
+    .replace(/<a?:(\w+):\d+>/g, ':$1:')
+    .replace(/<t:(\d+)(?::[a-zA-Z])?>/g, (_, s) => new Date(s * 1000).toLocaleString('pt-BR'));
+  for (const e of (m.embeds || []).slice(0, 2)) {
+    const parts = [e.title, e.description].filter(Boolean).join('\n');
+    if (parts) t += (t ? '\n' : '') + parts.split('\n').map((l) => '> ' + l).join('\n');
+  }
+  if (m.sticker_items?.length) t += (t ? ' ' : '') + `[figurinha: ${m.sticker_items[0].name}]`;
+  return t.slice(0, 3500);
+}
+async function dcAttachments(m, withFiles) {
+  const att = [];
+  const links = [];
+  for (const a of (m.attachments || []).slice(0, 6)) {
+    const file = withFiles && a.size <= 8e6 ? await window.desk.discordFile(a.url).catch(() => null) : null;
+    if (file) {
+      const id = 'f:' + randId(12);
+      const type = String(a.content_type || file.type || 'application/octet-stream').slice(0, 100);
+      await blobPut(id, new Blob([file.data], { type }));
+      att.push({ id, name: String(a.filename || 'arquivo').slice(0, 200), size: file.data.byteLength, type });
+    } else links.push(`[anexo: ${a.filename}]`);
+  }
+  return { att, links };
+}
+// grava um lote de mensagens importadas: assina tudo, junta e manda para quem está online
+async function importRecs(list) {
+  for (const rec of list) {
+    rec.v = Math.max(tick(), (recs.get(rec.id)?.v || 0) + 1);
+    rec.by = me.id;
+    rec.pk = me.pk;
+    delete rec.sig;
+  }
+  await Promise.all(list.map((r) => ident.signRecord(r)));
+  merge(list);
+  const ok = list.filter((r) => recs.get(r.id) === r);
+  if (ok.length) sendRecs(ok);
+  return ok.length;
+}
+// canal do janja para um canal do Discord: o de mesmo nome, ou um novo (na categoria de mesmo nome)
+function dcTargetChannel(c) {
+  const name = fixName('text', c.name);
+  const same = channels('text').find((x) => x.name === name);
+  if (same) return same.id;
+  let cat = null;
+  if (c.cat) {
+    cat = all('cat').find((x) => x.name.toLowerCase() === c.cat.toLowerCase())?.id;
+    if (!cat) {
+      cat = 'cat:' + randId();
+      put({ k: 'cat', id: cat, name: c.cat.slice(0, 40), order: Math.max(0, ...all('cat').map((x) => x.order ?? 0)) + 1 });
+    }
+  }
+  const id = 'c:' + randId();
+  put({ k: 'ch', id, name, type: 'text', order: Math.max(0, ...all('ch').map((x) => x.order)) + 1, cat });
+  return id;
+}
+$('#dcGo').onclick = async () => {
+  if (DC.busy) return;
+  const pick = new Set([...$$('#dcChans input:checked')].map((x) => x.dataset.id));
+  const chans = DC.chans.filter((c) => pick.has(c.id));
+  if (!chans.length) return ($('#dcError').textContent = 'Marque pelo menos um canal.');
+  const withFiles = $('#dcFiles').checked;
+  Object.assign(DC, { busy: true, cancel: false });
+  $('#dcGo').hidden = true;
+  $('#dcError').textContent = '';
+  $('#dcBarBox').hidden = false;
+  let total = 0;
+  try {
+    for (let i = 0; i < chans.length && !DC.cancel; i++) {
+      const c = chans[i];
+      const ch = dcTargetChannel(c);
+      let before = '';
+      let n = 0;
+      // do mais novo para o mais antigo, 100 por vez
+      while (!DC.cancel) {
+        const page = await dcApi(`/channels/${c.id}/messages?limit=100${before ? '&before=' + before : ''}`);
+        if (!page.length) break;
+        before = page[page.length - 1].id;
+        const batch = [];
+        for (const m of page) {
+          if (m.type !== 0 && m.type !== 19) continue; // pula avisos do sistema (entrou, fixou...)
+          const id = 'm:dc' + m.id;
+          if (recs.has(id)) continue; // já importada
+          const { att, links } = await dcAttachments(m, withFiles);
+          const text = [dcTextOf(m), ...links].filter(Boolean).join(' ');
+          if (!text && !att.length) continue;
+          const a = m.author || {};
+          batch.push({
+            k: 'msg',
+            id,
+            ch,
+            uid: 'dc:' + a.id,
+            name: cleanName(a.global_name || a.username) || 'alguém',
+            color: dcColor(a.id),
+            text,
+            att,
+            ts: Date.parse(m.timestamp) || Date.now(),
+            imp: 'dc',
+            ...(a.avatar ? { av: `https://cdn.discordapp.com/avatars/${a.id}/${a.avatar}.png?size=64` } : {}),
+            ...(a.bot ? { bot: true, via: 'discord' } : {}),
+            ...(m.message_reference?.message_id ? { reply: 'm:dc' + m.message_reference.message_id } : {}),
+          });
+        }
+        n += batch.length ? await importRecs(batch) : 0;
+        total += batch.length;
+        $('#dcStatus').textContent = `#${c.name} (${i + 1} de ${chans.length}): ${n.toLocaleString('pt-BR')} mensagens · total ${total.toLocaleString('pt-BR')}`;
+        $('#dcBar').style.width = ((i + Math.min(0.95, n / (n + 300))) / chans.length) * 100 + '%';
+        if (page.length < 100) break;
+      }
+    }
+    $('#dcBar').style.width = '100%';
+    $('#dcStatus').textContent = DC.cancel ? `Parei. ${total.toLocaleString('pt-BR')} mensagens importadas.` : `Pronto! ${total.toLocaleString('pt-BR')} mensagens importadas do ${DC.guild.name}.`;
+    if (!DC.cancel) toast(`${total.toLocaleString('pt-BR')} mensagens importadas do Discord`);
+  } catch (err) {
+    $('#dcError').textContent = ipcError(err) + ` (${total.toLocaleString('pt-BR')} já importadas; dá para importar de novo, as repetidas são puladas)`;
+  } finally {
+    DC.busy = false;
+    $('#dcGo').hidden = false;
+    flushRecs();
+  }
+};
+$('#dcClose').onclick = () => {
+  DC.cancel = true;
+  DC.token = '';
+  $('#dcToken').value = '';
+  closeDialog($('#dcImpDlg'));
+};
+$('#btnDcImport').onclick = () => {
+  closeDialog($('#serverDlg'));
+  openDcImport();
+};
 
 // ============================================================ servidores
 // Cada servidor é um grupo com o próprio código. A pessoa pode estar em vários, com um aberto por vez: trocar
@@ -7987,7 +8291,7 @@ function renderServers() {
       if (sv.hash === R?.hash) return $('#btnLeaveGroup').click();
       if (!confirm(`Sair do servidor "${sv.name || 'Servidor'}"? Você vai precisar do convite para voltar.`)) return;
       saveServers(servers().filter((x) => x.hash !== sv.hash));
-      store.del('recs:' + sv.hash);
+      recsDrop(sv.hash);
       renderServers();
     };
     return b;
@@ -7999,11 +8303,12 @@ function renderServers() {
   add.onclick = openNewServer;
   box.replaceChildren(...nodes, add);
 }
-function switchServer(sv) {
+async function switchServer(sv) {
   if (sv.hash === R?.hash) return;
   if (C.ch && !confirm('Você está numa call. Trocar de servidor sai dela. Trocar mesmo assim?')) return;
   if (C.ch) leaveVoice();
   room?.leave();
+  await flushRecs();
   store.set('room', { key: sv.key, hash: sv.hash });
   store.del('rejoin');
   location.reload();

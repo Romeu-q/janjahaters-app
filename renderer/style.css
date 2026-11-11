@@ -1420,3 +1420,16 @@ body.no-anim .ob-bubbles { display: none; }
 .ob-step > label, #suDiscordBox > label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .ob-step > label > input, #suDiscordBox > label > input { width: 100%; font-size: 15px; padding: 11px 14px; border-radius: 12px; }
 #suDiscordBox .small { margin: 8px 0 0; }
+
+/* importar mensagens do Discord */
+#dcImpDlg { width: min(560px, 94vw); }
+.dc-steps { margin: 8px 0 12px; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
+.dc-steps b { color: var(--text); }
+.dc-chans { max-height: 220px; overflow-y: auto; margin: 10px 0; padding: 6px 10px; border-radius: 12px; background: var(--panel-2); }
+.dc-ch { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.dc-ch small { margin-left: auto; }
+.dc-bar { height: 8px; border-radius: 99px; background: var(--panel-3); overflow: hidden; }
+.dc-bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+.dc-tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: #5865f2; color: #fff; margin-left: 6px; vertical-align: 1px; }
+.load-older { display: flex; align-items: center; gap: 6px; margin: 10px auto; }
+.flip-v { transform: scaleY(-1); }

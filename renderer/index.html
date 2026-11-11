@@ -352,6 +352,26 @@
     </div>
   </dialog>
 
+  <dialog id="dcImpDlg">
+    <h2>Importar mensagens do Discord</h2>
+    <ol class="dc-steps small">
+      <li>Abra <a href="https://discord.com/developers/applications" target="_blank">discord.com/developers/applications</a>, clique em <b>New Application</b> e vá em <b>Bot</b>.</li>
+      <li>Ligue <b>Message Content Intent</b> e clique em <b>Reset Token</b> para copiar o token.</li>
+      <li>Em <b>OAuth2 → URL Generator</b>, marque <b>bot</b> e as permissões <b>View Channels</b> e <b>Read Message History</b>. Abra o link gerado e adicione o bot ao seu servidor.</li>
+      <li>Cole o token aqui. Ele fica só na memória enquanto importa: não é salvo nem vai para ninguém além do Discord.</li>
+    </ol>
+    <label>Token do bot<span class="code-box"><input id="dcToken" type="password" autocomplete="off" spellcheck="false"><button type="button" class="primary" id="dcConnect">Conectar</button></span></label>
+    <div id="dcPick" hidden>
+      <label>Servidor do Discord<select id="dcGuild"></select></label>
+      <div class="dc-chans" id="dcChans"></div>
+      <label class="check"><input type="checkbox" id="dcFiles" checked> Baixar imagens e anexos (até 8 MB cada)</label>
+    </div>
+    <p class="small" id="dcStatus"></p>
+    <div class="dc-bar" id="dcBarBox" hidden><div id="dcBar"></div></div>
+    <p class="error" id="dcError"></p>
+    <menu><button type="button" class="ghost" id="dcClose">Fechar</button><button type="button" class="primary" id="dcGo" hidden>Importar</button></menu>
+  </dialog>
+
   <dialog id="newSrvDlg">
     <form id="newSrvForm">
       <h2>Novo servidor</h2>
@@ -402,6 +422,9 @@
     <input type="file" id="srvEmoFile" accept="image/png,image/gif,image/webp,image/jpeg" hidden>
     <div class="emo-list" id="srvEmojis"></div>
     <div id="srvAdmin"></div>
+    <h3 class="srv-sec">Vindo do Discord?</h3>
+    <p class="muted small">Traga o histórico de mensagens (com imagens) de um servidor do Discord usando um bot seu.</p>
+    <button type="button" class="ghost" id="btnDcImport"><i data-icon="download"></i>Importar mensagens do Discord</button>
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="srvSave">Salvar</button></menu>
   </dialog>
 

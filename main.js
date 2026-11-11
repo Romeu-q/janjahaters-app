@@ -495,6 +495,49 @@ async function webGet(url) {
   const r = await fetch(url, { headers: { 'User-Agent': WEB_UA, 'Accept-Language': 'pt-BR,pt;q=0.9' }, signal: AbortSignal.timeout(15000) });
   return { url: r.url, text: await r.text() };
 }
+// API do Discord com o token de um bot (para importar o histórico). O token fica só na memória do app enquanto
+// importa; só estes pedidos de leitura passam. JANJA_DC_API troca o endereço para testar (só fora do app instalado).
+const DC_API = (!app.isPackaged && process.env.JANJA_DC_API) || 'https://discord.com/api/v10';
+const DC_PATH = /^\/(users\/@me|users\/@me\/guilds|guilds\/\d{1,25}\/channels|channels\/\d{1,25}\/messages\?limit=100(&before=\d{1,25})?)$/;
+const DC_UA = 'DiscordBot (https://github.com/Romeu-q/janjahaters-app, 2.8)';
+ipcMain.handle('discord-api', async (e, token, p) => {
+  token = String(token || '').trim();
+  if (token.length < 20 || token.length > 200 || /\s/.test(token)) throw new Error('Esse token não parece um token de bot.');
+  if (!DC_PATH.test(String(p))) throw new Error('Pedido inválido');
+  for (let tries = 0; tries < 8; tries++) {
+    const r = await fetch(DC_API + p, { headers: { Authorization: 'Bot ' + token, 'User-Agent': DC_UA }, signal: AbortSignal.timeout(20000) });
+    if (r.status === 429) {
+      // o Discord pede para esperar: espera o tempo que ele disse e tenta de novo
+      const j = await r.json().catch(() => ({}));
+      await new Promise((ok) => setTimeout(ok, Math.min(15000, (Number(j.retry_after) || 1) * 1000 + 150)));
+      continue;
+    }
+    if (r.status === 401) throw new Error('O Discord recusou o token. Confira se copiou o token do bot (Bot → Reset Token).');
+    if (r.status === 403) throw new Error('O bot não tem acesso a isso. Ele precisa de "View Channels" e "Read Message History".');
+    if (!r.ok) throw new Error('O Discord respondeu ' + r.status);
+    return r.json();
+  }
+  throw new Error('O Discord pediu para esperar demais. Tente de novo daqui a pouco.');
+});
+// anexos das mensagens (o link do Discord expira, então a cópia fica no janja). Até 8 MB.
+ipcMain.handle('discord-file', async (e, url) => {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return null;
+  }
+  const mock = !app.isPackaged && process.env.JANJA_DC_API && u.origin === new URL(process.env.JANJA_DC_API).origin;
+  if (!mock && (u.protocol !== 'https:' || !/^(cdn\.discordapp\.com|media\.discordapp\.net)$/.test(u.hostname))) return null;
+  try {
+    const r = await fetch(u, { headers: { 'User-Agent': DC_UA }, signal: AbortSignal.timeout(30000) });
+    if (!r.ok || Number(r.headers.get('content-length') || 0) > 8e6) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    return buf.length > 8e6 ? null : { data: buf, type: r.headers.get('content-type') || '' };
+  } catch {
+    return null;
+  }
+});
 // modelo de servidor do Discord (público, sem login): nome, categorias, canais e cargos
 ipcMain.handle('discord-template', async (e, code) => {
   if (!/^[A-Za-z0-9-]{2,40}$/.test(String(code))) throw new Error('Link de modelo inválido');
