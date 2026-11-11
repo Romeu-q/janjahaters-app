@@ -268,27 +268,65 @@
 
   <!-- ===== tela de entrada ===== -->
   <div id="setup" class="overlay" hidden>
-    <form class="card" id="setupForm">
-      <img class="setup-logo" src="icon.png" alt="">
-      <h1>Bem-vindo ao janjahaters</h1>
-      <p class="muted">Call, stream e música com seus amigos. Sem servidor: tudo direto entre vocês.</p>
-      <div class="google-row" data-google hidden>
-        <button type="button" class="google-btn" id="suGoogle"><span class="g-logo"></span><span>Entrar com Google</span></button>
-        <div class="google-acc" id="suGoogleAcc" hidden></div>
-        <div class="or"><span>ou só escolha um nome</span></div>
-      </div>
-      <label>Seu nome<input id="suName" maxlength="32" required autofocus></label>
-      <label>Sua cor<div class="colors" id="suColors"></div></label>
-      <p class="invite-note" id="suInviteNote" hidden>Você recebeu um convite. É só escolher seu nome.</p>
-      <div class="seg" id="suSeg">
-        <label><input type="radio" name="suMode" value="new" checked><span>Criar grupo</span></label>
-        <label><input type="radio" name="suMode" value="join"><span>Entrar com convite</span></label>
-      </div>
-      <label id="suGroupLabel">Nome do grupo<input id="suGroup" maxlength="32" placeholder="Ex.: Os Brabos"></label>
-      <label id="suCodeLabel" hidden>Código de convite<input id="suCode" placeholder="JANJA-…"></label>
-      <p class="error" id="suError"></p>
-      <button class="primary wide">Entrar</button>
-    </form>
+    <div class="ob">
+      <!-- lado esquerdo: o que é o janja -->
+      <section class="ob-hero">
+        <div class="ob-bubbles" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <img class="ob-logo" src="icon.png" alt="">
+        <h1>janjahaters</h1>
+        <p class="ob-tag">O cantinho da sua galera. Direto entre vocês, sem servidor no meio.</p>
+        <ul class="ob-feats">
+          <li><i data-icon="phone"></i><div><b>Call e stream</b><span>Voz limpa, câmera e tela em até 1440p.</span></div></li>
+          <li><i data-icon="list-music"></i><div><b>Música junto</b><span>Todo mundo ouve no mesmo ponto, com fila e autoplay.</span></div></li>
+          <li><i data-icon="tent"></i><div><b>Acampamento</b><span>Fogueira, telão da live e PvP com seu boneco.</span></div></li>
+        </ul>
+        <p class="ob-free">De graça, sem anúncio e sem conta em site nenhum.</p>
+      </section>
+
+      <!-- lado direito: dois passos -->
+      <form class="ob-form" id="setupForm">
+        <div class="ob-steps" id="obSteps"><span class="on"></span><span></span></div>
+
+        <div class="ob-step" data-step="1">
+          <h2>Crie seu perfil</h2>
+          <p class="muted">Leva 10 segundos. Dá para mudar tudo depois.</p>
+          <div class="ob-preview">
+            <span class="ob-av" id="obAv">?</span>
+            <div><b id="obName">Seu nome</b><span>É assim que a galera vai te ver</span></div>
+          </div>
+          <div class="google-row" data-google hidden>
+            <button type="button" class="google-btn" id="suGoogle"><span class="g-logo"></span><span>Entrar com Google</span></button>
+            <div class="google-acc" id="suGoogleAcc" hidden></div>
+            <div class="or"><span>ou só escolha um nome</span></div>
+          </div>
+          <label>Seu nome<input id="suName" maxlength="32" required autofocus placeholder="Como te chamam?"></label>
+          <label>Sua cor<div class="colors" id="suColors"></div></label>
+          <p class="invite-note" id="suInviteNote" hidden>Você recebeu um convite. É só escolher seu nome.</p>
+        </div>
+
+        <div class="ob-step" data-step="2" hidden>
+          <h2>Seu servidor</h2>
+          <p class="muted">Depois dá para ter vários e trocar pelos ícones da esquerda.</p>
+          <div class="ob-modes" id="suSeg">
+            <label><input type="radio" name="suMode" value="new" checked><span><i data-icon="plus"></i><b>Criar</b><small>Um servidor novo, você é o dono</small></span></label>
+            <label><input type="radio" name="suMode" value="join"><span><i data-icon="user-plus"></i><b>Tenho convite</b><small>Entrar no servidor de um amigo</small></span></label>
+            <label><input type="radio" name="suMode" value="discord"><span><i data-icon="download"></i><b>Vim do Discord</b><small>Trazer canais e cargos de lá</small></span></label>
+          </div>
+          <label id="suGroupLabel">Nome do servidor<input id="suGroup" maxlength="32" placeholder="Ex.: Os Brabos"></label>
+          <label id="suCodeLabel" hidden>Link ou código de convite<input id="suCode" placeholder="JANJA-…" autocomplete="off"></label>
+          <div id="suDiscordBox" hidden>
+            <label>Link do modelo do servidor<input id="suDiscord" placeholder="https://discord.new/…" autocomplete="off"></label>
+            <p class="muted small">No Discord: Configurações do servidor → Modelo de servidor → gerar o link. Vêm o nome, as categorias, os canais e os cargos. Mensagens e membros não vêm.</p>
+          </div>
+        </div>
+
+        <p class="error" id="suError"></p>
+        <div class="ob-actions">
+          <button type="button" class="ghost" id="obBack" hidden>Voltar</button>
+          <button class="primary wide" id="obNext">Continuar</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- ===== modais ===== -->

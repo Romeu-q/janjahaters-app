@@ -7808,38 +7808,94 @@ function showSetup() {
   const setup = $('#setup');
   setup.hidden = false;
   $('#suName').value = me.name;
-  colorPicker($('#suColors'), me.color, (c) => (me.color = c));
+  // prévia do perfil: muda enquanto a pessoa digita e escolhe a cor
+  const preview = () => {
+    const name = $('#suName').value.trim();
+    $('#obName').textContent = name || 'Seu nome';
+    $('#obName').style.color = me.color;
+    $('#obAv').textContent = (name || '?')[0].toUpperCase();
+    $('#obAv').style.background = me.color;
+  };
+  colorPicker($('#suColors'), me.color, (c) => {
+    me.color = c;
+    preview();
+    animate($('#obAv'), { scale: [0.85, 1] }, { type: 'spring', stiffness: 500, damping: 14 });
+  });
+  $('#suName').oninput = preview;
+  preview();
   const sync = () => {
     if (invitedKey) $('input[name=suMode][value=join]').checked = true;
-    const join = $('input[name=suMode]:checked').value === 'join';
+    const mode = $('input[name=suMode]:checked').value;
     $('#suInviteNote').hidden = !invitedKey;
-    $('#suSeg').hidden = !!invitedKey;
-    $('#suCodeLabel').hidden = !join || !!invitedKey;
-    $('#suGroupLabel').hidden = join;
+    $('#suCodeLabel').hidden = mode !== 'join' || !!invitedKey;
+    $('#suGroupLabel').hidden = mode !== 'new';
+    $('#suDiscordBox').hidden = mode !== 'discord';
+    $('#suError').textContent = '';
+    obStep(obCur);
   };
   $$('input[name=suMode]').forEach((r) => (r.onchange = sync));
+  $('#obBack').onclick = () => obStep(1);
+  obCur = 1;
   sync();
-  animate(setup.querySelector('.card'), { opacity: [0, 1], y: [24, 0], scale: [0.97, 1] }, { type: 'spring', stiffness: 260, damping: 24 });
+  animate(setup.querySelector('.ob'), { opacity: [0, 1], y: [24, 0], scale: [0.97, 1] }, { type: 'spring', stiffness: 260, damping: 24 });
+}
+// passo 1: perfil; passo 2: servidor (com convite na mão, só o passo 1)
+let obCur = 1;
+function obStep(n) {
+  obCur = n;
+  for (const st of $$('.ob-step')) st.hidden = Number(st.dataset.step) !== n;
+  $('#obSteps').hidden = !!invitedKey;
+  [...$('#obSteps').children].forEach((d, i) => d.classList.toggle('on', i < n));
+  $('#obBack').hidden = n === 1;
+  const mode = $('input[name=suMode]:checked').value;
+  $('#obNext').textContent = n === 1 && !invitedKey ? 'Continuar' : mode === 'join' || invitedKey ? 'Entrar' : mode === 'discord' ? 'Importar e entrar' : 'Criar servidor';
+  const cur = $(`.ob-step[data-step="${n}"]`);
+  animate(cur, { opacity: [0, 1], x: [16, 0] }, { duration: 0.22 });
+  (n === 1 ? $('#suName') : mode === 'join' ? $('#suCode') : mode === 'discord' ? $('#suDiscord') : $('#suGroup')).focus();
 }
 $('#setupForm').onsubmit = async (e) => {
   e.preventDefault();
   const name = cleanName($('#suName').value);
-  if (!name) return ($('#suError').textContent = 'Escolha um nome.');
-  const join = $('input[name=suMode]:checked').value === 'join';
-  const key = invitedKey || (join ? parseCode($('#suCode').value) : newKey());
-  if (!key) {
-    $('#suError').textContent = 'Código inválido. Confira o que te mandaram.';
-    return animate($('#setupForm'), { x: [0, -8, 8, -5, 5, 0] }, { duration: 0.35 });
+  const shake = (msg) => {
+    $('#suError').textContent = msg;
+    animate($('#setupForm'), { x: [0, -8, 8, -5, 5, 0] }, { duration: 0.35 });
+  };
+  if (!name) {
+    if (obCur !== 1) obStep(1);
+    return shake('Escolha um nome.');
+  }
+  $('#suError').textContent = '';
+  if (obCur === 1 && !invitedKey) return obStep(2);
+  const mode = invitedKey ? 'join' : $('input[name=suMode]:checked').value;
+  const join = mode === 'join';
+  const key = invitedKey || (join ? parseCode($('#suCode').value.trim().split('/').pop()) : newKey());
+  if (!key) return shake('Código inválido. Confira o que te mandaram.');
+  let tpl = null;
+  if (mode === 'discord') {
+    // lê o modelo do Discord antes de entrar (o servidor é montado no start, como no botão "+")
+    const code = discordCode($('#suDiscord').value);
+    if (!code) return shake('Cole o link do modelo (discord.new/…).');
+    if (!window.desk?.discordTemplate) return shake('A importação só funciona no app.');
+    $('#obNext').disabled = true;
+    try {
+      tpl = (await window.desk.discordTemplate(code))?.serialized_source_guild || null;
+    } catch (err) {
+      $('#obNext').disabled = false;
+      return shake(ipcError(err));
+    }
+    $('#obNext').disabled = false;
+    if (!tpl) return shake('Não achei esse modelo. Confira o link.');
   }
   me.name = name;
   store.set('profile', me);
   R = { key, hash: (await sha256('toca-room:' + key)).slice(0, 40) };
   store.set('room', R);
+  if (tpl) store.set('newSrv:' + R.hash, { name: tpl.name, tpl });
   await animate($('#setup'), { opacity: 0 }, { duration: 0.2 });
   $('#setup').hidden = true;
   start();
-  if (!join) {
-    put({ k: 'grp', id: 'grp', name: cleanName($('#suGroup').value) || `Grupo de ${name}`, owner: me.id });
+  if (mode === 'new') {
+    put({ k: 'grp', id: 'grp', name: cleanName($('#suGroup').value) || `Servidor de ${name}`, owner: me.id });
     $('#btnInvite').click();
   }
 };
