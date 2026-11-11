@@ -558,6 +558,57 @@ function bubbleSprite(text) {
   s.center.set(0.5, 0);
   return s;
 }
+function rollSprite(r) {
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d');
+  const isCrit = r.crit === 'crit';
+  const isFumble = r.crit === 'fumble';
+  const accent = isCrit ? '#ff9a1f' : isFumble ? '#f05454' : r.passed === false ? '#f05454' : r.passed === true ? '#4fd18b' : '#5b7bf0';
+  const title = `${r.label}${r.ptsSym ? ' ' + r.ptsSym : ''}`;
+  const dicePart = r.dice?.length ? `[${r.dice.join(' · ')}]` : '[0d6]';
+  const mod = r.bonus ? (r.bonus > 0 ? `+${r.bonus}` : `${r.bonus}`) : '';
+  const sub = `${dicePart} + ${r.attrVal} ${r.attrShort}${mod} = ${r.total}`;
+  const badge = isCrit ? 'CRÍTICO DECISIVO!' : isFumble ? 'FALHA CRÍTICA!' : r.dif ? (r.passed ? `PASSOU (Dif ${r.dif})` : `FALHOU (Dif ${r.dif})`) : '';
+  g.font = '700 28px system-ui, sans-serif';
+  const w1 = g.measureText(title).width;
+  g.font = '800 34px system-ui, sans-serif';
+  const w2 = g.measureText(sub).width;
+  g.font = '800 22px system-ui, sans-serif';
+  const w3 = badge ? g.measureText(badge).width : 0;
+  const w = Math.max(260, Math.ceil(Math.max(w1, w2, w3)) + 56);
+  const h = (badge ? 132 : 102) + 16;
+  c.width = w;
+  c.height = h;
+  g.fillStyle = '#161822';
+  roundRect(g, 0, 0, w, h - 14, 24);
+  g.fill();
+  g.lineWidth = 4;
+  g.strokeStyle = accent;
+  roundRect(g, 2, 2, w - 4, h - 18, 22);
+  g.stroke();
+  g.fillStyle = accent;
+  g.beginPath();
+  g.moveTo(w / 2 - 12, h - 15);
+  g.lineTo(w / 2 + 12, h - 15);
+  g.lineTo(w / 2, h);
+  g.fill();
+  g.textAlign = 'center';
+  g.textBaseline = 'top';
+  g.fillStyle = '#b9c0d4';
+  g.font = '700 24px system-ui, sans-serif';
+  g.fillText(title, w / 2, 14);
+  g.fillStyle = '#ffffff';
+  g.font = '800 34px system-ui, sans-serif';
+  g.fillText(sub, w / 2, 46);
+  if (badge) {
+    g.fillStyle = accent;
+    g.font = '800 22px system-ui, sans-serif';
+    g.fillText(badge, w / 2, 90);
+  }
+  const s = spriteFrom(c, h / 145, 12);
+  s.center.set(0.5, 0);
+  return s;
+}
 
 // ------------------------------------------------------------------ o acampamento
 function buildCamp(scene) {
@@ -2565,6 +2616,26 @@ export function mount(box, api) {
       a.bubble.position.y = a.parts.height + 0.35;
       a.bubbleUntil = clock.elapsedTime + Math.min(9, 3 + text.length / 15);
       a.holder.add(a.bubble);
+    },
+    roll(key, r) {
+      const a = avatars.get(key);
+      if (!a || !r) return;
+      if (a.bubble) {
+        a.holder.remove(a.bubble);
+        disposeTree(a.bubble);
+      }
+      a.bubble = rollSprite(r);
+      a.bubble.position.y = a.parts.height + 0.38;
+      a.bubbleUntil = clock.elapsedTime + 7.5;
+      a.holder.add(a.bubble);
+      if (r.crit === 'crit') {
+        vfxSprite('fogo', a.x, 1.35, a.z, 2.5);
+        vfxSprite('parry', a.x, 1.5, a.z, 2.1);
+      } else if (r.crit === 'fumble') {
+        vfxSprite('poof', a.x, 1.0, a.z, 2.4);
+      } else {
+        vfxSprite('acerto', a.x, 1.3, a.z, 1.4);
+      }
     },
     refresh,
     resendPos: sendNow,

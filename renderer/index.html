@@ -98,6 +98,9 @@
         <button type="button" class="icon-btn" id="btnChatSearch" title="Buscar mensagens (Ctrl+F)"><i data-icon="search"></i></button>
       </header>
 
+      <div id="rpgPromptBar" class="rpg-prompt-bar" hidden></div>
+      <div id="rpgRollToast" class="rpg-roll-toast" hidden></div>
+
       <section id="textView" class="view">
         <div id="messages" class="chat-scroll"></div>
         <div id="typing"></div>
@@ -130,6 +133,7 @@
           <button class="ctl" id="ctlStreamCfg" title="Qualidade da stream" hidden><i data-icon="sliders"></i><span>Qualidade</span></button>
           <button class="ctl" id="ctlMusic" title="Música"><i data-icon="list-music"></i><span>Música</span></button>
           <button class="ctl" id="ctlSounds" title="Soundboard"><i data-icon="drum"></i><span>Sons</span></button>
+          <button class="ctl" id="ctlRpg" title="Ficha d2Trinities e dados de RPG"><i data-icon="dices"></i><span>RPG</span></button>
           <button class="ctl" id="ctlNoise" title="Supressão de ruído"><i data-icon="sparkles"></i><span>Ruído</span></button>
           <button class="ctl join" id="ctlCall"><i data-icon="phone"></i><span>Entrar</span></button>
         </footer>
@@ -142,6 +146,7 @@
           <div class="room-hint" id="roomHint"><b>WASD</b> andar · <b>Shift</b> correr · <b>E</b> sentar · <b>1</b> tchau <b>2</b> dança <b>3</b> pulo <b>4</b> sim · <b>F</b> PvP · clique no chão para ir</div>
           <div class="room-hint" id="pvpHint" hidden><b>J</b> ou clique: atacar · <b>K</b> ou botão direito: defender (na hora certa é parry) · <b>F</b> sair · <b id="pvpKills">0</b> nocautes · <b id="pvpMobs">0</b> monstros</div>
           <span class="grow"></span>
+          <button type="button" class="ghost sm" id="roomRpg" title="Abrir Ficha d2Trinities e rolar dados"><i data-icon="dices" class="sm"></i>Ficha RPG</button>
           <button type="button" class="ghost sm" id="roomPvp" title="Ligar/desligar o PvP (F)"><i data-icon="swords" class="sm"></i>PvP</button>
           <button type="button" class="ghost sm" id="roomEdit"><i data-icon="shirt" class="sm"></i>Guarda-roupa</button>
           <button type="button" class="icon-btn" id="roomClose" title="Sair do acampamento"><i data-icon="x"></i></button>
@@ -188,6 +193,7 @@
         <button class="tab" data-tab="chat"><i data-icon="message-square"></i>Chat<span class="badge" id="callBadge" hidden></span></button>
         <button class="tab" data-tab="music"><i data-icon="list-music"></i>Música</button>
         <button class="tab" data-tab="sounds"><i data-icon="drum"></i>Sons</button>
+        <button class="tab" data-tab="rpg"><i data-icon="dices"></i>RPG<span class="badge" id="rpgBadge" hidden></span></button>
         <span class="tab-ink" id="tabInk"></span>
       </nav>
 
@@ -254,6 +260,8 @@
         <p class="hint" id="soundsHint">Clique num som para tocar para todo mundo na call.</p>
         <div id="soundGrid"></div>
       </section>
+
+      <section class="pane" id="paneRpg" hidden></section>
     </aside>
   </div>
 
@@ -825,6 +833,17 @@
     <h2><span id="pokeFrom"></span> cutucou você</h2>
     <p id="pokeMsg"></p>
     <menu><button id="pokeReply" class="ghost">Cutucar de volta</button><button data-close>OK</button></menu>
+  </dialog>
+
+  <dialog id="rpgImportDlg" class="rpg-dlg">
+    <h2>Ficha d2Trinities (Formato Discord)</h2>
+    <p class="muted small">Cole abaixo a sua ficha do Discord (ou do Apêndice C do livro Guia Definitivo d2Trinities) para preencher os atributos, status e perícias (◈◈◈◈☗) automaticamente.</p>
+    <textarea id="rpgImportText" rows="12" placeholder="Cole sua ficha aqui…"></textarea>
+    <menu>
+      <button type="button" class="ghost" data-close>Fechar</button>
+      <button type="button" class="ghost" id="rpgCopyTextBtn"><i data-icon="copy" class="sm"></i>Copiar ficha atual</button>
+      <button type="button" class="primary" id="rpgApplyImportBtn"><i data-icon="check" class="sm"></i>Importar para minha ficha</button>
+    </menu>
   </dialog>
 
   <div id="lightbox" hidden><img id="lightboxImg" alt=""><button class="icon-btn" id="lightboxClose" title="Fechar"><i data-icon="x"></i></button></div>
