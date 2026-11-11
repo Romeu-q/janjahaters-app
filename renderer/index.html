@@ -26,6 +26,7 @@
     <span class="tool-sep" id="toolSepEnd"></span>
     <button type="button" class="tool" id="tbAway" title="Ficar ausente"><i data-icon="moon"></i><span>Ausente</span></button>
     <span class="grow"></span>
+    <button type="button" class="tool" id="tbRpg" data-rpg-session title="Mesa de RPG (d2Trinities)" hidden><i data-icon="dices"></i><span>Mesa RPG</span></button>
     <button type="button" class="tool" id="tbRoom" data-room title="Acampamento"><i data-icon="tent"></i><span>Acampamento</span></button>
     <button type="button" class="tool" id="tbFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span>Amigos</span><span class="badge" data-friends-badge hidden></span></button>
     <button type="button" class="tool" id="tbInvite" title="Convidar amigos"><i data-icon="user-plus"></i><span>Convidar</span></button>
@@ -51,6 +52,7 @@
           <div class="group-sub" id="groupSub">1 online</div>
           <div class="group-desc" id="groupDesc" hidden></div>
         </div>
+        <button class="icon-btn" id="btnRpg" data-rpg-session title="Mesa de RPG (d2Trinities)" hidden><i data-icon="dices"></i></button>
         <button class="icon-btn" id="btnRoom" data-room title="Acampamento"><i data-icon="tent"></i></button>
         <button class="icon-btn" id="btnFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span class="badge dot-badge" data-friends-badge hidden></span></button>
         <button class="icon-btn" id="btnServer" title="Perfil do servidor"><i data-icon="settings"></i></button>
@@ -98,7 +100,6 @@
         <button type="button" class="icon-btn" id="btnChatSearch" title="Buscar mensagens (Ctrl+F)"><i data-icon="search"></i></button>
       </header>
 
-      <div id="rpgPromptBar" class="rpg-prompt-bar" hidden></div>
       <div id="rpgRollToast" class="rpg-roll-toast" hidden></div>
 
       <section id="textView" class="view">
@@ -181,6 +182,8 @@
           </div>
         </aside>
       </section>
+
+      <section id="rpgSessionView" class="view rpg-session-view" hidden></section>
     </main>
 
     <!-- player do YouTube escondido e pequeno: só o som importa (vídeo pequeno = YouTube manda 144p, quase nada para decodificar) -->
@@ -193,7 +196,6 @@
         <button class="tab" data-tab="chat"><i data-icon="message-square"></i>Chat<span class="badge" id="callBadge" hidden></span></button>
         <button class="tab" data-tab="music"><i data-icon="list-music"></i>Música</button>
         <button class="tab" data-tab="sounds"><i data-icon="drum"></i>Sons</button>
-        <button class="tab" data-tab="rpg"><i data-icon="dices"></i>RPG<span class="badge" id="rpgBadge" hidden></span></button>
         <span class="tab-ink" id="tabInk"></span>
       </nav>
 
@@ -260,8 +262,6 @@
         <p class="hint" id="soundsHint">Clique num som para tocar para todo mundo na call.</p>
         <div id="soundGrid"></div>
       </section>
-
-      <section class="pane" id="paneRpg" hidden></section>
     </aside>
   </div>
 
