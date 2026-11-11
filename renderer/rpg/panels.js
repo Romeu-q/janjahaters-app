@@ -98,6 +98,7 @@ export function installPanels(T) {
     const head = h('div', 'rt-fhead',
       h('select', { class: 'rt-sel', onchange: (e) => { S.cid = e.target.value; T.renderTab(); } }, list.length ? list.map((x) => h('option', { value: x.id, selected: x.id === S.cid }, `${x.d.name || 'Sem nome'}${gm && x.uid !== me.id ? ' — ' + T.userName(x.uid) : ''}${x.d.on ? ' ★' : ''}`)) : h('option', null, 'Nenhum personagem')),
       btn('rt-btn primary', 'plus', 'Novo personagem', () => wizard()),
+      c && T.canEditChar(c) && btn('rt-btn ghost', 'image', c.d.img ? 'Trocar sprite' : 'Sprite do token', () => T.pickImage((id) => { T.putChar(c, { ...T.charById(c.id).d, img: id }); api.toast('Sprite trocado: veja no mapa'); T.renderTab(); }), 'Imagem que aparece no seu token no mapa'),
       c && btn('rt-btn ghost', 'copy', 'Ficha em texto', () => sheetDialog(c), 'Copiar ou colar a ficha no modelo do Discord'),
       c && c.uid === me.id && !c.d.on && btn('rt-btn ghost', 'check', 'Jogar com este', () => { for (const o of mine) if (o.d.on && o.id !== c.id) T.putChar(o, { ...o.d, on: false }); T.putChar(c, { ...c.d, on: true }); T.renderTab(); }),
       c && T.canEditChar(c) && btn('rt-btn ghost danger', 'x', 'Apagar', () => { if (confirm(`Apagar a ficha de ${c.d.name || 'sem nome'}? Não dá para desfazer.`)) { for (const t of api.recs('rpgk')) if (t.cid === c.id) api.put({ k: 'rpgk', id: t.id, del: true }); api.put({ k: 'rpgc', id: c.id, uid: c.uid, del: true }); S.cid = ''; T.renderTab(); } }),

@@ -119,6 +119,7 @@ export function cleanChar(raw) {
   c.conds = Array.isArray(r.conds) ? r.conds.map((x) => str(x, 40)).filter(Boolean).slice(0, 20) : [];
   c.trk = clamp(int(r.trk), 0, 5);
   c.on = !!r.on;
+  if (typeof r.img === 'string' && /^f:[a-z0-9]{6,40}$/i.test(r.img)) c.img = r.img; // sprite do token
   return c;
 }
 

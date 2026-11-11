@@ -1742,3 +1742,6 @@ html.mobile .rt-dock, html.mobile .rt-livro, html.mobile .rt-pick-body, html.mob
 .rt label.rt-check { flex-direction: row; align-items: center; }
 .rt input[type="checkbox"] { width: auto; margin: 0; }
 .rt-prow .rt-inv-n { flex-basis: 100%; }
+.rt-tok-body { background-color: #1d2025; background-repeat: no-repeat; background-position: center; background-size: 74%; image-rendering: pixelated; position: relative; }
+.rt-tok-body.photo { background-size: cover; image-rendering: auto; }
+.rt-tok-body[data-n]:not([data-n=""])::after { content: attr(data-n); position: absolute; right: -3px; bottom: -3px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: #000d; color: #fff; font-size: 10px; line-height: 15px; text-align: center; text-shadow: none; }

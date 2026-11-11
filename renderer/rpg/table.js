@@ -8,6 +8,7 @@
 //   rpgr  rolagem     { uid, ts, d }                     cada um as suas
 import * as R from './rules.js';
 import { installPanels } from './panels.js';
+import { spriteUrl } from './sprites.js';
 
 const CELL = 56; // px de um quadrado com zoom 1
 
@@ -74,6 +75,17 @@ function mount(root, api) {
   T.tokens = () => api.recs('rpgk').filter((t) => T.isGm() || !t.hid);
   T.canCtl = (t) => !!t && (T.isGm() || (t.uid && t.uid === me.id));
   T.putTok = (t, patch) => api.put({ ...t, ...patch });
+  // escolher uma imagem do PC (sprite de token); guarda no grupo e devolve o id
+  T.pickImage = (cb, maxMb = 2) => {
+    const f = h('input', { type: 'file', accept: 'image/*' });
+    f.onchange = async () => {
+      const file = f.files[0];
+      if (!file) return;
+      if (file.size > maxMb * 1024 * 1024) return api.toast(`A imagem passa de ${maxMb} MB`);
+      cb(await api.addFile(file));
+    };
+    f.click();
+  };
   T.userName = (uid) => api.user(uid)?.name || 'Alguém';
 
   // tudo o que a mesa precisa saber de um token (personagem ou criatura do Mestre)
@@ -382,6 +394,7 @@ function mount(root, api) {
       btn('rt-ib', 'minus', null, () => zoomBy(1 / 1.2), 'Afastar'),
       btn('rt-ib', 'maximize', null, fitMap, 'Ver o mapa inteiro'),
       (M.rulerBtn = btn('rt-ib', 'ruler', null, () => { S.tool = S.tool === 'ruler' ? '' : 'ruler'; M.rulerBtn.classList.toggle('on', S.tool === 'ruler'); }, 'Régua: arraste no mapa para medir em metros')),
+      T.isGm() && btn('rt-ib', 'image', null, () => T.pickImage((id) => { T.putState({ map: { ...(T.state().map || {}), img: id } }); api.toast('Imagem de fundo trocada'); }, 8), 'Mestre: colocar uma imagem de fundo no mapa'),
     );
     M.hint = h('div', 'rt-maphint');
     M.req = h('div', { class: 'rt-req', hidden: true });
@@ -600,8 +613,16 @@ function mount(root, api) {
       }
       if (!n.el.classList.contains('drag')) Object.assign(n.el.style, { left: inf.x * CELL + 'px', top: inf.y * CELL + 'px', width: inf.sz * CELL + 'px', height: inf.sz * CELL + 'px' });
       n.el.className = ['rt-tok', 'side-' + inf.side, inf.id === S.actor && 'sel', inf.id === S.target && 'tgt', inf.id === cur && 'turn', inf.down && 'down', inf.hid && 'hid', fl.includes(inf.id) && 'flank', n.el.classList.contains('drag') && 'drag', T.canCtl(inf.tok) && 'mine'].filter(Boolean).join(' ');
-      n.body.style.background = inf.color;
-      n.body.textContent = (inf.name.trim()[0] || '?').toUpperCase() + (/\s(\d+)$/.exec(inf.name)?.[1] || '');
+      // sprite: a imagem enviada (ficha ou token) ou o desenho do tipo da criatura
+      const custom = inf.char ? inf.char.d.img : inf.tok.img;
+      const want = custom || spriteUrl(inf.mon?.src || inf.name, { hero: !!inf.char, color: inf.color });
+      if (n.img !== want) {
+        n.img = want;
+        n.body.classList.toggle('photo', !!custom);
+        n.body.style.backgroundImage = custom ? '' : `url(${want})`;
+        if (custom) api.fileUrl(custom, inf.char ? inf.char.uid : api.gm()).then((u) => u && n.img === custom && (n.body.style.backgroundImage = `url(${u})`));
+      }
+      n.body.dataset.n = /\s(\d+)$/.exec(inf.name)?.[1] || '';
       n.hp.style.width = R.clamp((100 * inf.pv) / inf.pvMax, 0, 100) + '%';
       n.hp.className = inf.pv / inf.pvMax < 0.34 ? 'low' : inf.pv / inf.pvMax < 0.67 ? 'mid' : '';
       n.name.textContent = inf.name;
@@ -781,6 +802,7 @@ function mount(root, api) {
           btn('rt-chip', actor.hid ? 'eye-off' : 'eye', actor.hid ? 'Escondido' : 'Visível', () => T.putTok(actor.tok, { hid: !actor.hid }), 'Jogadores só veem tokens visíveis'),
           h('select', { class: 'rt-sel', title: 'De que lado luta (conta para o flanco)', onchange: (e) => T.putTok(actor.tok, { side: e.target.value }) }, [['e', 'Inimigo'], ['a', 'Aliado'], ['n', 'Neutro']].map(([v, l]) => h('option', { value: v, selected: actor.side === v }, l))),
           h('select', { class: 'rt-sel', title: 'Tamanho no mapa', onchange: (e) => T.putTok(actor.tok, { sz: R.int(e.target.value, 1) }) }, [1, 2, 3, 4].map((v) => h('option', { value: v, selected: actor.sz === v }, v + 'x' + v))),
+          btn('rt-chip', 'image', 'Sprite', () => T.pickImage((id) => T.putTok(api.get(actor.id), { img: id })), 'Trocar o desenho deste token por uma imagem sua'),
           btn('rt-chip danger', 'x', 'Tirar', () => api.put({ k: 'rpgk', id: actor.id, del: true })),
         ));
       } else if (gm && actor) col1.append(h('div', 'rt-row', btn('rt-chip danger', 'x', 'Tirar do mapa', () => api.put({ k: 'rpgk', id: actor.id, del: true }))));
