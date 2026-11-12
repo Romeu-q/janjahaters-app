@@ -42,4 +42,10 @@ contextBridge.exposeInMainWorld('desk', {
   googleCancel: () => ipcRenderer.send('google-cancel'),
   googleVerify: (token, uid) => ipcRenderer.invoke('google-verify', token, uid),
   onMaximized: (fn) => ipcRenderer.on('maximized', (e, v) => fn(v)),
+  // outro servidor aberto por cima da call
+  visit: (cmd, arg) => ipcRenderer.send('visit', cmd, arg),
+  callState: (st) => ipcRenderer.send('call-state', st),
+  getCallState: () => ipcRenderer.invoke('call-state'),
+  onCallState: (fn) => ipcRenderer.on('call-state', (e, st) => fn(st)),
+  onCallCmd: (fn) => ipcRenderer.on('call-cmd', (e, cmd, arg) => fn(cmd, arg)),
 });

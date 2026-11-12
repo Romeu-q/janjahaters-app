@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, desktopCapturer, shell, session, webFrameMain } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, desktopCapturer, shell, session, webFrameMain } = require('electron');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -134,6 +134,87 @@ ipcMain.handle('music-gain', (e, g) => {
   return true;
 });
 
+const WEB_PREFS = {
+  preload: path.join(__dirname, 'preload.js'),
+  contextIsolation: true,
+  sandbox: true,
+  backgroundThrottling: false, // a call e a música continuam com a janela minimizada
+  autoplayPolicy: 'no-user-gesture-required',
+};
+// links externos abrem no navegador; a página do app não sai do endereço local
+function guardContents(wc) {
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  wc.on('will-navigate', (e, url) => {
+    if (!url.startsWith(`http://localhost:${UI_PORT}/`)) e.preventDefault();
+  });
+  wc.on('did-frame-finish-load', (e, isMain, pid, rid) => !isMain && injectMusicGain(webFrameMain.fromId(pid, rid)));
+}
+// manda para a página principal e para o servidor que está aberto por cima (se tiver)
+function sendAll(ch, ...args) {
+  win?.webContents.send(ch, ...args);
+  if (visit && !visit.webContents.isDestroyed()) visit.webContents.send(ch, ...args);
+}
+
+// ----- ver outro servidor sem sair da call -----
+// A página principal fica com a call (escondida, mas tocando). O outro servidor abre numa segunda página por
+// cima, ocupando a janela toda. Voltar ao servidor da call fecha essa página.
+let visit = null;
+let visitHash = null;
+let callState = null; // { hash, server, ch, muted, deaf, live, n } da página principal
+let adopting = false;
+function fitVisit() {
+  if (!visit || !win) return;
+  const [width, height] = win.getContentSize();
+  visit.setBounds({ x: 0, y: 0, width, height });
+}
+function openVisit(hash) {
+  if (!win || typeof hash !== 'string' || !/^[a-f0-9]{10,64}$/.test(hash)) return;
+  visitHash = hash;
+  const url = `http://localhost:${UI_PORT}/?visit=${hash}`;
+  if (visit) return visit.webContents.loadURL(url);
+  visit = new WebContentsView({ webPreferences: WEB_PREFS });
+  visit.setBackgroundColor('#141619');
+  guardContents(visit.webContents);
+  win.contentView.addChildView(visit);
+  fitVisit();
+  visit.webContents.loadURL(url);
+  visit.webContents.once('did-finish-load', () => visit?.webContents.focus());
+}
+function closeVisit() {
+  adopting = false;
+  if (!visit) return;
+  const v = visit;
+  visit = null;
+  visitHash = null;
+  win?.contentView.removeChildView(v);
+  if (!v.webContents.isDestroyed()) v.webContents.close();
+  win?.webContents.focus();
+}
+// a página principal passa a ser o servidor que estava por cima (a call acabou ou a pessoa entrou numa call de lá)
+function adoptVisit() {
+  if (!visit || adopting) return;
+  adopting = true;
+  win.webContents.once('did-finish-load', () => setTimeout(closeVisit, 400));
+  win.webContents.send('call-cmd', 'adopt', visitHash);
+}
+ipcMain.on('visit', (e, cmd, arg) => {
+  if (cmd === 'open') openVisit(arg);
+  else if (cmd === 'back') closeVisit();
+  else if (cmd === 'take') adoptVisit();
+  else if (cmd === 'dms') (closeVisit(), win?.webContents.send('call-cmd', 'dms'));
+  else if (['mute', 'deafen', 'leave'].includes(cmd)) win?.webContents.send('call-cmd', cmd);
+});
+ipcMain.on('call-state', (e, st) => {
+  if (!win || e.sender !== win.webContents) return;
+  callState = st && typeof st === 'object' ? st : null;
+  if (visit && !visit.webContents.isDestroyed()) visit.webContents.send('call-state', callState);
+  if (!callState && visit && !adopting) adoptVisit();
+});
+ipcMain.handle('call-state', () => callState);
+
 function createWindow() {
   const saved = savedBounds();
   win = new BrowserWindow({
@@ -147,18 +228,12 @@ function createWindow() {
     title: 'janjahaters',
     icon: path.join(__dirname, 'renderer', 'icon.png'),
     show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      sandbox: true,
-      backgroundThrottling: false, // a call e a música continuam com a janela minimizada
-      autoplayPolicy: 'no-user-gesture-required',
-    },
+    webPreferences: WEB_PREFS,
   });
+  win.on('resize', fitVisit);
   if (saved?.maximized) win.maximize();
   keepBounds();
   win.loadURL(`http://localhost:${UI_PORT}/`);
-  win.webContents.on('did-frame-finish-load', (e, isMain, pid, rid) => !isMain && injectMusicGain(webFrameMain.fromId(pid, rid)));
   // aberto pelo "iniciar com o Windows": fica só na bandeja
   win.once('ready-to-show', () => !(process.argv.includes('--hidden') && prefs().tray) && win.show());
   // com a bandeja ligada, o X só esconde a janela (a call e a música continuam)
@@ -167,16 +242,10 @@ function createWindow() {
     e.preventDefault();
     win.hide();
   });
-  win.on('maximize', () => win.webContents.send('maximized', true));
-  win.on('unmaximize', () => win.webContents.send('maximized', false));
+  win.on('maximize', () => (sendAll('maximized', true), fitVisit()));
+  win.on('unmaximize', () => (sendAll('maximized', false), fitVisit()));
   win.on('focus', () => win.flashFrame(false));
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(`http://localhost:${UI_PORT}/`)) e.preventDefault();
-  });
+  guardContents(win.webContents);
 }
 
 // ----- convite por link: janjahaters://join/CODIGO -----
@@ -253,16 +322,16 @@ function setupAutoUpdate() {
   autoUpdater.autoInstallOnAppQuit = false; // só instala quando a pessoa clicar em reiniciar
   autoUpdater.on('update-available', (info) => {
     updateAvail = info.version;
-    win?.webContents.send('update-available', info.version);
+    sendAll('update-available', info.version);
   });
-  autoUpdater.on('download-progress', (p) => win?.webContents.send('update-progress', Math.round(p.percent)));
+  autoUpdater.on('download-progress', (p) => sendAll('update-progress', Math.round(p.percent)));
   autoUpdater.on('update-downloaded', (info) => {
     updateReady = info.version;
-    win?.webContents.send('update-ready', info.version);
+    sendAll('update-ready', info.version);
   });
   autoUpdater.on('error', (err) => {
     console.warn('atualização:', err?.message);
-    win?.webContents.send('update-error', String(err?.message || err));
+    sendAll('update-error', String(err?.message || err));
   });
   setTimeout(() => checkForUpdates().catch(() => {}), 4000);
   setInterval(() => checkForUpdates().catch(() => {}), 6 * 3600e3);
@@ -288,7 +357,7 @@ app.whenReady().then(setupAutoUpdate);
 // ----- atividade ("Jogando X" e rich presence dos jogos): activity.js -----
 let activity = null;
 app.whenReady().then(() => {
-  activity = require('./activity')({ userData: app.getPath('userData'), send: (a) => win?.webContents.send('activity', a) });
+  activity = require('./activity')({ userData: app.getPath('userData'), send: (a) => sendAll('activity', a) });
 });
 ipcMain.handle('activity-config', (e, cfg) => activity?.config(cfg) ?? null);
 ipcMain.handle('activity-now', () => activity?.current() ?? null);

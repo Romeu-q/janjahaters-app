@@ -454,6 +454,14 @@ me.p = cleanProfile(me.p);
 const profiles = store.get('profiles', {}); // uid -> perfil dos amigos (para mensagens antigas também)
 const profileOf = (uid) => (uid === me.id ? me.p : profiles[uid]) || {};
 let R = store.get('room', null); // { key, hash }
+// Visita: outro servidor aberto por cima da call. A call continua na página de baixo (escondida); esta página
+// mostra a barra dela e manda os comandos (mutar, sair) para lá.
+const VISIT = new URLSearchParams(location.search).get('visit');
+if (VISIT) {
+  const sv = store.get('servers', []).find((x) => x.hash === VISIT);
+  if (sv) R = { key: sv.key, hash: sv.hash };
+}
+let farCall = null; // { hash, server, ch, muted, deaf, live, n } da call que está na página de baixo
 const S = { view: null, unread: new Set(), callUnread: 0, firstRender: true };
 
 // ============================================================ sons
@@ -656,7 +664,7 @@ async function initIdentity() {
     sendFrq: (body, pid) => A?.frq?.send(body, { target: pid }),
     speaker: () => settings.speaker || '',
   });
-  await dm.start();
+  if (!VISIT) await dm.start();
 }
 let dm = null;
 // ============================================================ cargos e permissões (nomes do Stoat)
@@ -1775,6 +1783,12 @@ async function joinVoice(ch) {
   if (!chCan(me.id, ch, P.Connect)) return toast('Você não tem permissão para entrar nesta call');
   const lim = channel(ch)?.limit | 0;
   if (lim && voiceMembers(ch).filter((m) => m.key !== 'dj').length >= lim && !chCan(me.id, ch, P.MoveMembers)) return toast(`A call está cheia (limite de ${lim})`);
+  if (VISIT && farCall) {
+    store.set('room', R);
+    store.set('rejoin', { hash: R.hash, ch, at: Date.now() });
+    toast('Mudando de call…');
+    return window.desk.visit('take');
+  }
   if (C.ch) leaveVoice(true);
   try {
     const m = await getMic();
@@ -1817,6 +1831,7 @@ function leaveVoice(switching) {
   if (!C.ch) return;
   if (!switching) window.desk?.callActive?.(false);
   if (!switching && !keepRejoin) store.del('rejoin'); // saiu de propósito: não volta sozinho
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   stopStream(false);
   stopCam(false);
   C.ch = null;
@@ -1858,7 +1873,7 @@ window.desk?.onPtt?.((down) => {
       applyMicEnabled();
     }, 250);
 });
-const applyPtt = () => window.desk?.pttSet?.(settings.ptt.vk).catch(() => false);
+const applyPtt = () => (VISIT ? Promise.resolve(false) : window.desk?.pttSet?.(settings.ptt.vk).catch(() => false));
 applyPtt();
 
 // cada amigo no mesmo canal de voz recebe exatamente os streams certos
@@ -2382,9 +2397,61 @@ function toggleDeafen() {
   sendHi();
   renderPresence();
 }
-$('#btnMute').onclick = $('#ctlMute').onclick = toggleMute;
-$('#btnDeafen').onclick = $('#ctlDeafen').onclick = toggleDeafen;
-$('#vbLeave').onclick = () => leaveVoice();
+$('#btnMute').onclick = $('#ctlMute').onclick = () => (VISIT && farCall && !C.ch ? window.desk.visit('mute') : toggleMute());
+$('#btnDeafen').onclick = $('#ctlDeafen').onclick = () => (VISIT && farCall && !C.ch ? window.desk.visit('deafen') : toggleDeafen());
+$('#vbLeave').onclick = () => (VISIT && farCall && !C.ch ? window.desk.visit('leave') : leaveVoice());
+
+// ----- call em outro servidor -----
+// Página principal: avisa o processo principal como está a call (para a página de visita mostrar a barra).
+let lastCallState = 'null';
+function reportCall() {
+  if (VISIT || !window.desk?.callState) return;
+  const st = C.ch ? { hash: R.hash, server: groupName(), ch: channel(C.ch)?.name || '', muted: !!(C.muted || C.deafened || !C.mic), deaf: !!C.deafened, live: !!C.screen, n: voiceMembers(C.ch).length } : null;
+  const j = JSON.stringify(st);
+  if (j === lastCallState) return;
+  lastCallState = j;
+  window.desk.callState(st);
+}
+window.desk?.onCallCmd?.((cmd, hash) => {
+  if (VISIT) return;
+  if (cmd === 'mute') toggleMute();
+  else if (cmd === 'deafen') toggleDeafen();
+  else if (cmd === 'leave') leaveVoice();
+  else if (cmd === 'dms') dm?.open();
+  else if (cmd === 'adopt') {
+    const sv = servers().find((x) => x.hash === hash);
+    if (sv) store.set('room', { key: sv.key, hash: sv.hash });
+    if (C.ch) leaveVoice(true);
+    location.reload();
+  }
+});
+// Página de visita: mostra a call de lá na barra de voz; clicar nela volta para o servidor da call
+function renderFarCall() {
+  if (!VISIT) return;
+  const far = !!farCall && !C.ch;
+  const bar = $('#voiceBar');
+  bar.classList.toggle('far', far);
+  if (!far) return;
+  bar.hidden = false;
+  $('#vbStatusText').textContent = 'Voz conectada';
+  $('#vbPing').textContent = '';
+  $('#vbChannel').textContent = `${farCall.ch} · ${farCall.server}`;
+  setIcon($('#btnMute'), farCall.muted ? 'mic-off' : 'mic');
+  $('#btnMute').classList.toggle('off', farCall.muted);
+  setIcon($('#btnDeafen'), farCall.deaf ? 'headphone-off' : 'headphones');
+  $('#btnDeafen').classList.toggle('off', farCall.deaf);
+  $('#meSub').textContent = farCall.live ? 'Ao vivo' : 'Na call';
+}
+$('#voiceBar .vb-info').addEventListener('click', () => VISIT && farCall && !C.ch && window.desk.visit('back'));
+if (VISIT) {
+  const setFar = (st) => {
+    farCall = st || null;
+    renderFarCall();
+    if (typeof renderServers === 'function') renderServers();
+  };
+  window.desk?.onCallState?.(setFar);
+  window.desk?.getCallState?.().then(setFar);
+}
 
 // ----- botão rápido da supressão de ruído (ao lado de sair da call) -----
 // Liga/desliga o RNNoise sem abrir as configurações. Desligar vai para "Desligada".
@@ -5414,6 +5481,8 @@ function renderSidebar() {
 
   $('#voiceBar').hidden = !C.ch;
   if (C.ch) $('#vbChannel').textContent = channel(C.ch)?.name || '';
+  reportCall();
+  renderFarCall();
   if (C.ch) renderCallStatus();
   renderStatusBar();
   setIcon($('#vbStream'), C.screen ? 'screen-share-off' : 'screen-share');
@@ -5574,6 +5643,8 @@ function renderMeCard() {
   $('#btnMute').classList.toggle('off', off);
   setIcon($('#btnDeafen'), C.deafened ? 'headphone-off' : 'headphones');
   $('#btnDeafen').classList.toggle('off', C.deafened);
+  reportCall();
+  renderFarCall();
 }
 
 const videoEls = new Map(); // stream.id -> <video>
@@ -5675,7 +5746,7 @@ function fillStreamTile(s, total) {
       saveSettings();
       renderStage();
     });
-  const fs = btn('maximize', 'Tela cheia', () => (document.fullscreenElement ? document.exitFullscreen() : t.requestFullscreen()));
+  const fs = btn('maximize', 'Tela cheia', () => (document.fullscreenElement === t ? document.exitFullscreen() : t.requestFullscreen()));
   t.append(tag, tools);
   if (s.key !== 'me') {
     const stop = el('button', 'stop-watch');
@@ -5859,8 +5930,9 @@ function renderStage() {
     const grid = shown.length > 1 && settings.streamLayout !== 'focus';
     const focus = shown.find((s) => s.key === C.focus) || shown[0];
     const main = el('div', grid ? 'stream-grid n' + Math.min(shown.length, 4) : 'stream-focus');
-    if (shown.length > 1) {
-      // alternar entre todas lado a lado e uma em destaque
+    const stageFs = document.fullscreenElement === stage;
+    if (shown.length > 1 || stageFs) {
+      // alternar entre todas lado a lado e uma em destaque; tela cheia leva todas juntas
       const bar = el('div', 'stream-bar');
       const mk = (mode, iconName, label) => {
         const b = el('button', 'ghost sm' + ((settings.streamLayout || 'grid') === mode ? ' on' : ''));
@@ -5873,7 +5945,14 @@ function renderStage() {
         };
         return b;
       };
-      bar.append(el('span', 'muted small', `${shown.length} streams`), mk('grid', 'users', 'Lado a lado'), mk('focus', 'maximize', 'Destaque'));
+      const fsAll = el('button', 'ghost sm' + (stageFs ? ' on' : ''));
+      fsAll.type = 'button';
+      fsAll.title = stageFs ? 'Sair da tela cheia (Esc)' : 'Todas as streams em tela cheia';
+      fsAll.append(icon(stageFs ? 'minimize-2' : 'maximize', 'sm'), document.createTextNode(stageFs ? 'Sair da tela cheia' : 'Tela cheia'));
+      fsAll.onclick = () => (stageFs ? document.exitFullscreen() : stage.requestFullscreen()).catch(() => {});
+      bar.append(el('span', 'muted small', shown.length > 1 ? `${shown.length} streams` : '1 stream'));
+      if (shown.length > 1) bar.append(mk('grid', 'users', 'Lado a lado'), mk('focus', 'pin', 'Destaque'));
+      bar.append(fsAll);
       stage.replaceChildren(bar);
     } else stage.replaceChildren();
     const strip = el('div', 'strip');
@@ -5938,6 +6017,14 @@ function setCamFocus(key) {
   C.camFocus = key || null;
   renderStage();
 }
+document.addEventListener('fullscreenchange', () => {
+  const st = $('#stage');
+  if (document.fullscreenElement === st || st.dataset.fs) {
+    st.dataset.fs = document.fullscreenElement === st ? '1' : '';
+    if (!st.dataset.fs) delete st.dataset.fs;
+    renderStage();
+  }
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && C.camFocus && !document.fullscreenElement && !document.querySelector('dialog[open]')) setCamFocus(null);
 });
@@ -6030,7 +6117,7 @@ if (!isMobile) {
   $('#toolbar').prepend(...$('#controls').children); // os botões da call viram ferramentas
   $('#statusBar').prepend($('.tb-status'));
   $('#tbInvite').onclick = () => $('#btnInvite').click();
-  $('#tbFriends').onclick = () => dm?.open();
+  $('#tbFriends').onclick = () => (VISIT ? window.desk.visit('dms') : dm?.open());
   $('#tbServer').onclick = () => $('#btnServer').click();
   $('#tbSettings').onclick = () => $('#btnSettings').click();
   $('#tbAway').onclick = () => setStatus(myStatus() === 'idle' ? 'online' : 'idle');
@@ -6874,7 +6961,7 @@ $('#btnCopyCode').onclick = async () => {
   toast('Código copiado');
 };
 $$('[data-close]').forEach((b) => (b.onclick = () => closeDialog(b.closest('dialog'))));
-$('#btnFriends').onclick = () => dm?.open();
+$('#btnFriends').onclick = () => (VISIT ? window.desk.visit('dms') : dm?.open());
 
 function colorPicker(box, current, onPick) {
   box.replaceChildren();
@@ -9290,9 +9377,10 @@ function rememberServer(info) {
 function renderServers() {
   const box = $('#servers');
   const nodes = servers().map((sv) => {
-    const b = el('button', 'srv' + (sv.hash === R?.hash ? ' active' : ''));
+    const inCall = (sv.hash === R?.hash && C.ch) || sv.hash === farCall?.hash;
+    const b = el('button', 'srv' + (sv.hash === R?.hash ? ' active' : '') + (inCall ? ' in-call' : ''));
     b.type = 'button';
-    b.title = sv.name || 'Servidor';
+    b.title = (sv.name || 'Servidor') + (inCall ? ' · você está na call aqui' : '');
     const av = el('span', 'srv-av');
     paintGroupAvatar(av, sv);
     b.append(av);
@@ -9316,6 +9404,8 @@ function renderServers() {
 }
 async function switchServer(sv) {
   if (sv.hash === R?.hash) return;
+  if (VISIT) return sv.hash === farCall?.hash ? window.desk.visit('back') : window.desk.visit('open', sv.hash);
+  if (C.ch && window.desk?.visit) return window.desk.visit('open', sv.hash);
   if (C.ch && !confirm('Você está numa call. Trocar de servidor sai dela. Trocar mesmo assim?')) return;
   if (C.ch) leaveVoice();
   room?.leave();
