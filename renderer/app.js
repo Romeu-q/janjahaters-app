@@ -1450,6 +1450,7 @@ function watchStream(pid) {
   C.watching.add(pid);
   C.focus = pid;
   sendHi();
+  sfuSync(); // stream no servidor: já começa a puxar
   renderStage();
   renderSidebar();
 }
@@ -1461,6 +1462,7 @@ function unwatchStream(pid) {
     detachAudio(p, 'screen');
   }
   sendHi();
+  sfuSync();
   renderStage();
   renderSidebar();
 }
