@@ -1,5 +1,5 @@
 import { joinRoom, selfId } from 'trystero';
-import { TURN } from './turn.gen.js';
+import { TURN, SFU_URL as SFU_URL_BUILD } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain } from './mic-chain.js';
 import { FIG, ONE_HAND, cleanFig, cleanPos } from './figure.js';
@@ -990,7 +990,11 @@ function ensurePeer(pid) {
   return peers.get(pid);
 }
 function myVoice() {
-  return C.ch ? { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] } : null;
+  if (!C.ch) return null;
+  const v = { ch: C.ch, muted: C.muted || !C.mic, deafened: C.deafened, streaming: !!C.screen, cam: !!C.cam, watch: [...C.watching] };
+  if (SFU_URL && !SFU.viewBad) v.sfuOk = true; // sei assistir pelo servidor
+  if (SFU.pub?.ready) v.sfu = { s: SFU.pub.session, v: SFU.pub.names.video, a: SFU.pub.names.audio }; // minha stream está no servidor
+  return v;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
 const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), act: myActivity(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
@@ -1413,6 +1417,8 @@ function onHi(pid, d) {
           streaming: !!v.streaming,
           cam: !!v.cam,
           watch: Array.isArray(v.watch) ? v.watch.filter((x) => typeof x === 'string').slice(0, 12) : [],
+          sfuOk: !!v.sfuOk,
+          sfu: cleanSfu(v.sfu),
         }
       : null;
   const isIn = C.ch && p.voice?.ch === C.ch;
@@ -1743,7 +1749,8 @@ function syncMedia() {
     const both = !!C.ch && p.voice?.ch === C.ch;
     // a tela só vai para quem clicou em "Assistir"
     // a câmera vai para todo mundo da call (como no Discord); a tela só para quem clicou em Assistir
-    const out = both ? { mic: C.mic, cam: C.cam, screen: p.voice.watch?.includes(selfId) ? C.screen : null } : {};
+    const viaSfu = SFU.pub?.ready && SFU.pub.stream === C.screen && p.voice?.sfuOk;
+    const out = both ? { mic: C.mic, cam: C.cam, screen: p.voice.watch?.includes(selfId) && !viaSfu ? C.screen : null } : {};
     if (!C.sent.has(p.pid)) C.sent.set(p.pid, new Map());
     const sent = C.sent.get(p.pid);
     for (const kind of ['mic', 'cam', 'screen']) {
@@ -1764,7 +1771,166 @@ function syncMedia() {
   }
   setTimeout(tuneSenders, 1500);
   setTimeout(tuneSenders, 5000);
+  sfuSync();
 }
+
+// ----- streams pelo SFU da Cloudflare (Realtime) -----
+// Direto PC a PC, quem transmite codifica e envia uma cópia para cada pessoa: num PC fraco isso enche o
+// processador e o upload e o ping da call sobe. Pelo SFU, envia uma cópia só e a Cloudflare repassa.
+// A chave fica num Worker (sfu-worker/); o app só conhece o endereço dele. Se o SFU falhar (Worker fora do ar,
+// cota, rede que bloqueia), a stream volta a ir direto, como antes. A voz e a câmera continuam diretas.
+const SFU_URL = String(store.get('sfuUrl', '') || SFU_URL_BUILD || '').replace(/\/+$/, '');
+const SFU = { pub: null, pubFor: null, failedFor: null, viewBad: false, pulls: new Map() };
+const SFU_ICE = [{ urls: 'stun:stun.cloudflare.com:3478' }];
+function cleanSfu(x) {
+  const ok = (s) => typeof s === 'string' && /^[\w-]{1,80}$/.test(s);
+  if (!x || !/^[0-9a-f]{16,64}$/.test(x.s || '') || !ok(x.v)) return null;
+  return { s: x.s, v: x.v, a: ok(x.a) ? x.a : '' };
+}
+async function sfuApi(method, path, body) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10_000);
+  try {
+    const r = await fetch(SFU_URL + path, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: ctl.signal });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.errorCode) throw new Error(d.errorDescription || d.errorCode || 'HTTP ' + r.status);
+    for (const tr of d.tracks || []) if (tr.errorCode) throw new Error(tr.errorDescription || tr.errorCode);
+    return d;
+  } finally {
+    clearTimeout(t);
+  }
+}
+const waitIce = (pc, ms = 1500) =>
+  pc.iceGatheringState === 'complete'
+    ? Promise.resolve()
+    : new Promise((ok) => {
+        const t = setTimeout(ok, ms);
+        pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && (clearTimeout(t), ok()));
+      });
+const waitConnected = (pc, ms = 10_000) =>
+  new Promise((ok, no) => {
+    if (pc.connectionState === 'connected') return ok();
+    const t = setTimeout(() => no(new Error('o servidor não respondeu')), ms);
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState === 'connected') (clearTimeout(t), ok());
+      else if (pc.connectionState === 'failed') (clearTimeout(t), no(new Error('conexão com o servidor falhou')));
+    });
+  });
+async function sfuPublish(stream) {
+  const pc = new NativeRTCPeerConnection({ iceServers: SFU_ICE, bundlePolicy: 'max-bundle' });
+  const pub = { pc, stream, session: '', names: {}, mids: [], ready: false };
+  try {
+    const tx = stream.getTracks().map((t) => ({ t, tr: pc.addTransceiver(t, { direction: 'sendonly', streams: [stream] }) }));
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitIce(pc);
+    const { sessionId } = await sfuApi('POST', '/session');
+    pub.session = sessionId;
+    const tag = randId(6);
+    const tracks = tx.map(({ t, tr }) => ({ location: 'local', mid: tr.mid, trackName: t.kind + '-' + tag }));
+    const r = await sfuApi('POST', '/session/' + sessionId + '/tracks', { sessionDescription: { type: 'offer', sdp: pc.localDescription.sdp }, tracks });
+    await pc.setRemoteDescription(r.sessionDescription);
+    await waitConnected(pc);
+    for (const x of tracks) pub.names[x.trackName.split('-')[0]] = x.trackName;
+    pub.mids = tracks.map((x) => x.mid);
+    pub.ready = true;
+    pc.addEventListener('connectionstatechange', () => {
+      if (pc.connectionState !== 'failed' || SFU.pub !== pub) return;
+      console.warn('SFU: a stream caiu no servidor; voltando para direto');
+      SFU.failedFor = stream;
+      sfuSync();
+    });
+    return pub;
+  } catch (err) {
+    pc.close();
+    throw err;
+  }
+}
+function sfuUnpublish(pub) {
+  pub.pc.close();
+  if (pub.session && pub.mids.length) sfuApi('PUT', '/session/' + pub.session + '/close', { tracks: pub.mids.map((mid) => ({ mid })), force: true }).catch(() => {});
+}
+async function sfuPull(pid, info) {
+  const pc = new NativeRTCPeerConnection({ iceServers: SFU_ICE, bundlePolicy: 'max-bundle' });
+  const pull = { pc, info, own: '', mids: [] };
+  SFU.pulls.set(pid, pull);
+  const stream = new MediaStream();
+  pc.ontrack = (e) => {
+    stream.addTrack(e.track);
+    if (SFU.pulls.get(pid) === pull) onPeerStream(stream, pid, { kind: 'screen' });
+  };
+  const { sessionId } = await sfuApi('POST', '/session');
+  pull.own = sessionId;
+  const tracks = [info.v, info.a].filter(Boolean).map((trackName) => ({ location: 'remote', sessionId: info.s, trackName }));
+  const r = await sfuApi('POST', '/session/' + sessionId + '/tracks', { tracks });
+  pull.mids = (r.tracks || []).map((x) => x.mid).filter(Boolean);
+  if (r.requiresImmediateRenegotiation) {
+    await pc.setRemoteDescription(r.sessionDescription);
+    await pc.setLocalDescription(await pc.createAnswer());
+    await waitIce(pc);
+    await sfuApi('PUT', '/session/' + sessionId + '/renegotiate', { sessionDescription: { type: 'answer', sdp: pc.localDescription.sdp } });
+  }
+  await waitConnected(pc);
+  pc.addEventListener('connectionstatechange', () => pc.connectionState === 'failed' && SFU.pulls.get(pid) === pull && sfuViewFailed(pid));
+}
+function sfuStopPull(pid) {
+  const pull = SFU.pulls.get(pid);
+  if (!pull) return;
+  SFU.pulls.delete(pid);
+  pull.pc.close();
+  if (pull.own && pull.mids.length) sfuApi('PUT', '/session/' + pull.own + '/close', { tracks: pull.mids.map((mid) => ({ mid })), force: true }).catch(() => {});
+}
+// não deu para assistir pelo servidor: avisa quem transmite (sfuOk some do "hi") e ele manda direto
+function sfuViewFailed(pid) {
+  sfuStopPull(pid);
+  if (SFU.viewBad) return;
+  SFU.viewBad = true;
+  toast('Não deu para assistir pelo servidor da Cloudflare; a stream vai chegar direto do PC de quem transmite');
+  sendHi();
+}
+function sfuSync() {
+  if (!SFU_URL) return;
+  // publicar: minha tela, enquanto estou na call
+  const want = C.ch && C.screen && SFU.failedFor !== C.screen ? C.screen : null;
+  if (SFU.pubFor !== want) {
+    const old = SFU.pub;
+    SFU.pub = null;
+    SFU.pubFor = want;
+    if (old) sfuUnpublish(old);
+    if (want)
+      sfuPublish(want).then(
+        (pub) => {
+          if (SFU.pubFor !== want) return sfuUnpublish(pub);
+          SFU.pub = pub;
+          sendHi();
+          syncMedia(); // quem assiste pelo servidor deixa de receber direto
+        },
+        (err) => {
+          console.warn('SFU: não consegui publicar a stream', err);
+          if (SFU.pubFor !== want) return;
+          SFU.failedFor = want;
+          SFU.pubFor = null;
+          sendHi();
+          syncMedia();
+        },
+      );
+    sendHi();
+  }
+  // assistir: puxa do servidor a stream de quem eu escolhi assistir
+  for (const [pid, pull] of SFU.pulls) {
+    const s = peers.get(pid)?.voice?.sfu;
+    if (!C.watching.has(pid) || !s || s.s !== pull.info.s || s.v !== pull.info.v) sfuStopPull(pid);
+  }
+  if (SFU.viewBad) return;
+  for (const pid of C.watching) {
+    const s = peers.get(pid)?.voice?.sfu;
+    if (!s || SFU.pulls.has(pid)) continue;
+    sfuPull(pid, s).catch((err) => {
+      console.warn('SFU: não consegui assistir pelo servidor', err);
+      if (SFU.pulls.has(pid)) sfuViewFailed(pid);
+    });
+  }
+}
+window.__sfu = SFU;
 
 function peerConnections() {
   const pcs = room?.getPeers() || {};
@@ -1878,7 +2044,7 @@ function tuneSenders() {
   if (!room) return;
   const viewers = activeScreenViewers();
   const antiPing = settings.antiPing !== false;
-  for (const [, pc] of peerConnections()) {
+  for (const pc of [...peerConnections().map((x) => x[1]), ...(SFU.pub ? [SFU.pub.pc] : [])]) {
     for (const sender of pc.getSenders?.() || []) {
       const t = sender.track;
       if (!t) continue;
@@ -8490,6 +8656,11 @@ window.__toca = {
   setAntiPing,
   buildRtcConfig,
   turnServers,
+  syncMedia,
+  sendHi,
+  watchStream,
+  joinVoice,
+  sfu: SFU,
 }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();

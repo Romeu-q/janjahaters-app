@@ -46,6 +46,7 @@ jobs:
         env:
           TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
           TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}
+          SFU_URL: ${{ vars.SFU_URL }}
       # som da stream separado por programa (native/sysaudio.cpp)
       - run: npm run build:sysaudio
       # login com Google: o cliente OAuth fica nos secrets GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET do repositório
@@ -82,6 +83,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
           TURN_API_TOKEN: ${{ secrets.TURN_API_TOKEN }}
+          SFU_URL: ${{ vars.SFU_URL }}
         run: npm run build:mobile
       - name: Chave de assinatura
         env:

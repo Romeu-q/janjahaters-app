@@ -15,4 +15,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 let turn = { id: process.env.TURN_KEY_ID || '', token: process.env.TURN_API_TOKEN || '' };
 if (!turn.id && existsSync('turn.json')) turn = JSON.parse(readFileSync('turn.json', 'utf8'));
 if (!turn.id) console.warn('aviso: sem chave TURN (turn.json ou TURN_KEY_ID/TURN_API_TOKEN) — quem estiver atrás de CGNAT pode não conectar');
-writeFileSync('renderer/turn.gen.js', `export const TURN = ${JSON.stringify({ id: turn.id || '', token: turn.token || '' })};\n`);
+// Endereço do Worker do SFU (sfu-worker/): variável SFU_URL (GitHub Actions) ou sfu.json local ({ "url": "https://..." }).
+// Não é segredo (a chave fica no Worker). Sem ele, as streams continuam indo direto entre os PCs.
+let sfu = process.env.SFU_URL || '';
+if (!sfu && existsSync('sfu.json')) sfu = JSON.parse(readFileSync('sfu.json', 'utf8')).url || '';
+writeFileSync('renderer/turn.gen.js', `export const TURN = ${JSON.stringify({ id: turn.id || '', token: turn.token || '' })};\nexport const SFU_URL = ${JSON.stringify(sfu)};\n`);
