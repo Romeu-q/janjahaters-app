@@ -439,6 +439,11 @@
     <h2 id="chDlgTitle">Criar canal</h2>
     <label>Nome<input id="chDlgName" maxlength="40"></label>
     <label id="chDlgCatWrap">Categoria<select id="chDlgCat"></select></label>
+    <div id="chDlgPrivWrap" class="ch-priv">
+      <label class="check"><input type="checkbox" id="chDlgPriv"> <i data-icon="lock" class="sm"></i> Privado para alguns cargos</label>
+      <p class="muted small" id="chDlgPrivHint"></p>
+      <div id="chDlgRoles" class="ch-priv-roles"></div>
+    </div>
     <menu>
       <button class="ghost danger-text" id="chDlgDelete" hidden>Apagar canal</button>
       <span class="grow"></span>

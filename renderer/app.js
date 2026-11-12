@@ -91,6 +91,7 @@ import {
   Swords,
   Gamepad2,
   Dices,
+  Lock,
   BookOpen,
   Ruler,
   Target,
@@ -234,6 +235,7 @@ const ICONS = {
   swords: Swords,
   'gamepad-2': Gamepad2,
   dices: Dices,
+  lock: Lock,
   book: BookOpen,
   ruler: Ruler,
   target: Target,
@@ -605,7 +607,7 @@ function put(rec) {
   // assina e só então manda (a assinatura cobre o registro inteiro)
   ident.signRecord(rec).then(() => {
     if (recs.get(rec.id) === rec) persist([rec]);
-    A.recs?.send([rec]);
+    sendRecs([rec]);
   });
 }
 // registros que chegaram de outro PC: só entra o que tem assinatura válida de quem diz ter escrito
@@ -726,6 +728,34 @@ const iCan = (perm) => can(me.id, perm);
 const rankOf = (uid) => (uid === groupOwner() ? -1 : Math.min(Infinity, ...rolesOf(uid).map((r) => r.order ?? 0)));
 const outranks = (a, b) => rankOf(a) < rankOf(b);
 const roleColorOf = (uid) => rolesOf(uid).find((r) => cleanHex(r.color))?.color || '';
+// ----- canais privados: um canal (ou a categoria dele) pode exigir cargos -----
+// Sem cargos marcados, é público. O dono e quem pode "Gerenciar permissões de todos" veem tudo.
+// As mensagens de um canal privado só são enviadas para os PCs de quem pode ver o canal (sendRecs), e quem não pode
+// ver não consegue escrever nele (permitted). Um canal sem categoria privada herda os cargos da categoria.
+function chRoles(c) {
+  const live = (ids) => (Array.isArray(ids) ? ids.filter((id) => recs.get(id)?.k === 'role' && !recs.get(id).del) : []);
+  const own = live(c?.roles);
+  if (own.length) return own;
+  const cat = c?.cat ? recs.get(c.cat) : null;
+  return cat && !cat.del ? live(cat.roles) : [];
+}
+function canSeeChannel(uid, chOrId) {
+  const c = typeof chOrId === 'string' ? recs.get(chOrId) : chOrId;
+  if (!c || c.del || (c.k !== 'ch' && c.k !== 'cat')) return true;
+  const need = chRoles(c);
+  if (!need.length || !groupOwner()) return true;
+  if (!uid) return false;
+  if (uid === groupOwner() || can(uid, P.ManagePermissions)) return true;
+  const mine = new Set(rolesOf(uid).map((r) => r.id));
+  return need.some((id) => mine.has(id));
+}
+const isPrivate = (c) => chRoles(c).length > 0 && !!groupOwner();
+// registro que pertence a um canal (mensagem, reação, fixada)
+const recChannel = (r) => (r.k === 'msg' || r.k === 'rx' || r.k === 'pin' ? r.ch || recs.get(r.msg)?.ch || null : null);
+const recVisibleTo = (r, uid) => {
+  const ch = recChannel(r);
+  return !ch || canSeeChannel(uid, ch);
+};
 const canClaimOwner = (uid) => !all('msg').some((m) => !m.bot) || badgesOf(uid).some(([ic]) => ic === 'sprout');
 
 // pode aceitar este registro de quem assinou? (cur = a versão que tenho agora)
@@ -742,6 +772,7 @@ function permitted(r, cur) {
   }
   if (!groupOwner()) return true; // grupo sem dono: como antes
   if (banOf(by)) return false;
+  if (recChannel(r) && !r.del && !canSeeChannel(by, recChannel(r))) return false; // canal privado
   switch (r.k) {
     case 'ch':
     case 'cat':
@@ -881,7 +912,7 @@ function flushRecs() {
   return recsWrite(R.hash, list).catch((err) => console.warn('não salvei os registros', err));
 }
 const all = (k) => [...recs.values()].filter((r) => r.k === k && !r.del);
-const channels = (type) => all('ch').filter((c) => c.type === type).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+const channels = (type) => all('ch').filter((c) => c.type === type && canSeeChannel(me.id, c)).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 const channel = (id) => {
   const c = recs.get(id);
   return c?.k === 'ch' && !c.del ? c : null;
@@ -923,7 +954,10 @@ function onRecsChanged(list) {
     emojiMapCache = null;
     renderEmojiAdmin();
   }
-  if (kinds.has('role') || kinds.has('mem') || kinds.has('ban') || kinds.has('grp') || kinds.has('cat')) {
+  if (kinds.has('role') || kinds.has('mem') || kinds.has('ban') || kinds.has('grp') || kinds.has('cat') || kinds.has('ch')) {
+    if (C.ch && !canSeeChannel(me.id, C.ch)) leaveVoice();
+    if (S.view && !canSeeChannel(me.id, S.view)) openView(channels('text')[0]?.id);
+    resendPrivate();
     checkBanned();
     syncRpgVisibility();
     renderSidebar();
@@ -1037,7 +1071,43 @@ async function checkGoogle(p, token) {
 }
 const sendHi = () => A.hi?.send(hiPayload());
 
-async function sendRecs(list, target) {
+// registros de canal privado só vão para PCs de quem vê o canal (com identidade conferida)
+function peersFor(r) {
+  return [...peers.values()].filter((p) => p.user?.verified && recVisibleTo(r, p.user.id)).map((p) => p.pid);
+}
+function sendRecs(list, target) {
+  const pub = [];
+  const priv = new Map(); // peerId -> registros
+  for (const r of list) {
+    if (!recChannel(r) || !isPrivate(recs.get(recChannel(r)) || {})) {
+      pub.push(r);
+      continue;
+    }
+    for (const pid of target ? [target] : peersFor(r)) {
+      const p = peers.get(pid);
+      if (!p?.user?.verified || !recVisibleTo(r, p.user.id)) continue;
+      if (!priv.has(pid)) priv.set(pid, []);
+      priv.get(pid).push(r);
+    }
+  }
+  if (pub.length) sendRecsRaw(pub, target);
+  for (const [pid, l] of priv) sendRecsRaw(l, pid);
+}
+// quem acabou de mostrar quem é (ou ganhou um cargo) recebe as mensagens privadas que ainda não tem
+const lastSum = new Map(); // peerId -> Map(id -> v) do último resumo que o amigo mandou
+function resendPrivate(pid) {
+  for (const [id, theirs] of lastSum) {
+    if (pid && id !== pid) continue;
+    const p = peers.get(id);
+    if (!p?.user?.verified) continue;
+    const out = [...recs.values()].filter((r) => recChannel(r) && !(theirs.get(r.id) >= r.v) && recVisibleTo(r, p.user.id) && isPrivate(recs.get(recChannel(r)) || {}));
+    if (out.length) {
+      for (const r of out) theirs.set(r.id, r.v);
+      sendRecsRaw(out, id);
+    }
+  }
+}
+async function sendRecsRaw(list, target) {
   const prio = (r) => (r.k === 'msg' ? 1 : 0);
   list = [...list].sort((a, b) => prio(a) - prio(b) || (b.ts || 0) - (a.ts || 0));
   for (let i = 0; i < list.length; i += 300) {
@@ -1303,6 +1373,7 @@ function connectRoom() {
     if (C.ch && p.voice?.ch === C.ch && Date.now() > reconnectingNetUntil) sfx.leave();
     dropMedia(p);
     peers.delete(pid);
+    lastSum.delete(pid);
     C.sent.delete(pid);
     updateClock();
     renderPresence();
@@ -1312,7 +1383,9 @@ function connectRoom() {
   A.sum.onMessage = (sum, { peerId }) => {
     if (!Array.isArray(sum)) return;
     const theirs = new Map(sum.filter((x) => Array.isArray(x)));
+    lastSum.set(peerId, theirs);
     const out = [...recs.values()].filter((r) => !(theirs.get(r.id) >= r.v));
+    for (const r of out) theirs.set(r.id, r.v);
     if (out.length) sendRecs(out, peerId);
   };
   A.recs.onMessage = (list) => Array.isArray(list) && acceptRemote(list.slice(0, 300)).then((ok) => ok.length && merge(ok));
@@ -1390,6 +1463,7 @@ async function verifyHi(p, u) {
   if (p.user?.id !== uid) return;
   p.user.verified = ok;
   if (ok) dm?.onGroupHi(uid, u, p.pid);
+  if (ok) resendPrivate(p.pid);
   if (fake && !p.user.fake) {
     p.user.fake = true;
     p.user.name = p.user.name + ' (não verificado)';
@@ -1656,6 +1730,7 @@ async function getMic(deviceId = settings.mic, opts = settings) {
 }
 
 async function joinVoice(ch) {
+  if (!canSeeChannel(me.id, ch)) return toast('Esse canal é privado para alguns cargos');
   if (C.ch === ch) return;
   if (!iCan(P.Connect)) return toast('Você não tem permissão para entrar nas calls deste grupo');
   if (C.ch) leaveVoice(true);
@@ -1748,7 +1823,7 @@ applyPtt();
 function syncMedia() {
   if (!room) return;
   for (const p of peers.values()) {
-    const both = !!C.ch && p.voice?.ch === C.ch;
+    const both = !!C.ch && p.voice?.ch === C.ch && canSeeChannel(p.user?.id, C.ch);
     // a tela só vai para quem clicou em "Assistir"
     // a câmera vai para todo mundo da call (como no Discord); a tela só para quem clicou em Assistir
     const viaSfu = SFU.pub?.ready && SFU.pub.stream === C.screen && p.voice?.sfuOk;
@@ -5155,7 +5230,7 @@ function renderSidebar() {
       const li = el('li');
       const row = el('div', 'ch' + (S.view === c.id ? ' active' : '') + (S.unread.has(c.id) && S.view !== c.id ? ' unread' : '') + (settings.mutedCh[c.id] ? ' muted-ch' : ''));
       row.dataset.chid = c.id;
-      row.append(icon('hash'), el('span', 'label', c.name));
+      row.append(icon(isPrivate(c) ? 'lock' : 'hash'), el('span', 'label', c.name));
       if (S.unread.has(c.id) && S.view !== c.id) row.append(el('span', 'unread-dot'));
       row.append(editBtn(c));
       row.onclick = () => openView(c.id);
@@ -5171,7 +5246,7 @@ function renderSidebar() {
       const members = voiceMembers(c.id);
       const row = el('div', 'ch' + (S.view === c.id ? ' active' : ''));
       row.dataset.chid = c.id;
-      row.append(icon(C.ch === c.id ? 'audio-lines' : 'volume-2'), el('span', 'label', c.name));
+      row.append(icon(C.ch === c.id ? 'audio-lines' : isPrivate(c) ? 'lock' : 'volume-2'), el('span', 'label', c.name));
       if (members.length) row.append(el('span', 'count', String(members.length)));
       row.append(editBtn(c));
       row.onclick = () => {
@@ -5230,10 +5305,11 @@ function renderSidebar() {
   voiceList.replaceChildren(...channels('voice').filter((c) => !catIds.has(c.cat)).map(voiceRow));
   // categorias (como no Stoat): clique no nome recolhe; arraste canais para dentro e para fora
   $('#catList').replaceChildren(
-    ...cats.map((cat) => {
+    ...cats.filter((cat) => canSeeChannel(me.id, cat) || iCan(P.ManagePermissions)).map((cat) => {
       const box = el('div', 'cat' + (settings.collapsedCats?.[cat.id] ? ' collapsed' : ''));
       const head = el('div', 'cat-head');
       head.append(icon(settings.collapsedCats?.[cat.id] ? 'chevron-right' : 'chevron-down', 'sm'), el('span', 'label', cat.name));
+      if (isPrivate(cat)) head.append(icon('lock', 'sm'));
       if (iCan(P.ManageChannel)) {
         const add = el('button', 'icon-btn sm');
         add.title = 'Criar canal nesta categoria';
@@ -5271,7 +5347,7 @@ function renderSidebar() {
       if (!settings.collapsedCats?.[cat.id])
         ul.append(
           ...all('ch')
-            .filter((c) => c.cat === cat.id)
+            .filter((c) => c.cat === cat.id && canSeeChannel(me.id, c))
             .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.name.localeCompare(b.name))
             .map((c) => (c.type === 'voice' ? voiceRow(c) : textRow(c))),
         );
@@ -5972,7 +6048,7 @@ function renderPresence() {
 }
 
 function openView(id) {
-  const c = channel(id) || channels('text')[0];
+  const c = (channel(id) && canSeeChannel(me.id, id) ? channel(id) : null) || channels('text')[0];
   if (!c) return;
   setPane('center');
   const changed = S.view !== c.id;
@@ -6027,6 +6103,30 @@ function openChannelDialog(type, existing, catId) {
   $('#chDlgName').placeholder = type === 'text' ? 'ex.: memes' : 'ex.: Jogatina';
   $('#chDlgSave').textContent = existing ? 'Salvar' : 'Criar';
   $('#chDlgDelete').hidden = !existing;
+  // privado: só os cargos marcados veem (precisa do grupo ter dono e cargos)
+  const roles = roleList();
+  const picked = new Set(Array.isArray(existing?.roles) ? existing.roles : []);
+  $('#chDlgPrivWrap').hidden = !groupOwner();
+  $('#chDlgPriv').checked = picked.size > 0;
+  $('#chDlgRoles').replaceChildren(
+    ...(roles.length
+      ? roles.map((r) => {
+          const lab = el('label', 'check');
+          const cb = el('input');
+          cb.type = 'checkbox';
+          cb.value = r.id;
+          cb.checked = picked.has(r.id);
+          const dot = el('span', 'role-dot');
+          dot.style.background = cleanHex(r.color) || 'var(--muted)';
+          lab.append(cb, dot, document.createTextNode(r.name));
+          return lab;
+        })
+      : [el('p', 'muted small', 'Crie cargos em Configurações do servidor → Cargos para escolher quem vê.')]),
+  );
+  const syncPriv = () => ($('#chDlgRoles').hidden = !$('#chDlgPriv').checked);
+  $('#chDlgPriv').onchange = syncPriv;
+  syncPriv();
+  $('#chDlgPrivHint').textContent = type === 'cat' ? 'Os canais da categoria ficam privados (a não ser que o canal tenha os próprios cargos).' : 'Só quem tem um dos cargos marcados vê e entra. O dono vê tudo.';
   openDialog($('#channelDlg'));
   $('#chDlgName').focus();
 }
@@ -6045,14 +6145,16 @@ $('#chDlgSave').onclick = () => {
   if (!name) return $('#chDlgName').focus();
   const { type, existing } = chDlgState;
   const cat = $('#chDlgCat').value || null;
+  const roles = $('#chDlgPriv').checked ? $$('#chDlgRoles input:checked').map((x) => x.value) : [];
+  if ($('#chDlgPriv').checked && !roles.length && roleList().length) return toast('Marque pelo menos um cargo, ou desligue o privado');
   if (type === 'cat') {
-    if (existing) put({ ...existing, name: name.slice(0, 40) });
-    else put({ k: 'cat', id: 'cat:' + randId(), name: name.slice(0, 40), order: Math.max(0, ...all('cat').map((c) => c.order ?? 0)) + 1 });
-  } else if (existing) put({ ...existing, name: fixName(type, name), cat });
+    if (existing) put({ ...existing, name: name.slice(0, 40), roles });
+    else put({ k: 'cat', id: 'cat:' + randId(), name: name.slice(0, 40), order: Math.max(0, ...all('cat').map((c) => c.order ?? 0)) + 1, roles });
+  } else if (existing) put({ ...existing, name: fixName(type, name), cat, roles });
   else {
     const order = Math.max(0, ...all('ch').map((c) => c.order)) + 1;
     const id = 'c:' + randId();
-    put({ k: 'ch', id, name: fixName(type, name), type, order, cat });
+    put({ k: 'ch', id, name: fixName(type, name), type, order, cat, roles });
     if (type === 'text') openView(id);
   }
   closeDialog($('#channelDlg'));
@@ -8663,6 +8765,12 @@ window.__toca = {
   watchStream,
   joinVoice,
   sfu: SFU,
+  put,
+  me: () => me,
+  canSeeChannel,
+  channels,
+  roleList,
+  groupOwner,
 }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
