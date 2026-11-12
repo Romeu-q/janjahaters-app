@@ -371,11 +371,17 @@ const freshProfile = !store.get('profile', null);
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
   { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
-    netMode: 'cloudflare', antiPing: true,
+    netMode: 'auto', antiPing: true,
     stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
-if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'cloudflare';
+if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'auto';
+// 2.10.3: a 2.10.2 mandava todo mundo pelo TURN (mais atraso, sem aliviar quem transmite e gastando a cota).
+// Volta todos para o Automático uma vez; quem quiser o servidor escolhe de novo no menu do ping.
+if ((settings.netVersion || 0) < 1) {
+  settings.netMode = 'auto';
+  settings.netVersion = 1;
+}
 if (typeof settings.antiPing !== 'boolean') settings.antiPing = true;
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
 // v1.12: o DeepFilterNet3 deixou o mic ruim para a galera: todo mundo volta para o RNNoise (Forte).
@@ -1061,7 +1067,7 @@ function setTurn(list) {
   turnServers.splice(0, turnServers.length, ...(list || []).filter((x) => x && x.username));
 }
 function buildRtcConfig(base = {}) {
-  const mode = settings.netMode || 'cloudflare';
+  const mode = settings.netMode || 'auto';
   const hasTurn = turnServers.length > 0;
   if (mode === 'p2p') {
     return {
@@ -1093,7 +1099,7 @@ function buildRtcConfig(base = {}) {
 const NativeRTCPeerConnection = window.RTCPeerConnection;
 const nativeConnDesc = Object.getOwnPropertyDescriptor(NativeRTCPeerConnection.prototype, 'connectionState');
 const nativeIceDesc = Object.getOwnPropertyDescriptor(NativeRTCPeerConnection.prototype, 'iceConnectionState');
-const DISC_GRACE_MS = 25_000;
+const DISC_GRACE_MS = 10_000; // mais que isso, a pessoa aparecia na call sem estar
 
 class JanjaPeerConnection extends NativeRTCPeerConnection {
   constructor(cfg) {
@@ -1336,7 +1342,7 @@ function reconnectRoom(silent = false) {
 }
 
 function syncNetUi() {
-  for (const sel of [$('#stNetMode'), $('#sqNetMode')]) if (sel) sel.value = settings.netMode || 'cloudflare';
+  for (const sel of [$('#stNetMode'), $('#sqNetMode')]) if (sel) sel.value = settings.netMode || 'auto';
   for (const cb of [$('#stAntiPing'), $('#sqAntiPing')]) if (cb) cb.checked = settings.antiPing !== false;
 }
 
@@ -1838,7 +1844,7 @@ function renderCallStatus() {
   p.className = 'ping ' + cls + (c.relay || settings.netMode === 'cloudflare' ? ' relay' : '');
   p.style.cursor = 'pointer';
   $('#vbStatusText').style.cursor = 'pointer';
-  const routeInfo = `Rota: ${NET_MODE_LABELS[settings.netMode] || 'Servidor Cloudflare'}${settings.antiPing !== false ? ' · Anti-Ping ativo' : ''} (clique para escolher)`;
+  const routeInfo = `Rota: ${NET_MODE_LABELS[settings.netMode] || 'Automático (Híbrido)'}${settings.antiPing !== false ? ' · Anti-Ping ativo' : ''} (clique para escolher)`;
   p.title = c.avg != null ? `Ping médio: ${c.avg} ms (${c.people - 1 - c.bad} pessoa(s)${c.relay ? `, ${c.relay} via Cloudflare` : ''}) · ${routeInfo}` : routeInfo;
   $('#vbStatusText').title = p.title;
   $('#voiceBar').dataset.quality = cls;

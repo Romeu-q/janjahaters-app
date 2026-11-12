@@ -616,12 +616,12 @@
           <h3>Rede e estabilidade (Cloudflare / Anti-Ping)</h3>
           <label>Modo de conexão da call e da stream
             <select id="stNetMode">
-              <option value="cloudflare">Servidor Cloudflare (Recomendado · Menos quedas e rota estável)</option>
-              <option value="auto">Automático / Híbrido (Direto P2P + Cloudflare se precisar)</option>
+              <option value="auto">Automático (Recomendado · direto, e pela Cloudflare só se precisar)</option>
+              <option value="cloudflare">Sempre pelo servidor da Cloudflare (mais atraso; só se a conexão direta cair muito)</option>
               <option value="p2p">Direto P2P (Sem servidor intermediário)</option>
             </select>
           </label>
-          <small class="muted">No modo <b>Servidor Cloudflare</b>, a voz e a stream passam pelos servidores Anycast da Cloudflare, evitando rotas ruins entre operadoras e quedas de conexão.</small>
+          <small class="muted">No <b>Automático</b> a call vai direto entre os PCs (menor atraso) e só passa pelo servidor da Cloudflare quando a conexão direta não funciona. Forçar o servidor não alivia o PC de quem transmite: para isso, use o modo PC Fraco / Anti-Ping.</small>
           <label class="check"><input type="checkbox" id="stAntiPing" checked> Modo PC Fraco / Anti-Ping nas streams (prioriza a voz, destrava a CPU e divide o upload com vários espectadores)</label>
         </section>
 
@@ -791,8 +791,8 @@
       </div>
       <label>Rota da conexão
         <select id="sqNetMode">
-          <option value="cloudflare">Servidor Cloudflare (Recomendado · Menos quedas e rota estável)</option>
-          <option value="auto">Automático / Híbrido (Direto P2P + Cloudflare se precisar)</option>
+          <option value="auto">Automático (Recomendado · direto, e pela Cloudflare só se precisar)</option>
+          <option value="cloudflare">Sempre pelo servidor da Cloudflare (mais atraso; só se a conexão direta cair muito)</option>
           <option value="p2p">Direto P2P (Sem servidor intermediário)</option>
         </select>
       </label>
