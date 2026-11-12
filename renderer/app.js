@@ -7255,6 +7255,20 @@ $('#pfStatusEmoji').onclick = (e) =>
 
 // ============================================================ aparência
 // estilo: "Bolha" (cantos redondos, balões e animações com mola) ou "Clássico" (o visual de antes)
+// tamanho da interface (Electron): automático encolhe em monitor pequeno
+function paintScale(zoom) {
+  if (!window.desk?.setPrefs) return ($('#lkScale').closest('label').hidden = true);
+  $('#lkScale').value = String(desktopPrefs.uiScale || 0);
+  if (zoom) $('#lkScaleNow').textContent = desktopPrefs.uiScale ? '' : `agora ${Math.round(zoom * 100)}%`;
+}
+$('#lkScale').onchange = () =>
+  window.desk
+    ?.setPrefs({ uiScale: Number($('#lkScale').value) })
+    .then((p) => {
+      desktopPrefs = p;
+      return window.desk.appInfo();
+    })
+    .then((i) => paintScale(i?.zoom));
 $('#lkStyle').onchange = () => {
   look.style = $('#lkStyle').value;
   saveSettings();
@@ -8060,12 +8074,13 @@ if (window.desk?.appInfo) {
     $('#tbUpdateText').textContent = `Atualizar para a ${updVersion}`;
     toast('Não consegui baixar a atualização: ' + msg);
   });
-  window.desk.appInfo().then(({ version, updateReady, updateAvail, google, prefs }) => {
+  window.desk.appInfo().then(({ version, updateReady, updateAvail, google, prefs, zoom }) => {
     appVersion = version;
     $('#appVersion').textContent = `janjahaters v${version}`;
     $('#sbVersion').textContent = `v${version}`;
     $$('[data-google]').forEach((e) => (e.hidden = !google));
     if (prefs) desktopPrefs = prefs;
+    paintScale(zoom);
     if (updateReady) showUpdate(updateReady);
     else if (updateAvail) showAvailable(updateAvail);
   });

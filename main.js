@@ -180,6 +180,7 @@ function openVisit(hash) {
   guardContents(visit.webContents);
   win.contentView.addChildView(visit);
   fitVisit();
+  visit.webContents.on('did-finish-load', applyZoom);
   visit.webContents.loadURL(url);
   visit.webContents.once('did-finish-load', () => visit?.webContents.focus());
 }
@@ -215,11 +216,31 @@ ipcMain.on('call-state', (e, st) => {
 });
 ipcMain.handle('call-state', () => callState);
 
+// ----- tamanho da interface -----
+// O layout foi feito para 1920x1080. Em telas menores (ou notebook com escala de 125%/150% no Windows) tudo
+// ficava grande demais: no automático, a interface encolhe na proporção da área útil do monitor.
+function autoScale() {
+  const { screen } = require('electron');
+  const d = win ? screen.getDisplayMatching(win.getBounds()) : screen.getPrimaryDisplay();
+  const { width, height } = d.workAreaSize;
+  const z = Math.min(width / 1600, height / 900, 1);
+  return Math.max(0.7, Math.round(z * 20) / 20);
+}
+const uiZoom = () => prefs().uiScale || autoScale();
+function applyZoom() {
+  const z = uiZoom();
+  for (const wc of [win?.webContents, visit?.webContents]) if (wc && !wc.isDestroyed()) wc.setZoomFactor(z);
+}
+
 function createWindow() {
   const saved = savedBounds();
+  // janela nova não pode ser maior que a tela (em 1366x768 o tamanho padrão passava da barra de tarefas)
+  const wa = require('electron').screen.getPrimaryDisplay().workAreaSize;
+  const defW = Math.min(1320, wa.width - 40);
+  const defH = Math.min(820, wa.height - 40);
   win = new BrowserWindow({
-    width: saved?.width || 1320,
-    height: saved?.height || 820,
+    width: saved?.width || defW,
+    height: saved?.height || defH,
     ...(saved ? { x: saved.x, y: saved.y } : {}),
     minWidth: 900,
     minHeight: 560,
@@ -231,6 +252,10 @@ function createWindow() {
     webPreferences: WEB_PREFS,
   });
   win.on('resize', fitVisit);
+  // mudou de monitor ou a resolução mudou: recalcula o tamanho automático
+  win.on('moved', applyZoom);
+  win.webContents.on('did-finish-load', applyZoom);
+  require('electron').screen.on('display-metrics-changed', applyZoom);
   if (saved?.maximized) win.maximize();
   keepBounds();
   win.loadURL(`http://localhost:${UI_PORT}/`);
@@ -373,12 +398,12 @@ ipcMain.on('install-update', () => {
   quitting = true;
   updater?.quitAndInstall(true, true);
 });
-ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, updateAvail, google: !!oauthConfig(), prefs: prefs() }));
+ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, updateAvail, google: !!oauthConfig(), prefs: prefs(), zoom: uiZoom() }));
 
 // ----- bandeja, atalhos globais e iniciar com o Windows -----
 const { Tray, Menu, globalShortcut, nativeImage } = require('electron');
 const PREFS_FILE = path.join(app.getPath('userData'), 'desktop-prefs.json');
-const PREF_DEFAULTS = { tray: true, hotkeys: true, autostart: false };
+const PREF_DEFAULTS = { tray: true, hotkeys: true, autostart: false, uiScale: 0 };
 let prefsCache = null;
 function prefs() {
   if (!prefsCache) {
@@ -433,7 +458,9 @@ function applyPrefs() {
 }
 ipcMain.handle('set-prefs', (e, next) => {
   const p = prefs();
-  for (const k of Object.keys(PREF_DEFAULTS)) if (typeof next?.[k] === 'boolean') p[k] = next[k];
+  for (const k of Object.keys(PREF_DEFAULTS)) if (typeof next?.[k] === 'boolean' && typeof PREF_DEFAULTS[k] === 'boolean') p[k] = next[k];
+  if (typeof next?.uiScale === 'number') p.uiScale = next.uiScale === 0 ? 0 : Math.min(1.5, Math.max(0.6, next.uiScale));
+  applyZoom();
   try {
     fs.writeFileSync(PREFS_FILE, JSON.stringify(p));
   } catch {}
