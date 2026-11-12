@@ -371,9 +371,12 @@ const freshProfile = !store.get('profile', null);
 const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] });
 const settings = Object.assign(
   { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
+    netMode: 'cloudflare', antiPing: true,
     stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
+if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'cloudflare';
+if (typeof settings.antiPing !== 'boolean') settings.antiPing = true;
 if (typeof settings.noise === 'boolean') settings.noise = settings.noise ? 'strong' : 'off'; // versão 1.0 guardava sim/não
 // v1.12: o DeepFilterNet3 deixou o mic ruim para a galera: todo mundo volta para o RNNoise (Forte).
 // v1.19: o DeepFilterNet3 saiu do app; quem ainda estava nele vai para o RNNoise.
@@ -1034,19 +1037,173 @@ async function sendRecs(list, target) {
   }
 }
 
-// ----- TURN (Cloudflare): quando a conexão direta entre dois amigos falha (CGNAT, 4G, roteador chato),
-// a call passa por esse servidor. Credenciais temporárias, guardadas por algumas horas. O Trystero lê
-// este array a cada conexão nova, então renovar troca os dados no lugar e vale para as próximas.
+// ----- TURN (Cloudflare) e Rota da Conexão (Cloudflare Relay / Automático / Direto P2P) -----
+// O usuário pode escolher em Configurações → Voz e áudio, na janela de Transmitir ou clicando no ping da call:
+//   - 'cloudflare': força iceTransportPolicy = 'relay' (todo o tráfego de voz e stream passa pelo servidor Anycast da Cloudflare,
+//     evitando rotas ruins entre operadoras e quedas de conexão; cai para 'all' automaticamente se a rede bloquear TURN).
+//   - 'auto': tenta conexão direta e usa o servidor da Cloudflare se precisar.
+//   - 'p2p': conexão direta entre os PCs (sem servidor intermediário).
+const NET_MODE_LABELS = {
+  cloudflare: 'Servidor Cloudflare',
+  auto: 'Automático (Híbrido)',
+  p2p: 'Direto P2P',
+};
+const DEFAULT_STUN = [
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
+];
 const turnServers = [];
 const TURN_TTL = 48 * 3600;
+const livePcs = new Set();
+let reconnectingNetUntil = 0;
+
 function setTurn(list) {
-  turnServers.splice(0, turnServers.length, ...list.filter((x) => x.username)); // só os TURN; o STUN já vem do Trystero
+  turnServers.splice(0, turnServers.length, ...(list || []).filter((x) => x && x.username));
 }
+function buildRtcConfig(base = {}) {
+  const mode = settings.netMode || 'cloudflare';
+  const hasTurn = turnServers.length > 0;
+  if (mode === 'p2p') {
+    return {
+      ...base,
+      iceServers: DEFAULT_STUN,
+      iceTransportPolicy: 'all',
+      iceCandidatePoolSize: 2,
+    };
+  }
+  if (mode === 'cloudflare' && hasTurn) {
+    return {
+      ...base,
+      iceServers: [...turnServers, ...DEFAULT_STUN],
+      iceTransportPolicy: 'relay',
+      iceCandidatePoolSize: 2,
+    };
+  }
+  return {
+    ...base,
+    iceServers: hasTurn ? [...turnServers, ...DEFAULT_STUN] : base.iceServers?.length ? base.iceServers : DEFAULT_STUN,
+    iceTransportPolicy: 'all',
+    iceCandidatePoolSize: 2,
+  };
+}
+
+// Proteção contra quedas em PC fraco: o Trystero fecha a conexão inteira se connectionState/iceConnectionState ficar
+// "disconnected" por apenas 5 segundos (o que acontece fácil quando um PC fraco começa a transmitir ou abre um jogo pesado).
+// Aqui estendemos a janela de recuperação para 25 s, disparamos restartIce() sozinho e fazemos fallback se o relay falhar.
+const NativeRTCPeerConnection = window.RTCPeerConnection;
+const nativeConnDesc = Object.getOwnPropertyDescriptor(NativeRTCPeerConnection.prototype, 'connectionState');
+const nativeIceDesc = Object.getOwnPropertyDescriptor(NativeRTCPeerConnection.prototype, 'iceConnectionState');
+const DISC_GRACE_MS = 25_000;
+
+class JanjaPeerConnection extends NativeRTCPeerConnection {
+  constructor(cfg) {
+    const finalCfg = buildRtcConfig(cfg);
+    super(finalCfg);
+    this._usedRelayOnly = finalCfg.iceTransportPolicy === 'relay';
+    this._discSince = 0;
+    this._discExpired = false;
+    this._discTimer = null;
+    this._retryIceTimer = null;
+    this._relayFallbackUntil = 0;
+    livePcs.add(this);
+
+    const onState = () => {
+      const rawConn = this._rawConnectionState;
+      const rawIce = this._rawIceConnectionState;
+      if (rawConn === 'closed' || rawIce === 'closed') {
+        this._clearDiscTimers();
+        livePcs.delete(this);
+        return;
+      }
+      // Se estava em 'relay' (Cloudflare forçado) e a rede bloqueou a porta TURN dando 'failed', cai para 'all' sem derrubar a call
+      if ((rawIce === 'failed' || rawConn === 'failed') && this._usedRelayOnly) {
+        this._usedRelayOnly = false;
+        this._relayFallbackUntil = Date.now() + 10_000;
+        try {
+          this.setConfiguration({ ...buildRtcConfig(), iceTransportPolicy: 'all' });
+          this.restartIce?.();
+        } catch {}
+        return;
+      }
+      if (rawConn === 'connected' || rawIce === 'connected' || rawIce === 'completed') {
+        this._relayFallbackUntil = 0;
+        this._clearDiscTimers();
+        return;
+      }
+      if (rawConn === 'disconnected' || rawIce === 'disconnected') {
+        if (!this._discSince) {
+          this._discSince = Date.now();
+          this._discExpired = false;
+          try {
+            this.restartIce?.();
+          } catch {}
+          this._retryIceTimer = setTimeout(() => {
+            if (this._discSince && !this._discExpired) {
+              if (this._usedRelayOnly) {
+                this._usedRelayOnly = false;
+                try {
+                  this.setConfiguration({ ...buildRtcConfig(), iceTransportPolicy: 'all' });
+                } catch {}
+              }
+              try {
+                this.restartIce?.();
+              } catch {}
+            }
+          }, 6000);
+          this._discTimer = setTimeout(() => {
+            this._discTimer = null;
+            if (this._rawConnectionState === 'disconnected' || this._rawIceConnectionState === 'disconnected') {
+              this._discExpired = true;
+              this.dispatchEvent(new Event('iceconnectionstatechange'));
+              this.dispatchEvent(new Event('connectionstatechange'));
+            }
+          }, DISC_GRACE_MS);
+        }
+      }
+    };
+    this.addEventListener('connectionstatechange', onState);
+    this.addEventListener('iceconnectionstatechange', onState);
+  }
+  _clearDiscTimers() {
+    this._discSince = 0;
+    this._discExpired = false;
+    clearTimeout(this._discTimer);
+    clearTimeout(this._retryIceTimer);
+    this._discTimer = null;
+    this._retryIceTimer = null;
+  }
+  get _rawConnectionState() {
+    return nativeConnDesc ? nativeConnDesc.get.call(this) : super.connectionState;
+  }
+  get _rawIceConnectionState() {
+    return nativeIceDesc ? nativeIceDesc.get.call(this) : super.iceConnectionState;
+  }
+  get connectionState() {
+    const raw = this._rawConnectionState;
+    if (raw === 'disconnected' && this._discSince && !this._discExpired) return 'connected';
+    if (raw === 'failed' && Date.now() < this._relayFallbackUntil) return 'connecting';
+    return raw;
+  }
+  get iceConnectionState() {
+    const raw = this._rawIceConnectionState;
+    if (raw === 'disconnected' && this._discSince && !this._discExpired) return 'connected';
+    if (raw === 'failed' && Date.now() < this._relayFallbackUntil) return 'checking';
+    return raw;
+  }
+  close() {
+    this._clearDiscTimers();
+    livePcs.delete(this);
+    return super.close();
+  }
+}
+window.RTCPeerConnection = JanjaPeerConnection;
+
 async function refreshTurn() {
-  if (!TURN.id) return;
+  const hadTurn = turnServers.length > 0;
   const cached = store.get('turn', null);
-  if (cached?.exp > Date.now() + 24 * 3600e3) return setTurn(cached.servers);
-  if (cached?.exp > Date.now()) setTurn(cached.servers);
+  if (cached?.exp > Date.now() && cached?.servers?.length) setTurn(cached.servers);
+  if (!TURN.id) return;
+  if (cached?.exp > Date.now() + 24 * 3600e3 && turnServers.length) return;
   try {
     const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${TURN.id}/credentials/generate-ice-servers`, {
       method: 'POST',
@@ -1057,17 +1214,38 @@ async function refreshTurn() {
     const { iceServers } = await r.json();
     setTurn(iceServers);
     store.set('turn', { exp: Date.now() + TURN_TTL * 1000, servers: turnServers });
+    if (!hadTurn && turnServers.length && room && settings.netMode !== 'p2p') {
+      for (const pc of livePcs) {
+        try {
+          pc.setConfiguration(buildRtcConfig());
+          pc._usedRelayOnly = settings.netMode === 'cloudflare';
+          pc.restartIce?.();
+        } catch {}
+      }
+      if (!peers.size) reconnectRoom(true);
+    }
   } catch (err) {
     console.warn('TURN indisponível', err);
   }
 }
-refreshTurn();
+const turnReady = Promise.race([refreshTurn(), new Promise((r) => setTimeout(r, 1800))]);
 setInterval(refreshTurn, 6 * 3600e3);
 
 function connectRoom() {
-  room = joinRoom({ appId: 'toca-voice-p2p-v2', password: R.key, turnConfig: turnServers }, R.hash, {
-    onJoinError: (d) => console.warn('falha ao conectar com um amigo', d),
-  });
+  const rtcConfig = buildRtcConfig();
+  room = joinRoom(
+    {
+      appId: 'toca-voice-p2p-v2',
+      password: R.key,
+      turnConfig: settings.netMode === 'p2p' ? [] : turnServers,
+      rtcConfig,
+      rtcPolyfill: JanjaPeerConnection,
+    },
+    R.hash,
+    {
+      onJoinError: (d) => console.warn('falha ao conectar com um amigo', d),
+    },
+  );
   A = {
     hi: room.makeAction('hi'),
     sum: room.makeAction('sum'),
@@ -1112,7 +1290,7 @@ function connectRoom() {
   room.onPeerLeave = (pid) => {
     const p = peers.get(pid);
     if (!p) return;
-    if (C.ch && p.voice?.ch === C.ch) sfx.leave();
+    if (C.ch && p.voice?.ch === C.ch && Date.now() > reconnectingNetUntil) sfx.leave();
     dropMedia(p);
     peers.delete(pid);
     C.sent.delete(pid);
@@ -1135,6 +1313,63 @@ function connectRoom() {
     renderTyping();
   };
   room.onPeerStream = onPeerStream;
+}
+
+function reconnectRoom(silent = false) {
+  if (!R || !room) return;
+  reconnectingNetUntil = Date.now() + 8000;
+  for (const [, p] of peers) dropMedia(p);
+  peers.clear();
+  C.sent.clear();
+  net.clear();
+  for (const pc of [...livePcs]) {
+    try {
+      pc.close();
+    } catch {}
+  }
+  try {
+    room.leave();
+  } catch {}
+  connectRoom();
+  renderPresence();
+  if (!silent) paintNet();
+}
+
+function syncNetUi() {
+  for (const sel of [$('#stNetMode'), $('#sqNetMode')]) if (sel) sel.value = settings.netMode || 'cloudflare';
+  for (const cb of [$('#stAntiPing'), $('#sqAntiPing')]) if (cb) cb.checked = settings.antiPing !== false;
+}
+
+function setNetMode(mode, notify = true) {
+  if (!['cloudflare', 'auto', 'p2p'].includes(mode)) return;
+  const changed = settings.netMode !== mode;
+  settings.netMode = mode;
+  saveSettings();
+  syncNetUi();
+  if (changed && room) reconnectRoom();
+  else paintNet();
+  if (notify && changed) {
+    const msg =
+      mode === 'cloudflare'
+        ? 'Rota alterada: Servidor Cloudflare (tráfego protegido contra quedas e rotas ruins)'
+        : mode === 'auto'
+          ? 'Rota alterada: Automático (conexão direta + Cloudflare se precisar)'
+          : 'Rota alterada: Direto P2P (sem servidor intermediário)';
+    toast(msg);
+  }
+}
+
+function setAntiPing(on, notify = true) {
+  const val = !!on;
+  const changed = settings.antiPing !== val;
+  settings.antiPing = val;
+  saveSettings();
+  syncNetUi();
+  if (C.screen) applyStreamQuality();
+  else tuneSenders();
+  if (notify && changed) {
+    toast(val ? 'Proteção Anti-Ping ativada (prioriza a voz e alivia o PC/upload na stream)' : 'Proteção Anti-Ping desativada');
+  }
 }
 
 // confere se quem diz ser fulano tem a chave de fulano; se o id já tem chave e a prova não bate, é impostor
@@ -1176,19 +1411,20 @@ function onHi(pid, d) {
       : null;
   const isIn = C.ch && p.voice?.ch === C.ch;
   const isLive = isIn && p.voice.streaming;
+  const quietReconnect = Date.now() <= reconnectingNetUntil;
   if (!wasIn && isIn) {
-    sfx.join();
+    if (!quietReconnect) sfx.join();
     pluginEmit('join', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
   if (wasIn && !isIn) {
-    sfx.leave();
+    if (!quietReconnect) sfx.leave();
     pluginEmit('leave', { id: p.user.id, name: p.user.name, channel: C.ch });
   }
-  if (!wasLive && isLive) {
+  if (!wasLive && isLive && !quietReconnect) {
     sfx.streamOn();
     toast(`${p.user.name} começou uma stream. Clique nele para assistir.`);
   }
-  if (wasLive && !isLive && isIn) sfx.streamOff();
+  if (wasLive && !isLive && isIn && !quietReconnect) sfx.streamOff();
   if (!isLive && C.watching.delete(pid)) sendHi();
   if (!isIn) dropMedia(p);
   else if (!isLive && p.media.screen) {
@@ -1563,7 +1799,7 @@ const netDown = (n) => !!n && !['connected', 'new', 'connecting'].includes(n.sta
 function netTitle(n) {
   if (!n || n.state === 'new' || n.state === 'connecting') return 'Conectando…';
   if (netDown(n)) return 'Conexão caiu, tentando de novo…';
-  return `Ping ${n.ping ?? '?'} ms · ${n.relay ? 'pelo servidor (TURN)' : 'conexão direta'}`;
+  return `Ping ${n.ping ?? '?'} ms · ${n.relay ? 'Servidor Cloudflare (Relay)' : 'Conexão direta (P2P)'}`;
 }
 function paintPing(e) {
   const n = net.get(e.dataset.ping);
@@ -1588,30 +1824,54 @@ function callNet() {
 function renderCallStatus() {
   const c = callNet();
   if (!c) return;
-  let text = 'Voz conectada';
+  const modeTag = settings.netMode === 'cloudflare' ? 'Cloudflare' : settings.netMode === 'p2p' ? 'P2P' : 'Auto';
+  let text = `Voz (${modeTag})`;
   let cls = c.avg != null ? pingClass(c.avg) : 'good';
-  if (c.people === 1) text = 'Só você na call';
+  if (c.people === 1) text = `Só você (${modeTag})`;
   else if (c.bad) {
     text = c.bad === c.people - 1 ? 'Conectando…' : `Conectando com ${c.bad}`;
     if (cls === 'good') cls = 'ok';
   }
   $('#vbStatusText').textContent = text;
   const p = $('#vbPing');
-  p.textContent = c.avg != null ? c.avg + ' ms' : '';
-  p.className = 'ping ' + cls;
-  p.title = c.avg != null ? `Ping médio com ${c.people - 1 - c.bad} pessoa(s)${c.relay ? ` · ${c.relay} pelo servidor (TURN)` : ''}` : '';
+  p.textContent = c.avg != null ? c.avg + ' ms' : modeTag;
+  p.className = 'ping ' + cls + (c.relay || settings.netMode === 'cloudflare' ? ' relay' : '');
+  p.style.cursor = 'pointer';
+  $('#vbStatusText').style.cursor = 'pointer';
+  const routeInfo = `Rota: ${NET_MODE_LABELS[settings.netMode] || 'Servidor Cloudflare'}${settings.antiPing !== false ? ' · Anti-Ping ativo' : ''} (clique para escolher)`;
+  p.title = c.avg != null ? `Ping médio: ${c.avg} ms (${c.people - 1 - c.bad} pessoa(s)${c.relay ? `, ${c.relay} via Cloudflare` : ''}) · ${routeInfo}` : routeInfo;
+  $('#vbStatusText').title = p.title;
   $('#voiceBar').dataset.quality = cls;
   if (!isMobile) {
-    $('#sbVoice').textContent = `Conectado em ${channel(C.ch)?.name || ''} · ${c.people} na call${c.avg != null ? ` · ping ${c.avg} ms` : ''}${c.bad ? ` · conectando com ${c.bad}` : ''}`;
+    $('#sbVoice').textContent = `Conectado em ${channel(C.ch)?.name || ''} · ${c.people} na call · ${modeTag}${c.avg != null ? ` · ping ${c.avg} ms` : ''}${c.bad ? ` · conectando com ${c.bad}` : ''}`;
   }
 }
+function openNetQuickMenu(e) {
+  openMenu(e, [
+    el('div', 'ctx-head', 'Rota da conexão e Anti-Ping'),
+    menuItem(`Servidor Cloudflare${settings.netMode === 'cloudflare' ? '  ✓' : ''}`, 'globe', () => setNetMode('cloudflare')),
+    menuItem(`Automático (Híbrido)${settings.netMode === 'auto' ? '  ✓' : ''}`, 'zap', () => setNetMode('auto')),
+    menuItem(`Direto P2P${settings.netMode === 'p2p' ? '  ✓' : ''}`, 'users', () => setNetMode('p2p')),
+    el('div', 'ctx-sep'),
+    menuItem(`Proteção Anti-Ping (PC Fraco)${settings.antiPing !== false ? '  ✓' : ''}`, 'shield', () => setAntiPing(settings.antiPing === false)),
+  ]);
+}
+$('#vbPing')?.addEventListener('click', openNetQuickMenu);
+$('#vbStatusText')?.addEventListener('click', openNetQuickMenu);
 function paintNet() {
   $$('[data-ping]').forEach(paintPing);
   renderCallStatus();
 }
 
+function activeScreenViewers() {
+  let n = 0;
+  for (const [, sent] of C.sent) if (sent.has('screen')) n++;
+  return Math.max(1, n);
+}
 function tuneSenders() {
   if (!room) return;
+  const viewers = activeScreenViewers();
+  const antiPing = settings.antiPing !== false;
   for (const [, pc] of peerConnections()) {
     for (const sender of pc.getSenders?.() || []) {
       const t = sender.track;
@@ -1620,18 +1880,27 @@ function tuneSenders() {
       if (!params.encodings?.length) continue;
       if (C.screen?.getVideoTracks().includes(t)) {
         const q = streamTarget();
-        params.encodings[0].maxBitrate = q.bitrate;
+        // No modo Anti-Ping, divide o bitrate automaticamente quando mais de 1 amigo assiste para não saturar o upload
+        const viewerScale = antiPing && viewers > 1 ? Math.max(0.38, 1 / Math.pow(viewers, 0.65)) : 1;
+        const maxCap = q.preset === 'ultralight' ? 900_000 : q.preset === 'potato' ? 1_800_000 : Infinity;
+        params.encodings[0].maxBitrate = Math.min(maxCap, Math.round(q.bitrate * viewerScale));
         params.encodings[0].maxFramerate = q.fps;
         params.encodings[0].scaleResolutionDownBy = 1;
+        // Prioridade baixa na rede para o vídeo: sua voz e os pacotes de ping (ICE/STUN) passam sempre na frente!
+        params.encodings[0].priority = params.encodings[0].networkPriority = antiPing ? 'low' : 'medium';
         params.degradationPreference = { motion: 'maintain-framerate', detail: 'maintain-resolution', balanced: 'balanced' }[q.mode];
       } else if (C.cam?.getVideoTracks().includes(t)) {
-        params.encodings[0].maxBitrate = 1_500_000; // câmera 720p
+        params.encodings[0].maxBitrate = antiPing ? 1_000_000 : 1_500_000; // câmera 720p
         params.encodings[0].maxFramerate = 30;
+        params.encodings[0].priority = params.encodings[0].networkPriority = 'low';
       } else if (C.screen?.getAudioTracks().includes(t)) {
         params.encodings[0].maxBitrate = (settings.stream.audioRate || 192) * 1000; // som do PC na stream
+        params.encodings[0].priority = params.encodings[0].networkPriority = antiPing ? 'medium' : 'high';
+      } else if (C.mic?.getAudioTracks().includes(t)) {
+        params.encodings[0].maxBitrate = 64_000;
+        // Prioridade máxima para o microfone nunca atrasar nem picotar durante streams
         params.encodings[0].priority = params.encodings[0].networkPriority = 'high';
-      } else if (C.mic?.getAudioTracks().includes(t)) params.encodings[0].maxBitrate = 64_000;
-      else continue;
+      } else continue;
       sender.setParameters(params).catch(() => {
         delete params.degradationPreference; // versões que não aceitam esse campo
         sender.setParameters(params).catch(() => {});
@@ -1879,6 +2148,8 @@ $('#ctlMusic').onclick = () => selectTab('music');
 // ============================================================ stream de tela
 // ----- qualidade da stream -----
 const STREAM_PRESETS = {
+  ultralight: { res: 480, fps: 20, rate: 0.8, codec: 'h264', mode: 'motion' },
+  potato: { res: 720, fps: 24, rate: 1.5, codec: 'h264', mode: 'motion' },
   light: { res: 720, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' },
   std: { res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' },
   games: { res: 1080, fps: 60, rate: 0, codec: 'auto', mode: 'motion' },
@@ -1893,9 +2164,9 @@ const RES_OPTS = [
   [2160, '2160p (4K)'],
   [0, 'Original da tela'],
 ];
-const FPS_OPTS = [5, 10, 15, 24, 30, 48, 60, 90, 120, 144];
+const FPS_OPTS = [5, 10, 15, 20, 24, 30, 48, 60, 90, 120, 144];
 const CODEC_OPTS = [
-  ['h264', 'H.264 (usa a placa de vídeo; em algumas placas o fps cai)'],
+  ['h264', 'H.264 (usa a placa de vídeo; mais leve para o processador)'],
   ['vp8', 'VP8 (o mais fluido e compatível)'],
   ['vp9', 'VP9 (mais nítido, pesa mais)'],
   ['av1', 'AV1 (o mais eficiente, pesa bastante)'],
@@ -1953,6 +2224,7 @@ function fillQualityForm(q) {
   $('#sqRate').value = q.rate;
   $('#streamAudio').checked = !!q.audio;
   $('#sqAudioRate').value = String(q.audioRate || 192);
+  syncNetUi();
   renderRateLabel();
 }
 function renderRateLabel() {
@@ -1961,9 +2233,17 @@ function renderRateLabel() {
   $('#sqRateVal').textContent = q.rate ? `${q.rate} Mbps` : `Automático (~${(autoBitrate(q, Math.round((h * 16) / 9), h) / 1e6).toFixed(1)} Mbps)`;
 }
 $('#sqPreset').onchange = () => {
-  const p = STREAM_PRESETS[$('#sqPreset').value];
-  if (p) fillQualityForm({ ...readQualityForm(), ...p, preset: $('#sqPreset').value });
+  const presetKey = $('#sqPreset').value;
+  const p = STREAM_PRESETS[presetKey];
+  if (p) {
+    if ((presetKey === 'potato' || presetKey === 'ultralight') && settings.antiPing === false) {
+      setAntiPing(true, false);
+    }
+    fillQualityForm({ ...readQualityForm(), ...p, preset: presetKey });
+  }
 };
+$('#sqNetMode')?.addEventListener('change', () => setNetMode($('#sqNetMode').value));
+$('#sqAntiPing')?.addEventListener('change', () => setAntiPing($('#sqAntiPing').checked));
 for (const id of ['#sqRes', '#sqFps', '#sqCodec', '#sqMode', '#sqRate']) {
   $(id).addEventListener('input', () => {
     const q = readQualityForm();
@@ -2139,18 +2419,18 @@ const LOOPBACK_AUDIO = {
 // 22 fps), e a stream parecia travada para quem assistia.
 function desktopVideo(sourceId, q) {
   const h = q.res || 1080;
+  const antiPing = settings.antiPing !== false || q.preset === 'potato' || q.preset === 'ultralight';
+  const mandatory = {
+    chromeMediaSource: 'desktop',
+    chromeMediaSourceId: sourceId,
+    maxWidth: Math.round((h * 16) / 9),
+    maxHeight: h,
+    maxFrameRate: q.fps,
+  };
+  if (!antiPing) mandatory.minFrameRate = q.fps;
   return navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: sourceId,
-        maxWidth: Math.round((h * 16) / 9),
-        maxHeight: h,
-        maxFrameRate: q.fps,
-        minFrameRate: q.fps,
-      },
-    },
+    video: { mandatory },
   });
 }
 async function captureScreen(sourceId, withAudio) {
@@ -6264,6 +6544,7 @@ async function openSettings(page = 'profile') {
   $('#stEcho').checked = settings.echo;
   $('#stHear').checked = false;
   $('#stSounds').checked = settings.sounds;
+  syncNetUi();
   renderPttKey();
   renderSfxFiles();
   $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
@@ -6277,6 +6558,8 @@ async function openSettings(page = 'profile') {
 }
 $('#btnSettings').onclick = () => openSettings(stPage === 'voice' ? 'voice' : 'profile');
 $('#stMic').onchange = $('#stNoise').onchange = $('#stEcho').onchange = $('#stHear').onchange = startMicTest;
+$('#stNetMode')?.addEventListener('change', () => setNetMode($('#stNetMode').value));
+$('#stAntiPing')?.addEventListener('change', () => setAntiPing($('#stAntiPing').checked));
 $('#settingsDlg').addEventListener('close', stopMicTest);
 $('#btnSaveSettings').onclick = async () => {
   // perfil
@@ -6292,6 +6575,8 @@ $('#btnSaveSettings').onclick = async () => {
   settings.noise = $('#stNoise').value;
   settings.echo = $('#stEcho').checked;
   settings.sounds = $('#stSounds').checked;
+  if ($('#stNetMode')) setNetMode($('#stNetMode').value, false);
+  if ($('#stAntiPing')) setAntiPing($('#stAntiPing').checked, false);
   if (window.desk?.setPrefs) {
     window.desk
       .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked })
@@ -8144,6 +8429,7 @@ async function start() {
   loadLogger();
   for (const r of recs.values()) clock = Math.max(clock, Math.min(r.v, Date.now()));
   seed();
+  await turnReady;
   connectRoom();
   rememberServer({});
   const fresh = store.get('newSrv:' + R.hash, null);
@@ -8175,7 +8461,30 @@ window.addEventListener('beforeunload', () => {
   room?.leave();
 });
 
-window.__toca = { peers, C, recs, Y, AP, advance, pbOf, queueOf, addLink, toggleAutoplay, djRank, musicPos, netNow, clock: () => clockOff, G3, roomBubble: (m) => roomBubble(m) }; // para depurar pelo DevTools (Ctrl+Shift+I)
+window.__toca = {
+  peers,
+  C,
+  recs,
+  Y,
+  AP,
+  advance,
+  pbOf,
+  queueOf,
+  addLink,
+  toggleAutoplay,
+  djRank,
+  musicPos,
+  netNow,
+  clock: () => clockOff,
+  G3,
+  roomBubble: (m) => roomBubble(m),
+  netMode: () => settings.netMode,
+  setNetMode,
+  antiPing: () => settings.antiPing !== false,
+  setAntiPing,
+  buildRtcConfig,
+  turnServers,
+}; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
 // ----- convite por link (janjahaters://join/CODIGO) -----

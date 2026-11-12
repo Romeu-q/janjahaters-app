@@ -612,6 +612,17 @@
           </div>
 
           <label>Volume desses sons <b id="stSfxVal"></b><input type="range" id="stSfxVol" min="0" max="150" step="5"></label>
+
+          <h3>Rede e estabilidade (Cloudflare / Anti-Ping)</h3>
+          <label>Modo de conexão da call e da stream
+            <select id="stNetMode">
+              <option value="cloudflare">Servidor Cloudflare (Recomendado · Menos quedas e rota estável)</option>
+              <option value="auto">Automático / Híbrido (Direto P2P + Cloudflare se precisar)</option>
+              <option value="p2p">Direto P2P (Sem servidor intermediário)</option>
+            </select>
+          </label>
+          <small class="muted">No modo <b>Servidor Cloudflare</b>, a voz e a stream passam pelos servidores Anycast da Cloudflare, evitando rotas ruins entre operadoras e quedas de conexão.</small>
+          <label class="check"><input type="checkbox" id="stAntiPing" checked> Modo PC Fraco / Anti-Ping nas streams (prioriza a voz, destrava a CPU e divide o upload com vários espectadores)</label>
         </section>
 
         <!-- ===== Aparência ===== -->
@@ -756,6 +767,8 @@
     <div class="sq">
       <label>Predefinição
         <select id="sqPreset">
+          <option value="ultralight">Super Leve · 480p 20 fps (PC / internet muito fraca)</option>
+          <option value="potato">PC Fraco / Anti-Ping · 720p 24 fps (não sobe o ping)</option>
           <option value="light">Leve · 720p 30 fps (internet fraca)</option>
           <option value="std">Padrão · 1080p 30 fps</option>
           <option value="games">Jogos · 1080p 60 fps</option>
@@ -776,6 +789,14 @@
           </select>
         </label>
       </div>
+      <label>Rota da conexão
+        <select id="sqNetMode">
+          <option value="cloudflare">Servidor Cloudflare (Recomendado · Menos quedas e rota estável)</option>
+          <option value="auto">Automático / Híbrido (Direto P2P + Cloudflare se precisar)</option>
+          <option value="p2p">Direto P2P (Sem servidor intermediário)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="sqAntiPing" checked> Proteção Anti-Ping (prioriza sua voz na rede, alivia a CPU e divide o upload se vários amigos assistirem)</label>
       <label class="sq-rate">
         <span class="sq-rate-head">Taxa de bits <b id="sqRateVal"></b></span>
         <input type="range" id="sqRate" min="0" max="50" step="0.5">
