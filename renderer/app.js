@@ -92,6 +92,8 @@ import {
   Gamepad2,
   Dices,
   Lock,
+  ShieldCheck,
+  RefreshCcw,
   BookOpen,
   Ruler,
   Target,
@@ -236,6 +238,8 @@ const ICONS = {
   'gamepad-2': Gamepad2,
   dices: Dices,
   lock: Lock,
+  'shield-check': ShieldCheck,
+  'refresh-ccw': RefreshCcw,
   book: BookOpen,
   ruler: Ruler,
   target: Target,
@@ -739,17 +743,53 @@ function chRoles(c) {
   const cat = c?.cat ? recs.get(c.cat) : null;
   return cat && !cat.del ? live(cat.roles) : [];
 }
-function canSeeChannel(uid, chOrId) {
-  const c = typeof chOrId === 'string' ? recs.get(chOrId) : chOrId;
-  if (!c || c.del || (c.k !== 'ch' && c.k !== 'cat')) return true;
-  const need = chRoles(c);
-  if (!need.length || !groupOwner()) return true;
-  if (!uid) return false;
-  if (uid === groupOwner() || can(uid, P.ManagePermissions)) return true;
-  const mine = new Set(rolesOf(uid).map((r) => r.id));
-  return need.some((id) => mine.has(id));
+// Permissões do canal: cada canal (ou categoria) pode liberar (a) ou bloquear (d) permissões para @todos e para
+// cada cargo. Ordem, como no Discord: base do grupo → @todos do canal → cargos (liberar de um cargo vence bloquear).
+// O que a categoria define vale para os canais dela; o canal pode mudar por cima, alvo por alvo.
+const VIEW = 1 << 16; // "Ver o canal": só existe dentro dos canais (todo mundo vê, a não ser que bloqueiem)
+function overwritesOf(c) {
+  const out = {};
+  const cat = c.k === 'ch' && c.cat ? recs.get(c.cat) : null;
+  for (const src of [cat && !cat.del ? cat : null, c])
+    if (src?.ow && typeof src.ow === 'object') for (const [k, v] of Object.entries(src.ow)) out[k] = { a: v?.a | 0, d: v?.d | 0 };
+  return out;
 }
-const isPrivate = (c) => chRoles(c).length > 0 && !!groupOwner();
+function chPerms(uid, chOrId) {
+  const c = typeof chOrId === 'string' ? recs.get(chOrId) : chOrId;
+  if (!c || c.del || (c.k !== 'ch' && c.k !== 'cat') || !groupOwner()) return permsOf(uid) | VIEW;
+  if (uid === groupOwner() || can(uid, P.ManagePermissions)) return ALL_PERMS | VIEW;
+  if (!uid || banOf(uid)) return 0;
+  let p = permsOf(uid) | VIEW;
+  const mine = new Set(rolesOf(uid).map((r) => r.id));
+  const legacy = chRoles(c); // canal privado da 2.12: só esses cargos veem
+  if (legacy.length && !legacy.some((id) => mine.has(id))) p &= ~VIEW;
+  const ow = overwritesOf(c);
+  if (ow['@all']) p = (p & ~ow['@all'].d) | ow['@all'].a;
+  let a = 0;
+  let d = 0;
+  for (const id of mine) if (ow[id]) (a |= ow[id].a), (d |= ow[id].d);
+  p = (p & ~d) | a;
+  return p & VIEW ? p : 0;
+}
+const chCan = (uid, ch, perm) => (chPerms(uid, ch) & perm) === perm;
+const canSeeChannel = (uid, chOrId) => {
+  const c = typeof chOrId === 'string' ? recs.get(chOrId) : chOrId;
+  return !c || c.del || (c.k !== 'ch' && c.k !== 'cat') || chCan(uid, c, VIEW);
+};
+// privado = quem não tem cargo nenhum não vê
+const isPrivate = (c) => {
+  if (!c || !groupOwner() || (c.k !== 'ch' && c.k !== 'cat')) return false;
+  if (chRoles(c).length) return true;
+  const all = overwritesOf(c)['@all'];
+  return !!all && (all.d & VIEW) !== 0 && (all.a & VIEW) === 0 && (everyonePerms() | VIEW) !== 0;
+};
+// modo lento: a mensagem nova de alguém sem "Gerenciar mensagens" precisa respeitar o intervalo do canal
+function slowBlocked(by, r) {
+  const c = channel(r.ch);
+  const s = c?.slow | 0;
+  if (!s || !(r.ts >= (c.slowAt || 0)) || chCan(by, c, P.ManageMessages) || can(by, P.ManageChannel)) return false;
+  return all('msg').some((m) => m.ch === r.ch && m.uid === by && m.id !== r.id && Math.abs(m.ts - r.ts) < s * 1000 - 1500);
+}
 // registro que pertence a um canal (mensagem, reação, fixada)
 const recChannel = (r) => (r.k === 'msg' || r.k === 'rx' || r.k === 'pin' ? r.ch || recs.get(r.msg)?.ch || null : null);
 const recVisibleTo = (r, uid) => {
@@ -780,14 +820,14 @@ function permitted(r, cur) {
     case 'emo':
       return can(by, P.ManageCustomisation) || (!!r.del && cur?.by === by);
     case 'pin':
-      return can(by, P.ManageMessages);
+      return chCan(by, r.ch, P.ManageMessages);
     case 'rx':
-      return !!r.del || can(by, P.React);
+      return !!r.del || chCan(by, r.ch, P.React);
     case 'msg':
       if (r.imp || cur?.imp) return r.del ? can(by, P.ManageServer) || can(by, P.ManageMessages) : can(by, P.ManageServer);
-      if (!cur) return r.del || can(by, P.SendMessage);
+      if (!cur) return r.del || (chCan(by, r.ch, P.SendMessage) && !slowBlocked(by, r));
       if (by === cur.uid) return true;
-      return !!r.del && can(by, P.ManageMessages) && outranks(by, cur.uid);
+      return !!r.del && chCan(by, cur.ch, P.ManageMessages) && outranks(by, cur.uid);
     case 'role': {
       if (!can(by, P.ManageRole)) return false;
       if (by === groupOwner()) return true;
@@ -1732,7 +1772,9 @@ async function getMic(deviceId = settings.mic, opts = settings) {
 async function joinVoice(ch) {
   if (!canSeeChannel(me.id, ch)) return toast('Esse canal é privado para alguns cargos');
   if (C.ch === ch) return;
-  if (!iCan(P.Connect)) return toast('Você não tem permissão para entrar nas calls deste grupo');
+  if (!chCan(me.id, ch, P.Connect)) return toast('Você não tem permissão para entrar nesta call');
+  const lim = channel(ch)?.limit | 0;
+  if (lim && voiceMembers(ch).filter((m) => m.key !== 'dj').length >= lim && !chCan(me.id, ch, P.MoveMembers)) return toast(`A call está cheia (limite de ${lim})`);
   if (C.ch) leaveVoice(true);
   try {
     const m = await getMic();
@@ -1827,7 +1869,7 @@ function syncMedia() {
     // a tela só vai para quem clicou em "Assistir"
     // a câmera vai para todo mundo da call (como no Discord); a tela só para quem clicou em Assistir
     const viaSfu = SFU.pub?.ready && SFU.pub.stream === C.screen && p.voice?.sfuOk;
-    const out = both ? { mic: C.mic, cam: C.cam, screen: p.voice.watch?.includes(selfId) && !viaSfu ? C.screen : null } : {};
+    const out = both ? { mic: chCan(me.id, C.ch, P.Speak) ? C.mic : null, cam: C.cam, screen: p.voice.watch?.includes(selfId) && !viaSfu ? C.screen : null } : {};
     if (!C.sent.has(p.pid)) C.sent.set(p.pid, new Map());
     const sent = C.sent.get(p.pid);
     for (const kind of ['mic', 'cam', 'screen']) {
@@ -2220,7 +2262,7 @@ function onPeerStream(stream, pid, meta) {
   if (kind === 'screen' && !C.watching.has(pid)) return;
   // sem permissão (ou banido): o áudio/vídeo dessa pessoa não toca aqui
   const uid = peers.get(pid)?.user?.id;
-  if (uid && (!can(uid, P.Connect) || !can(uid, { mic: P.Speak, cam: P.Video, screen: P.Stream }[kind]))) return;
+  if (uid && (!chCan(uid, C.ch, P.Connect) || !chCan(uid, C.ch, { mic: P.Speak, cam: P.Video, screen: P.Stream }[kind]))) return;
   p.media[kind] = stream;
   if (stream.getAudioTracks().length) attachAudio(p, kind, stream);
   if (kind === 'mic') meter(pid, stream);
@@ -2535,7 +2577,7 @@ async function loadSources() {
 }
 async function openStreamPicker() {
   if (C.screen) return stopStream(true);
-  if (!iCan(P.Stream)) return toast('Você não tem permissão para transmitir neste grupo');
+  if (C.ch && !chCan(me.id, C.ch, P.Stream)) return toast('Você não tem permissão para transmitir nesta call');
   if (!C.ch) return toast('Entre em um canal de voz para transmitir');
   openStreamDlg('new');
   loadSources();
@@ -4258,8 +4300,8 @@ function messageEl(m, prev) {
   };
   if (!m.ghost) action('face-slightly-smiling-plus', 'Reagir', (e, b) => openEmoji(b, (emoji) => toggleReaction(m, emoji)));
   if (!m.ghost) action('reply', 'Responder', () => replyTo(m, d));
-  if (!m.ghost && iCan(P.ManageMessages)) action(pinned ? 'pin-off' : 'pin', pinned ? 'Desafixar' : 'Fixar no canal', () => togglePin(m));
-  if (!m.ghost && !m.bot && m.uid !== me.id && iCan(P.ManageMessages) && outranks(me.id, m.uid))
+  if (!m.ghost && chCan(me.id, m.ch, P.ManageMessages)) action(pinned ? 'pin-off' : 'pin', pinned ? 'Desafixar' : 'Fixar no canal', () => togglePin(m));
+  if (!m.ghost && !m.bot && m.uid !== me.id && chCan(me.id, m.ch, P.ManageMessages) && outranks(me.id, m.uid))
     action('trash-2', 'Apagar mensagem (moderação)', (e) => deleteMessage(m, e.shiftKey), 'danger');
   if (m.text) action('copy', 'Copiar texto', (e, b) => copyText(m.text, b));
   if (m.uid === me.id && !m.bot && !m.ghost) {
@@ -4520,7 +4562,7 @@ function editLast(field, box, e) {
 }
 
 async function deleteMessage(m, skipConfirm) {
-  if (m.uid !== me.id && !(iCan(P.ManageMessages) && outranks(me.id, m.uid))) return;
+  if (m.uid !== me.id && !(chCan(me.id, m.ch, P.ManageMessages) && outranks(me.id, m.uid))) return;
   if (!skipConfirm && !confirm('Apagar esta mensagem para todo mundo?')) return;
   for (const n of $$(`.msg[data-id="${m.id}"]`)) animate(n, { opacity: 0, x: -12 }, { duration: 0.15 });
   await new Promise((r) => setTimeout(r, 160));
@@ -4568,6 +4610,12 @@ async function sendMessage() {
     input.value = '';
     autosize();
     return runCommand(text, S.view, $('#messages'));
+  }
+  if ((text || pendingFiles.length) && channel(S.view)) {
+    const c = channel(S.view);
+    if (!chCan(me.id, c.id, P.SendMessage)) return toast('Você não tem permissão para mandar mensagens neste canal');
+    const wait = slowWait(c);
+    if (wait > 0) return toast(`Modo lento: espere ${Math.ceil(wait / 1000)} s para mandar outra mensagem`);
   }
   const files = pendingFiles.splice(0);
   if ((!text && !files.length) || !channel(S.view)) return;
@@ -6025,6 +6073,13 @@ function renderControls() {
   $('#ctlStreamSwap').hidden = !C.screen || isMobile;
 }
 
+const slowLabel = (s) => (s >= 3600 ? s / 3600 + ' h' : s >= 60 ? s / 60 + ' min' : s + ' s');
+// quanto falta para eu poder mandar outra mensagem no modo lento
+function slowWait(c) {
+  if (!c?.slow || chCan(me.id, c.id, P.ManageMessages) || iCan(P.ManageChannel)) return 0;
+  const last = Math.max(0, ...all('msg').filter((m) => m.ch === c.id && m.uid === me.id).map((m) => m.ts));
+  return last + c.slow * 1000 - Date.now();
+}
 function renderHeader() {
   const c = channel(S.view);
   if (!c) return;
@@ -6033,8 +6088,14 @@ function renderHeader() {
   const nic = icon(c.type === 'text' ? 'hash' : 'volume-2');
   ic ? ic.replaceWith(nic) : head.prepend(nic);
   $('#viewTitle').textContent = c.name;
-  $('#viewSub').textContent = c.type === 'voice' ? `${voiceMembers(c.id).length} na call` : '';
-  input.placeholder = `Conversar em #${c.name}`;
+  $('#viewSub').textContent = c.type === 'voice' ? `${voiceMembers(c.id).length}${c.limit ? '/' + c.limit : ''} na call` : '';
+  $('#viewTopic').textContent = c.topic || '';
+  $('#viewTopic').title = c.topic || '';
+  $('#viewTopic').hidden = !c.topic;
+  const canSend = chCan(me.id, c.id, P.SendMessage);
+  input.disabled = !canSend;
+  const slow = c.slow && !chCan(me.id, c.id, P.ManageMessages) && !iCan(P.ManageChannel) ? ` · modo lento: ${slowLabel(c.slow)}` : '';
+  input.placeholder = canSend ? `Conversar em #${c.name}${slow}` : 'Você não tem permissão para mandar mensagens neste canal';
 }
 
 function renderPresence() {
@@ -6089,10 +6150,33 @@ function openView(id) {
 addEventListener('focus', () => textChatCh() && markRead(textChatCh()));
 
 // ============================================================ canais
+// ----- editar canal/categoria: aba Geral (nome, tópico, categoria, modo lento, limite) e aba Permissões (por cargo) -----
 let chDlgState = null;
+const SLOW_OPTS = [[0, 'Desligado'], [5, '5 s'], [10, '10 s'], [15, '15 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [3600, '1 hora']];
+// as permissões que um canal pode mudar; tipo: quais canais mostram cada uma
+const CH_PERM_ROWS = [
+  [VIEW, 'Ver o canal', 'Sem isso, o canal some da lista (fica privado).', 'all'],
+  [P.SendMessage, 'Mandar mensagens', '', 'text'],
+  [P.React, 'Reagir', '', 'text'],
+  [P.ManageMessages, 'Gerenciar mensagens', 'Apagar mensagens dos outros e fixar.', 'text'],
+  [P.Connect, 'Entrar na call', '', 'voice'],
+  [P.Speak, 'Falar', 'Sem isso, entra mudo.', 'voice'],
+  [P.Video, 'Câmera', '', 'voice'],
+  [P.Stream, 'Transmitir a tela', '', 'voice'],
+  [P.SendMessage, 'Mandar mensagens no chat da call', '', 'voice'],
+  [P.MoveMembers, 'Passar do limite de pessoas', 'Entra mesmo com a call cheia.', 'voice'],
+];
 function openChannelDialog(type, existing, catId) {
   if (!iCan(P.ManageChannel)) return toast('Você não tem permissão para mexer nos canais');
-  chDlgState = { type, existing };
+  // rascunho: tudo é editado aqui e só vira registro em "Salvar"
+  const ow = {};
+  for (const [k, v] of Object.entries(existing?.ow || {})) ow[k] = { a: v?.a | 0, d: v?.d | 0 };
+  // canal privado da 2.12 (lista de cargos) vira permissão "Ver o canal"
+  if (Array.isArray(existing?.roles) && existing.roles.length) {
+    ow['@all'] = { a: (ow['@all']?.a || 0) & ~VIEW, d: (ow['@all']?.d || 0) | VIEW };
+    for (const id of existing.roles) ow[id] = { a: (ow[id]?.a || 0) | VIEW, d: (ow[id]?.d || 0) & ~VIEW };
+  }
+  chDlgState = { type, existing, ow, tab: 'geral', target: '@all' };
   $('#chDlgTitle').textContent = type === 'cat' ? (existing ? 'Editar categoria' : 'Nova categoria') : existing ? 'Editar canal' : type === 'text' ? 'Novo canal de texto' : 'Novo canal de voz';
   const sel = $('#chDlgCat');
   sel.replaceChildren(new Option('Sem categoria', ''), ...all('cat').sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((c) => new Option(c.name, c.id)));
@@ -6100,22 +6184,49 @@ function openChannelDialog(type, existing, catId) {
   if (sel.selectedIndex < 0) sel.value = '';
   $('#chDlgCatWrap').hidden = type === 'cat';
   $('#chDlgName').value = existing?.name || '';
-  $('#chDlgName').placeholder = type === 'text' ? 'ex.: memes' : 'ex.: Jogatina';
+  $('#chDlgName').placeholder = type === 'text' ? 'ex.: memes' : type === 'voice' ? 'ex.: Jogatina' : 'ex.: Jogos';
+  $('#chDlgTopicWrap').hidden = type === 'cat';
+  $('#chDlgTopic').value = existing?.topic || '';
+  $('#chDlgSlowWrap').hidden = type !== 'text';
+  $('#chDlgSlow').replaceChildren(...SLOW_OPTS.map(([v, l]) => new Option(l, v)));
+  $('#chDlgSlow').value = String(existing?.slow | 0);
+  if ($('#chDlgSlow').selectedIndex < 0) $('#chDlgSlow').value = '0';
+  $('#chDlgLimitWrap').hidden = type !== 'voice';
+  $('#chDlgLimit').value = existing?.limit | 0;
+  $('#chDlgSync').hidden = type === 'cat' || !existing?.cat;
   $('#chDlgSave').textContent = existing ? 'Salvar' : 'Criar';
   $('#chDlgDelete').hidden = !existing;
-  // privado: só os cargos marcados veem (precisa do grupo ter dono e cargos)
-  const roles = roleList();
-  const picked = new Set(Array.isArray(existing?.roles) ? existing.roles : []);
+  $('#chDlgDelete').textContent = type === 'cat' ? 'Apagar categoria' : 'Apagar canal';
+  $('#chDlgTabs').hidden = !groupOwner(); // grupo sem dono: sem cargos, sem permissões por canal
+  chDlgTab('geral');
+  openDialog($('#channelDlg'));
+  $('#chDlgName').focus();
+}
+function chDlgTab(tab) {
+  chDlgState.tab = tab;
+  for (const b of $$('#chDlgTabs button')) b.classList.toggle('on', b.dataset.tab === tab);
+  $('#chDlgGeral').hidden = tab !== 'geral';
+  $('#chDlgPerms').hidden = tab !== 'perms';
+  if (tab === 'geral') renderChPriv();
+  else renderChPerms();
+}
+for (const b of $$('#chDlgTabs button')) b.onclick = () => chDlgTab(b.dataset.tab);
+// atalho da aba Geral: "Privado" = @todos sem "Ver o canal" e os cargos marcados com ele
+function renderChPriv() {
+  const { ow } = chDlgState;
+  const priv = !!((ow['@all']?.d || 0) & VIEW);
   $('#chDlgPrivWrap').hidden = !groupOwner();
-  $('#chDlgPriv').checked = picked.size > 0;
+  $('#chDlgPriv').checked = priv;
+  const roles = roleList();
+  $('#chDlgRoles').hidden = !priv;
   $('#chDlgRoles').replaceChildren(
     ...(roles.length
       ? roles.map((r) => {
           const lab = el('label', 'check');
           const cb = el('input');
           cb.type = 'checkbox';
-          cb.value = r.id;
-          cb.checked = picked.has(r.id);
+          cb.checked = !!((ow[r.id]?.a || 0) & VIEW);
+          cb.onchange = () => setOw(r.id, VIEW, cb.checked ? 1 : 0);
           const dot = el('span', 'role-dot');
           dot.style.background = cleanHex(r.color) || 'var(--muted)';
           lab.append(cb, dot, document.createTextNode(r.name));
@@ -6123,18 +6234,78 @@ function openChannelDialog(type, existing, catId) {
         })
       : [el('p', 'muted small', 'Crie cargos em Configurações do servidor → Cargos para escolher quem vê.')]),
   );
-  const syncPriv = () => ($('#chDlgRoles').hidden = !$('#chDlgPriv').checked);
-  $('#chDlgPriv').onchange = syncPriv;
-  syncPriv();
-  $('#chDlgPrivHint').textContent = type === 'cat' ? 'Os canais da categoria ficam privados (a não ser que o canal tenha os próprios cargos).' : 'Só quem tem um dos cargos marcados vê e entra. O dono vê tudo.';
-  openDialog($('#channelDlg'));
-  $('#chDlgName').focus();
+  $('#chDlgPrivHint').textContent = chDlgState.type === 'cat' ? 'Vale para todos os canais da categoria (a não ser que o canal mude as próprias permissões).' : 'Só quem tem um dos cargos marcados vê e entra. O dono vê tudo.';
 }
+$('#chDlgPriv').onchange = () => {
+  setOw('@all', VIEW, $('#chDlgPriv').checked ? -1 : 0);
+  renderChPriv();
+};
+// muda uma permissão no rascunho: 1 = permitir, -1 = negar, 0 = herdar
+function setOw(target, bit, val) {
+  const cur = chDlgState.ow[target] || { a: 0, d: 0 };
+  const next = { a: cur.a & ~bit, d: cur.d & ~bit };
+  if (val > 0) next.a |= bit;
+  if (val < 0) next.d |= bit;
+  if (next.a || next.d) chDlgState.ow[target] = next;
+  else delete chDlgState.ow[target];
+}
+function renderChPerms() {
+  const { ow, type } = chDlgState;
+  const targets = [{ id: '@all', name: '@todos', color: '' }, ...roleList()];
+  if (!targets.some((t) => t.id === chDlgState.target)) chDlgState.target = '@all';
+  const tgt = chDlgState.target;
+  $('#chPermTargets').replaceChildren(
+    ...targets.map((t) => {
+      const b = el('button', 'cp-target' + (t.id === tgt ? ' on' : '') + (ow[t.id] ? ' changed' : ''));
+      b.type = 'button';
+      const dot = el('span', 'role-dot');
+      dot.style.background = cleanHex(t.color) || 'var(--muted)';
+      b.append(dot, el('span', '', t.name));
+      b.onclick = () => {
+        chDlgState.target = t.id;
+        renderChPerms();
+      };
+      return b;
+    }),
+  );
+  const rows = CH_PERM_ROWS.filter((r) => r[3] === 'all' || type === 'cat' || r[3] === type);
+  const cur = ow[tgt] || { a: 0, d: 0 };
+  $('#chPermList').replaceChildren(
+    el('p', 'muted small', tgt === '@todos' || tgt === '@all' ? 'O que todo mundo pode neste canal. Cargos podem liberar ou bloquear por cima.' : 'Para quem tem este cargo. "Permitir" de um cargo vence o "Negar" do @todos.'),
+    ...rows.map(([bit, name, hint]) => {
+      const val = cur.a & bit ? 1 : cur.d & bit ? -1 : 0;
+      const row = el('div', 'cp-row');
+      const txt = el('div', 'cp-txt');
+      txt.append(el('b', '', name));
+      if (hint) txt.append(el('span', 'muted small', hint));
+      const seg = el('div', 'cp-seg');
+      for (const [v, ic, title] of [[-1, 'x', 'Negar'], [0, 'minus', 'Herdar'], [1, 'check', 'Permitir']]) {
+        const b = el('button', 'cp-b' + (v === val ? ' on v' + (v + 1) : ''));
+        b.type = 'button';
+        b.title = title;
+        b.append(icon(ic, 'sm'));
+        b.onclick = () => {
+          setOw(tgt, bit, v);
+          renderChPerms();
+        };
+        seg.append(b);
+      }
+      row.append(txt, seg);
+      return row;
+    }),
+  );
+}
+$('#chDlgSync').onclick = () => {
+  chDlgState.ow = {};
+  chDlgState.syncCat = true;
+  toast('Permissões iguais às da categoria (salve para aplicar)');
+  chDlgTab(chDlgState.tab);
+};
 $$('[data-add]').forEach((b) => (b.onclick = () => openChannelDialog(b.dataset.add)));
 $('#btnAddCat').onclick = () => openChannelDialog('cat');
 // soltar um canal no título "Canais de texto/voz" tira ele da categoria
 for (const h of $$('#channels > .ch-head')) dropZone(h, null);
-// renomear o canal aberto: clicando no nome lá em cima ou no lápis
+// editar o canal aberto: clicando no nome lá em cima ou no lápis
 $('#viewTitle').onclick = $('#btnRenameCh').onclick = () => {
   const c = channel(S.view);
   if (c) openChannelDialog(c.type, c);
@@ -6142,19 +6313,34 @@ $('#viewTitle').onclick = $('#btnRenameCh').onclick = () => {
 const fixName = (type, name) => (type === 'text' ? name.toLowerCase().replace(/\s+/g, '-') : name).slice(0, 40);
 $('#chDlgSave').onclick = () => {
   const name = cleanName($('#chDlgName').value.slice(0, 40));
-  if (!name) return $('#chDlgName').focus();
-  const { type, existing } = chDlgState;
+  if (!name) {
+    chDlgTab('geral');
+    return $('#chDlgName').focus();
+  }
+  const { type, existing, ow } = chDlgState;
+  if ((ow['@all']?.d || 0) & VIEW && roleList().length && !Object.entries(ow).some(([k, v]) => k !== '@all' && v.a & VIEW)) {
+    if (!confirm('Ninguém além do dono vai ver este canal (nenhum cargo com "Ver o canal"). Salvar assim?')) return;
+  }
   const cat = $('#chDlgCat').value || null;
-  const roles = $('#chDlgPriv').checked ? $$('#chDlgRoles input:checked').map((x) => x.value) : [];
-  if ($('#chDlgPriv').checked && !roles.length && roleList().length) return toast('Marque pelo menos um cargo, ou desligue o privado');
+  const extra = { ow: Object.keys(ow).length ? ow : undefined, roles: undefined };
+  if (type !== 'cat') {
+    const topic = $('#chDlgTopic').value.trim().slice(0, 300);
+    const slow = type === 'text' ? Number($('#chDlgSlow').value) | 0 : 0;
+    const limit = type === 'voice' ? clamp(Number($('#chDlgLimit').value) | 0, 0, 99) : 0;
+    Object.assign(extra, { topic: topic || undefined, slow: slow || undefined, limit: limit || undefined });
+    // o modo lento só vale para mensagens novas
+    if (slow && slow !== (existing?.slow | 0)) extra.slowAt = Date.now();
+    else if (slow) extra.slowAt = existing?.slowAt;
+  }
+  const clean = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
   if (type === 'cat') {
-    if (existing) put({ ...existing, name: name.slice(0, 40), roles });
-    else put({ k: 'cat', id: 'cat:' + randId(), name: name.slice(0, 40), order: Math.max(0, ...all('cat').map((c) => c.order ?? 0)) + 1, roles });
-  } else if (existing) put({ ...existing, name: fixName(type, name), cat, roles });
+    if (existing) put(clean({ ...existing, ...extra, name: name.slice(0, 40) }));
+    else put(clean({ k: 'cat', id: 'cat:' + randId(), name: name.slice(0, 40), order: Math.max(0, ...all('cat').map((c) => c.order ?? 0)) + 1, ...extra }));
+  } else if (existing) put(clean({ ...existing, ...extra, name: fixName(type, name), cat }));
   else {
     const order = Math.max(0, ...all('ch').map((c) => c.order)) + 1;
     const id = 'c:' + randId();
-    put({ k: 'ch', id, name: fixName(type, name), type, order, cat, roles });
+    put(clean({ k: 'ch', id, name: fixName(type, name), type, order, cat, ...extra }));
     if (type === 'text') openView(id);
   }
   closeDialog($('#channelDlg'));
@@ -8768,6 +8954,9 @@ window.__toca = {
   put,
   me: () => me,
   canSeeChannel,
+  chCan,
+  chPerms,
+  VIEW,
   channels,
   roleList,
   groupOwner,
@@ -9465,7 +9654,7 @@ function camVideo(stream, mirror) {
 }
 async function toggleCam() {
   if (C.cam) return stopCam(true);
-  if (!iCan(P.Video)) return toast('Você não tem permissão para ligar a câmera neste grupo');
+  if (C.ch && !chCan(me.id, C.ch, P.Video)) return toast('Você não tem permissão para ligar a câmera nesta call');
   if (!C.ch) return toast('Entre em um canal de voz para ligar a câmera');
   // No celular: câmera da frente e 640x480 (o 720p esquenta e trava em muito Android).
   // Se a câmera escolhida sumiu ou não aceita o formato, tenta de novo com qualquer câmera.

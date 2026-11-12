@@ -93,7 +93,8 @@
       <header id="viewHead">
         <i id="viewIcon" data-icon="hash"></i>
         <span id="viewTitle" title="Renomear canal"></span>
-        <button type="button" class="icon-btn sm" id="btnRenameCh" title="Renomear canal"><i data-icon="pencil" class="sm"></i></button>
+        <button type="button" class="icon-btn sm" id="btnRenameCh" title="Editar canal"><i data-icon="pencil" class="sm"></i></button>
+        <span id="viewTopic" class="view-topic" hidden></span>
         <span class="grow"></span>
         <label class="chat-search" id="chatSearch" hidden><i data-icon="search" class="sm"></i><input id="chatSearchInput" placeholder="Buscar neste canal"><span id="chatSearchCount" class="muted small"></span></label>
         <span id="viewSub" class="muted"></span>
@@ -435,17 +436,31 @@
     <menu><button class="ghost" data-close>Cancelar</button><button class="primary" id="srvSave">Salvar</button></menu>
   </dialog>
 
-  <dialog id="channelDlg">
+  <dialog id="channelDlg" class="ch-dlg">
     <h2 id="chDlgTitle">Criar canal</h2>
-    <label>Nome<input id="chDlgName" maxlength="40"></label>
-    <label id="chDlgCatWrap">Categoria<select id="chDlgCat"></select></label>
-    <div id="chDlgPrivWrap" class="ch-priv">
-      <label class="check"><input type="checkbox" id="chDlgPriv"> <i data-icon="lock" class="sm"></i> Privado para alguns cargos</label>
-      <p class="muted small" id="chDlgPrivHint"></p>
-      <div id="chDlgRoles" class="ch-priv-roles"></div>
+    <div class="ch-tabs" id="chDlgTabs">
+      <button type="button" data-tab="geral" class="on"><i data-icon="settings" class="sm"></i>Geral</button>
+      <button type="button" data-tab="perms"><i data-icon="shield-check" class="sm"></i>Permissões</button>
+    </div>
+    <div id="chDlgGeral" class="ch-pane">
+      <label>Nome<input id="chDlgName" maxlength="40"></label>
+      <label id="chDlgTopicWrap">Tópico <span class="muted small">(aparece no topo do canal)</span><textarea id="chDlgTopic" maxlength="300" rows="2" placeholder="Sobre o que é este canal?"></textarea></label>
+      <label id="chDlgCatWrap">Categoria<select id="chDlgCat"></select></label>
+      <label id="chDlgSlowWrap">Modo lento <span class="muted small">(tempo entre mensagens de cada pessoa)</span><select id="chDlgSlow"></select></label>
+      <label id="chDlgLimitWrap">Limite de pessoas na call <span class="muted small">(0 = sem limite)</span><input id="chDlgLimit" type="number" min="0" max="99"></label>
+      <div id="chDlgPrivWrap" class="ch-priv">
+        <label class="check"><input type="checkbox" id="chDlgPriv"> <i data-icon="lock" class="sm"></i> Privado para alguns cargos</label>
+        <p class="muted small" id="chDlgPrivHint"></p>
+        <div id="chDlgRoles" class="ch-priv-roles"></div>
+      </div>
+    </div>
+    <div id="chDlgPerms" class="ch-pane ch-perms" hidden>
+      <div class="cp-targets" id="chPermTargets"></div>
+      <div class="cp-list" id="chPermList"></div>
     </div>
     <menu>
       <button class="ghost danger-text" id="chDlgDelete" hidden>Apagar canal</button>
+      <button class="ghost" id="chDlgSync" type="button" hidden title="Apaga as permissões próprias do canal: passa a seguir a categoria"><i data-icon="refresh-ccw" class="sm"></i>Igual à categoria</button>
       <span class="grow"></span>
       <button class="ghost" data-close>Cancelar</button>
       <button class="primary" id="chDlgSave">Criar</button>
