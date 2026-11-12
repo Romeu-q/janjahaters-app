@@ -752,6 +752,24 @@
             <p class="muted small">O janja reconhece uns 25 mil jogos sozinho. Só o nome do jogo aparece, nunca o que mais está aberto no seu PC. Jogo que não aparece? Cadastre aqui (o nome do .exe aparece no Gerenciador de Tarefas, em Detalhes).</p>
             <div class="act-add"><input id="stActName" maxlength="60" placeholder="Nome do jogo"><input id="stActExe" maxlength="80" placeholder="jogo.exe"><button type="button" class="ghost sm" id="stActAdd"><i data-icon="plus"></i>Cadastrar</button></div>
             <div id="stActList" class="act-list"></div>
+            <h3>Sobreposição no jogo</h3>
+            <label class="check"><input type="checkbox" id="stOv"> Mostrar por cima do jogo quem está na call e quem está falando</label>
+            <label>Quando aparece
+              <select id="stOvWhen">
+                <option value="game">Só com um jogo aberto (os que aparecem em "Jogando")</option>
+                <option value="always">Sempre que o janja não estiver na frente</option>
+              </select>
+            </label>
+            <label>Canto da tela
+              <select id="stOvPos">
+                <option value="tl">Em cima, à esquerda</option>
+                <option value="tr">Em cima, à direita</option>
+                <option value="bl">Embaixo, à esquerda</option>
+                <option value="br">Embaixo, à direita</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="stOvOnly"> Mostrar só quem está falando</label>
+            <p class="muted small">Funciona com o jogo em janela ou "janela sem bordas" (tela cheia exclusiva não deixa nada por cima). Não aparece na sua transmissão.</p>
             <h3>Atualizações</h3>
           </div>
           <div class="update-row">

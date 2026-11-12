@@ -232,6 +232,49 @@ function applyZoom() {
   for (const wc of [win?.webContents, visit?.webContents]) if (wc && !wc.isDestroyed()) wc.setZoomFactor(z);
 }
 
+// ----- sobreposição no jogo -----
+// Janelinha transparente, sempre por cima, que não pega clique nem foco, com quem está na call. Some quando o
+// janja está na frente. Não aparece em captura de tela (a transmissão não mostra). Em tela cheia exclusiva o
+// Windows não deixa nenhuma janela por cima; em janela ou "janela sem bordas" funciona.
+let ovWin = null;
+let ovData = { show: false };
+const OV_W = 240;
+function ovRows() {
+  const list = Array.isArray(ovData.list) ? ovData.list : [];
+  return ovData.only ? list.filter((x) => x?.s).length : list.length + (ovData.ch ? 0.6 : 0);
+}
+function syncOverlay() {
+  const front = win && win.isVisible() && !win.isMinimized() && win.isFocused();
+  const want = !!ovData.show && !front && (!ovData.only || ovRows() > 0 || !!ovWin?.isVisible());
+  if (!want) return ovWin?.isVisible() && ovWin.hide();
+  if (!ovWin || ovWin.isDestroyed()) {
+    ovWin = new BrowserWindow({
+      width: OV_W, height: 60, frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false,
+      focusable: false, skipTaskbar: true, alwaysOnTop: true, hasShadow: false, show: false, backgroundColor: '#00000000',
+      webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
+    });
+    ovWin.setAlwaysOnTop(true, 'screen-saver');
+    ovWin.setIgnoreMouseEvents(true);
+    ovWin.setContentProtection(true);
+    ovWin.webContents.on('did-finish-load', () => ovWin?.webContents.send('overlay', ovData));
+    ovWin.loadURL(`http://localhost:${UI_PORT}/overlay.html`);
+  }
+  const wa = require('electron').screen.getPrimaryDisplay().workArea;
+  const h = Math.min(wa.height - 40, Math.round(14 + Math.max(1, ovRows()) * 34));
+  const pos = String(ovData.pos || 'tl');
+  const x = pos[1] === 'r' ? wa.x + wa.width - OV_W - 12 : wa.x + 12;
+  const y = pos[0] === 'b' ? wa.y + wa.height - h - 12 : wa.y + 12;
+  ovWin.setBounds({ x, y, width: OV_W, height: h });
+  ovWin.webContents.send('overlay', ovData);
+  if (!ovWin.isVisible()) ovWin.showInactive();
+  ovWin.setAlwaysOnTop(true, 'screen-saver'); // jogos às vezes passam por cima: reforça
+}
+ipcMain.on('overlay', (e, d) => {
+  if (!win || e.sender !== win.webContents) return;
+  ovData = d && typeof d === 'object' ? d : { show: false };
+  syncOverlay();
+});
+
 function createWindow() {
   const saved = savedBounds();
   // janela nova não pode ser maior que a tela (em 1366x768 o tamanho padrão passava da barra de tarefas)
@@ -252,6 +295,7 @@ function createWindow() {
     webPreferences: WEB_PREFS,
   });
   win.on('resize', fitVisit);
+  for (const ev of ['focus', 'blur', 'show', 'hide', 'minimize', 'restore']) win.on(ev, syncOverlay);
   // mudou de monitor ou a resolução mudou: recalcula o tamanho automático
   win.on('moved', applyZoom);
   win.webContents.on('did-finish-load', applyZoom);

@@ -47,5 +47,7 @@ contextBridge.exposeInMainWorld('desk', {
   callState: (st) => ipcRenderer.send('call-state', st),
   getCallState: () => ipcRenderer.invoke('call-state'),
   onCallState: (fn) => ipcRenderer.on('call-state', (e, st) => fn(st)),
+  overlay: (d) => ipcRenderer.send('overlay', d),
+  onOverlay: (fn) => ipcRenderer.on('overlay', (e, d) => fn(d)),
   onCallCmd: (fn) => ipcRenderer.on('call-cmd', (e, cmd, arg) => fn(cmd, arg)),
 });

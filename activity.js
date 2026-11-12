@@ -20,7 +20,8 @@ const GENERIC = new Set(['game.exe', 'launcher.exe', 'client.exe', 'start.exe', 
 const dbg = (...a) => process.env.JANJA_ACT_DEBUG && console.log('[atividade]', ...a);
 module.exports = function startActivity({ userData, send }) {
   const cacheFile = path.join(userData, 'detectable.json');
-  let byExe = new Map(); // nome do .exe -> { id, name }
+  let byExe = new Map(); // nome do .exe -> [{ id, name, tail }] (tail: "pasta/jogo.exe" como no cadastro do Discord)
+  const pathOf = new Map(); // pid -> caminho do .exe ('' quando o Windows não deixa ver)
   let byId = new Map(); // id do app no Discord -> nome
   let custom = []; // [{ exe, name }] cadastrados pela pessoa
   let enabled = true;
@@ -41,9 +42,11 @@ module.exports = function startActivity({ userData, send }) {
       ids.set(String(a.id), a.name);
       for (const e of a.executables || []) {
         if (e.is_launcher || (e.os && e.os !== 'win32')) continue;
-        const base = String(e.name || '').split('/').pop().toLowerCase();
-        if (!base.endsWith('.exe') || GENERIC.has(base) || ex.has(base)) continue;
-        ex.set(base, { id: String(a.id), name: a.name });
+        const tail = String(e.name || '').toLowerCase().replace(/\\/g, '/').replace(/^[>/]+/, '');
+        const base = tail.split('/').pop();
+        if (!base.endsWith('.exe') || GENERIC.has(base)) continue;
+        if (!ex.has(base)) ex.set(base, []);
+        ex.get(base).push({ id: String(a.id), name: a.name, tail });
       }
     }
     byExe = ex;
@@ -111,23 +114,54 @@ module.exports = function startActivity({ userData, send }) {
   }
 
   // ---------- 1: jogos abertos
+  // Só o nome do .exe engana: o Green Hell é "gh.exe", o mesmo nome do GitHub CLI. Como o Discord, confere
+  // também a pasta ("green hell/gh.exe"). O caminho só é buscado para os poucos programas com nome da lista.
+  function paths(pids) {
+    const need = pids.filter((p) => !pathOf.has(p)).slice(0, 40);
+    if (!need.length) return Promise.resolve();
+    const cmd = `Get-Process -Id ${need.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id)|$($_.Path)" }`;
+    return new Promise((done) =>
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], { windowsHide: true, timeout: 10000 }, (err, out) => {
+        for (const p of need) pathOf.set(p, '');
+        for (const line of String(out || '').split(/\r?\n/)) {
+          const [pid, file] = line.trim().split('|');
+          if (pid && file) pathOf.set(pid, file.toLowerCase().replace(/\\/g, '/'));
+        }
+        done();
+      }),
+    );
+  }
+  // o caminho termina com "pasta/jogo.exe" do cadastro? (cadastro sem pasta: basta o nome)
+  const fits = (file, tail) => !tail.includes('/') || (!!file && (file === tail || file.endsWith('/' + tail)));
   function poll() {
-    execFile('tasklist', ['/fo', 'csv', '/nh'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+    execFile('tasklist', ['/fo', 'csv', '/nh'], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, async (err, out) => {
       if (err || !enabled) return;
-      const running = new Set();
+      const running = new Map(); // exe -> [pid]
       for (const line of out.split(/\r?\n/)) {
-        const m = line.match(/^"([^"]+)"/);
-        if (m) running.add(m[1].toLowerCase());
+        const m = line.match(/^"([^"]+)","(\d+)"/);
+        if (!m) continue;
+        const exe = m[1].toLowerCase();
+        if (!running.has(exe)) running.set(exe, []);
+        running.get(exe).push(m[2]);
       }
+      const alive = new Set([...running.values()].flat());
+      for (const p of pathOf.keys()) if (!alive.has(p)) pathOf.delete(p);
       // os cadastrados à mão vêm antes da lista do Discord
       let found = custom.find((c) => running.has(c.exe));
       if (found) found = { id: null, name: found.name };
-      else
-        for (const exe of running)
-          if (byExe.has(exe)) {
-            found = { ...byExe.get(exe) };
+      else {
+        const hits = [...running.keys()].filter((exe) => byExe.has(exe));
+        await paths(hits.flatMap((exe) => running.get(exe)));
+        for (const exe of hits) {
+          const files = running.get(exe).map((p) => pathOf.get(p) || '');
+          const game = byExe.get(exe).find((g) => files.some((f) => fits(f, g.tail)));
+          if (game) {
+            found = { id: game.id, name: game.name };
             break;
           }
+        }
+      }
+      if (!enabled) return;
       if (!found) detected = null;
       else if (detected?.name !== found.name) detected = { ...found, start: Date.now() };
       emit();

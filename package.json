@@ -33,6 +33,8 @@
       "renderer/vfx/*.png",
       "renderer/gate-worklet.js",
       "renderer/pcm-worklet.js",
+      "renderer/overlay.html",
+      "renderer/overlay.js",
       "renderer/icon.png",
       "renderer/vendor/**",
       "oauth.json"

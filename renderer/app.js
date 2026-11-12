@@ -9349,6 +9349,40 @@ function renderActSettings() {
     }),
   );
 }
+// ----- sobreposição no jogo: a página da call manda a lista; o processo principal desenha a janelinha -----
+settings.overlay = { on: true, when: 'game', pos: 'tl', only: false, ...settings.overlay };
+let ovLast = '';
+function overlayPayload() {
+  const o = settings.overlay;
+  if (VISIT || !o.on || !C.ch || (o.when !== 'always' && !gameAct)) return { show: false };
+  const list = voiceMembers(C.ch)
+    .filter((m) => m.key !== 'dj')
+    .slice(0, 12)
+    .map((m) => ({ n: m.user.name, c: m.user.color || '', s: C.speaking.has(m.key), m: !!m.voice?.muted, d: !!m.voice?.deafened, me: m.key === 'me' }));
+  return { show: true, pos: o.pos, only: !!o.only, ch: channel(C.ch)?.name || '', list };
+}
+setInterval(() => {
+  if (!window.desk?.overlay || VISIT) return;
+  const j = JSON.stringify(overlayPayload());
+  if (j === ovLast) return;
+  ovLast = j;
+  window.desk.overlay(JSON.parse(j));
+}, 150);
+function renderOvSettings() {
+  const o = settings.overlay;
+  $('#stOv').checked = o.on;
+  $('#stOvWhen').value = o.when;
+  $('#stOvPos').value = o.pos;
+  $('#stOvOnly').checked = o.only;
+  for (const id of ['#stOvWhen', '#stOvPos', '#stOvOnly']) $(id).disabled = !o.on;
+}
+for (const id of ['#stOv', '#stOvWhen', '#stOvPos', '#stOvOnly'])
+  $(id).onchange = () => {
+    Object.assign(settings.overlay, { on: $('#stOv').checked, when: $('#stOvWhen').value, pos: $('#stOvPos').value, only: $('#stOvOnly').checked });
+    saveSettings();
+    renderOvSettings();
+  };
+renderOvSettings();
 function saveActSettings() {
   saveSettings();
   window.desk?.activityConfig?.(settings.activity).catch(() => {});
