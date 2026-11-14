@@ -24,6 +24,7 @@
       "links.js",
       "preview.js",
       "activity.js",
+      "hardware.js",
       "renderer/index.html",
       "renderer/style.css",
       "renderer/bundle.js",

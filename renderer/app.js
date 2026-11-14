@@ -378,7 +378,7 @@ const me = store.get('profile', { id: randId(16), name: '', color: COLORS[Math.f
 const settings = Object.assign(
   { mic: '', out: '', noise: 'strong', echo: true, sounds: true, musicVol: 0.6, musicMuted: false, sndVol: 0.7, volumes: {},
     netMode: 'auto', antiPing: true,
-    stream: { preset: 'std', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
+    stream: { preset: 'auto', res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced', audio: false, audioRate: 192 } },
   store.get('settings', {}),
 );
 if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'auto';
@@ -1712,6 +1712,7 @@ const C = {
   ch: null, // canal de voz em que estou
   mic: null,
   screen: null,
+  adapt: null, // teto temporário de fps/resolução quando o processador não dá conta
   muted: store.get('muted', false),
   deafened: false,
   sent: new Map(), // peerId -> Map(tipo -> stream enviada)
@@ -2506,6 +2507,7 @@ $('#ctlMusic').onclick = () => selectTab('music');
 // ============================================================ stream de tela
 // ----- qualidade da stream -----
 const STREAM_PRESETS = {
+  auto: { res: 1080, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' }, // preenchido pelo hardware (applyHw)
   ultralight: { res: 480, fps: 20, rate: 0.8, codec: 'h264', mode: 'motion' },
   potato: { res: 720, fps: 24, rate: 1.5, codec: 'h264', mode: 'motion' },
   light: { res: 720, fps: 30, rate: 0, codec: 'auto', mode: 'balanced' },
@@ -2531,6 +2533,74 @@ const CODEC_OPTS = [
 ];
 const CONTENT_HINT = { motion: 'motion', detail: 'detail', balanced: '' };
 
+// ----- hardware: o app vê o PC e escolhe a qualidade -----
+let HW = null;
+function hwLabel(h) {
+  const gpu = h.gpu ? h.gpu.replace(/^(AMD|NVIDIA|Intel)\(R\)\s*/i, '').replace(/^(AMD|NVIDIA)\s+/i, '') : 'sem placa de vídeo';
+  const cpu = h.cpu.replace(/\(R\)|\(TM\)|\d+-Core Processor|Processor/g, '').replace(/\s+/g, ' ').trim();
+  const use = !h.gpu ? '' : h.encode ? ' · placa de vídeo ativa no app' : ' · a placa de vídeo NÃO está sendo usada pelo app (encode no processador)';
+  return `Seu PC: ${cpu} (${h.threads} threads) · ${gpu} · ${h.ramGb} GB${use}`;
+}
+function applyHw(h) {
+  HW = h;
+  const rec = h.rec || {};
+  const have = new Set((window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs || []).map((c) => c.mimeType));
+  const codec = have.has(CODEC_MIME[rec.codec]) ? rec.codec : have.has(CODEC_MIME.vp8) ? 'vp8' : 'auto';
+  STREAM_PRESETS.auto = { res: rec.res || 1080, fps: rec.fps || 30, rate: 0, codec, mode: rec.mode || 'motion' };
+  // quem nunca mexeu na qualidade (padrão antigo) passa para o Automático
+  if (!settings.hwV) {
+    const q = settings.stream;
+    if (q.preset === 'std' && q.res === 1080 && q.fps === 30 && !q.rate && q.codec === 'auto' && q.mode === 'balanced') q.preset = 'auto';
+    settings.hwV = 1;
+  }
+  if (settings.stream.preset === 'auto') Object.assign(settings.stream, STREAM_PRESETS.auto, { preset: 'auto' });
+  saveSettings();
+  if ($('#sqHw')) {
+    $('#sqHw').textContent = hwLabel(h);
+    $('#sqHw').title = rec.why || '';
+  }
+  if ($('#streamDlg').open) fillQualityForm(settings.stream);
+  if (C.screen) applyStreamQuality();
+}
+window.desk?.hwInfo?.().then(applyHw).catch(() => {});
+
+// Se o processador não aguenta (o Chromium avisa com qualityLimitationReason = cpu), baixa a stream aos poucos
+// em vez de deixar todo mundo assistindo travado: primeiro os quadros por segundo, depois a resolução.
+const ADAPT_FPS = [60, 45, 30, 24, 20];
+const ADAPT_RES = [1080, 720, 480];
+let cpuHits = 0;
+setInterval(async () => {
+  const vt = C.screen?.getVideoTracks()[0];
+  if (!vt) {
+    cpuHits = 0;
+    return;
+  }
+  const sender = [...peerConnections().map((x) => x[1]), ...(SFU.pub ? [SFU.pub.pc] : [])].flatMap((pc) => pc.getSenders?.() || []).find((x) => x.track === vt);
+  const stats = await sender?.getStats().catch(() => null);
+  let out = null;
+  stats?.forEach((r) => {
+    if (r.type === 'outbound-rtp' && r.kind === 'video') out = r;
+  });
+  if (!out) return;
+  cpuHits = out.qualityLimitationReason === 'cpu' ? cpuHits + 1 : 0;
+  if (cpuHits < 3) return; // 3 leituras seguidas (6 s): não reage a um soluço
+  cpuHits = 0;
+  const q = streamTarget();
+  const next = ADAPT_FPS.find((f) => f < q.fps);
+  const a = { ...(C.adapt || {}) };
+  if (next && next >= 24) a.fps = next;
+  else {
+    const cur = q.res || (vt.getSettings().height ?? 1080);
+    const lower = ADAPT_RES.find((r) => r < cur);
+    if (!lower) return;
+    a.res = lower;
+    a.fps = Math.min(q.fps, 30);
+  }
+  C.adapt = a;
+  await applyStreamQuality();
+  toast(`O processador não está dando conta: baixei a stream para ${a.res || q.res || 1080}p ${a.fps} fps`);
+}, 2000);
+
 function codecOptions() {
   const have = new Set((window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs || []).map((c) => c.mimeType));
   return [['auto', 'Automático'], ...CODEC_OPTS.filter(([k]) => have.has(CODEC_MIME[k]))];
@@ -2540,13 +2610,20 @@ function autoBitrate(q, w, h) {
   return Math.round(clamp(w * h * q.fps * perPixel, 800_000, 30_000_000));
 }
 // o que a stream deve usar agora (a taxa automática sai da resolução real capturada)
+function adapted(q) {
+  const a = C.adapt;
+  if (!a) return q;
+  return { ...q, fps: Math.min(q.fps, a.fps || q.fps), res: a.res ? (q.res ? Math.min(q.res, a.res) : a.res) : q.res };
+}
 function streamTarget(q = settings.stream) {
+  q = adapted(q);
   const s = C.screen?.getVideoTracks()[0]?.getSettings?.() || {};
   const h = q.res ? Math.min(q.res, s.height || q.res) : s.height || 1080;
   const w = s.width && s.height ? Math.round((s.width / s.height) * h) : Math.round((h * 16) / 9);
   return { ...q, bitrate: q.rate ? Math.round(q.rate * 1_000_000) : autoBitrate(q, w, h) };
 }
 function videoConstraints(q) {
+  q = adapted(q);
   const v = { frameRate: { ideal: q.fps, max: q.fps } };
   if (q.res) Object.assign(v, { height: { max: q.res }, width: { max: Math.round((q.res * 16) / 9) } });
   return v;
@@ -2839,6 +2916,7 @@ async function captureScreen(sourceId, withAudio) {
   return s;
 }
 async function startStream(sourceId, withAudio) {
+  C.adapt = null;
   try {
     C.screen = await captureScreen(sourceId, withAudio);
     streamSource = sourceId;
@@ -2927,6 +3005,7 @@ function stopStream(notify) {
   if (notify) sfx.streamOff();
   const s = C.screen;
   C.screen = null;
+  C.adapt = null;
   syncMedia();
   s.getTracks().forEach((t) => t.stop());
   if (sqAdjust && $('#streamDlg').open) closeDialog($('#streamDlg'));
@@ -9062,6 +9141,8 @@ window.__toca = {
   channels,
   roleList,
   groupOwner,
+  peerConnections,
+  streamTarget,
 }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();

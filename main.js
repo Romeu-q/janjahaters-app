@@ -26,6 +26,30 @@ app.on('child-process-gone', (e, details) => {
   app.exit(0);
 });
 
+// ----- hardware -----
+// Consulta o que o PC tem e se o Chromium usa a placa de vídeo. Se a placa existe e ele caiu em software, liga
+// "sem sandbox da GPU" e reabre uma vez (o mesmo remédio que já vale quando o processo da GPU cai).
+const hardware = require('./hardware');
+let hwPromise = null;
+function hwInfo() {
+  hwPromise ||= hardware.collect({ app, screen: require('electron').screen, gpuFlag: GPU_FLAG }).then((hw) => {
+    hw.rec = hardware.recommend(hw);
+    if (process.env.JANJA_HW_DEBUG) console.log('[hardware]', JSON.stringify(hw));
+    if (hardware.needsHeal(hw) && !process.env.JANJA_NO_HEAL) {
+      try {
+        fs.mkdirSync(path.dirname(GPU_FLAG), { recursive: true });
+        fs.writeFileSync(GPU_FLAG, 'software-fallback');
+        console.log('[hardware] Chromium em software com placa presente: reabrindo sem o sandbox da GPU');
+        app.relaunch();
+        app.exit(0);
+      } catch {}
+    }
+    return hw;
+  });
+  return hwPromise;
+}
+ipcMain.handle('hw-info', () => hwInfo());
+
 // A interface é servida em http://127.0.0.1 (porta fixa para o localStorage não se perder):
 // o player do YouTube não funciona a partir de file://.
 const UI_PORT = 47610 + PROFILE;
@@ -347,6 +371,7 @@ app.on('second-instance', (e, argv) => {
 });
 
 app.whenReady().then(async () => {
+  setTimeout(() => hwInfo().catch(() => {}), 4000); // com a janela já aberta; a reabertura (se precisar) é rápida
   const allowed = new Set(['media', 'display-capture', 'notifications', 'clipboard-sanitized-write', 'fullscreen']);
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(allowed.has(permission)));
   session.defaultSession.setPermissionCheckHandler((wc, permission) => allowed.has(permission));
