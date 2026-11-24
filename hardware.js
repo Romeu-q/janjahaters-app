@@ -28,7 +28,7 @@ function windowsGpus() {
 
 const on = (v) => typeof v === 'string' && v.startsWith('enabled');
 
-async function collect({ app, screen, gpuFlag }) {
+async function collect({ app, screen, gpuFlag, accel = true }) {
   await app.getGPUInfo('basic').catch(() => null); // obriga o processo da GPU a subir antes de perguntar
   const feat = app.getGPUFeatureStatus();
   const gpus = (await windowsGpus()).map((g) => ({ ...g, virtual: VIRTUAL.test(g.name), discrete: DISCRETE.test(g.name) && !VIRTUAL.test(g.name) }));
@@ -48,7 +48,8 @@ async function collect({ app, screen, gpuFlag }) {
     decode: on(feat.video_decode),
     compositing: on(feat.gpu_compositing),
     // placa de verdade existe mas o Chromium está em software (e já tentamos sem o sandbox da GPU, ou não dá)
-    softwareFallback: real.length > 0 && !on(feat.video_encode),
+    accel, // a pessoa deixou a aceleração ligada nas configurações?
+    softwareFallback: accel && real.length > 0 && !on(feat.video_encode),
     noSandbox: !!gpuFlag && fs.existsSync(gpuFlag),
   };
   return hw;

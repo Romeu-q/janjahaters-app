@@ -2536,7 +2536,7 @@ let HW = null;
 function hwLabel(h) {
   const gpu = h.gpu ? h.gpu.replace(/^(AMD|NVIDIA|Intel)\(R\)\s*/i, '').replace(/^(AMD|NVIDIA)\s+/i, '') : 'sem placa de vídeo';
   const cpu = h.cpu.replace(/\(R\)|\(TM\)|\d+-Core Processor|Processor/g, '').replace(/\s+/g, ' ').trim();
-  const use = !h.gpu ? '' : h.encode ? ' · placa de vídeo ativa no app' : ' · a placa de vídeo NÃO está sendo usada pelo app (encode no processador)';
+  const use = !h.gpu ? '' : h.accel === false ? ' · aceleração da placa desligada (lives no processador)' : h.encode ? ' · placa de vídeo ativa no app' : ' · a placa de vídeo NÃO está sendo usada pelo app (encode no processador)';
   return `Seu PC: ${cpu} (${h.threads} threads) · ${gpu} · ${h.ramGb} GB${use}`;
 }
 function applyHw(h) {
@@ -7453,6 +7453,7 @@ async function openSettings(page = 'profile') {
   $('#stHotkeys').checked = desktopPrefs.hotkeys;
   $('#stTray').checked = desktopPrefs.tray;
   $('#stAutostart').checked = desktopPrefs.autostart;
+  $('#stGpu').checked = !!desktopPrefs.gpu;
   await fillDevices();
   if (!$('#settingsDlg').open) openDialog($('#settingsDlg'));
   showStPage(page);
@@ -7480,8 +7481,12 @@ $('#btnSaveSettings').onclick = async () => {
   if ($('#stAntiPing')) setAntiPing($('#stAntiPing').checked, false);
   if (window.desk?.setPrefs) {
     window.desk
-      .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked })
-      .then((p) => (desktopPrefs = p))
+      .setPrefs({ hotkeys: $('#stHotkeys').checked, tray: $('#stTray').checked, autostart: $('#stAutostart').checked, gpu: $('#stGpu').checked })
+      .then((p) => {
+        const changed = !!p.gpu !== !!desktopPrefs.gpu;
+        desktopPrefs = p;
+        if (changed && confirm(`A aceleração por placa de vídeo foi ${p.gpu ? 'ligada' : 'desligada'}. Reiniciar o app agora para valer?${C.ch ? ' (você volta para a call sozinho)' : ''}`)) window.desk.win('relaunch');
+      })
       .catch(() => {});
   }
   saveSettings();
@@ -8409,7 +8414,7 @@ if (window.desk?.checkUpdate) {
   };
 }
 
-let desktopPrefs = { tray: true, hotkeys: true, autostart: false };
+let desktopPrefs = { tray: true, hotkeys: true, autostart: false, gpu: false };
 if (window.desk?.appInfo) {
   $$('[data-desk]').forEach((e) => (e.hidden = false));
   window.desk.onUpdateReady((v) => showUpdate(v));

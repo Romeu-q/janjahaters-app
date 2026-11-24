@@ -32,7 +32,7 @@ app.on('child-process-gone', (e, details) => {
 const hardware = require('./hardware');
 let hwPromise = null;
 function hwInfo() {
-  hwPromise ||= hardware.collect({ app, screen: require('electron').screen, gpuFlag: GPU_FLAG }).then((hw) => {
+  hwPromise ||= hardware.collect({ app, screen: require('electron').screen, gpuFlag: GPU_FLAG, accel: !!prefs().gpu }).then((hw) => {
     hw.rec = hardware.recommend(hw);
     if (process.env.JANJA_HW_DEBUG) console.log('[hardware]', JSON.stringify(hw));
     if (hardware.needsHeal(hw) && !process.env.JANJA_NO_HEAL) {
@@ -428,7 +428,7 @@ ipcMain.handle('app-info', () => ({ version: app.getVersion(), updateReady, upda
 // ----- bandeja, atalhos globais e iniciar com o Windows -----
 const { Tray, Menu, globalShortcut, nativeImage } = require('electron');
 const PREFS_FILE = path.join(app.getPath('userData'), 'desktop-prefs.json');
-const PREF_DEFAULTS = { tray: true, hotkeys: true, autostart: false, uiScale: 0 };
+const PREF_DEFAULTS = { tray: true, hotkeys: true, autostart: false, uiScale: 0, gpu: false };
 let prefsCache = null;
 function prefs() {
   if (!prefsCache) {
@@ -440,6 +440,9 @@ function prefs() {
   }
   return prefsCache;
 }
+// Aceleração por placa de vídeo: desligada por padrão (economiza ~300 MB parado e ~600 MB assistindo live).
+// Ligada, a placa codifica e decodifica as lives e o processador fica livre para o jogo. Muda reiniciando o app.
+if (!prefs().gpu) app.disableHardwareAcceleration();
 let quitting = false;
 let tray = null;
 const HOTKEYS = { 'CommandOrControl+Shift+M': 'mute', 'CommandOrControl+Shift+D': 'deafen' };
@@ -854,6 +857,11 @@ ipcMain.on('win', (e, cmd) => {
   if (cmd === 'min') win.minimize();
   else if (cmd === 'max') win.isMaximized() ? win.unmaximize() : win.maximize();
   else if (cmd === 'close') win.close();
+  else if (cmd === 'relaunch') {
+    quitting = true;
+    app.relaunch();
+    app.exit(0);
+  }
   else if (cmd === 'quit') {
     quitting = true;
     app.quit();
