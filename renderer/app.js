@@ -29,6 +29,7 @@ import {
   SlidersHorizontal,
   CircleX,
   Copy,
+  Activity,
   Disc3,
   Download,
   Drum,
@@ -162,6 +163,7 @@ const ICONS = {
   refresh: RefreshCw,
   reply: Reply,
   copy: Copy,
+  activity: Activity,
   'disc-3': Disc3,
   'face-slightly-smiling-plus': FaceSlightlySmilingPlus,
   hash: Hash,
@@ -1971,6 +1973,7 @@ async function sfuPublish(stream) {
     pc.addEventListener('connectionstatechange', () => {
       if (pc.connectionState !== 'failed' || SFU.pub !== pub) return;
       console.warn('SFU: a stream caiu no servidor; voltando para direto');
+      diagEvent('a stream caiu no servidor da Cloudflare; voltou a ir direto');
       SFU.failedFor = stream;
       sfuSync();
     });
@@ -2020,6 +2023,7 @@ function sfuViewFailed(pid) {
   if (SFU.viewBad) return;
   SFU.viewBad = true;
   toast('Não deu para assistir pelo servidor da Cloudflare; a stream vai chegar direto do PC de quem transmite');
+  diagEvent('não deu para assistir pelo servidor; recebendo direto');
   sendHi();
 }
 function sfuSync() {
@@ -2041,6 +2045,7 @@ function sfuSync() {
         },
         (err) => {
           console.warn('SFU: não consegui publicar a stream', err);
+          diagEvent('não consegui mandar a stream para o servidor (' + (err?.message || err) + '); indo direto');
           if (SFU.pubFor !== want) return;
           SFU.failedFor = want;
           SFU.pubFor = null;
@@ -2599,6 +2604,7 @@ setInterval(async () => {
   C.adapt = a;
   await applyStreamQuality();
   toast(`O processador não está dando conta: baixei a stream para ${a.res || q.res || 1080}p ${a.fps} fps`);
+  diagEvent(`processador no limite: stream reduzida para ${a.res || q.res || 1080}p ${a.fps} fps`);
 }, 2000);
 
 function codecOptions() {
@@ -3015,56 +3021,320 @@ function stopStream(notify) {
   }
 }
 
-// números reais da stream (o que a tela entrega e o que chega a cada amigo)
-let statsTimer = null;
-const lastSent = new Map();
+// ============================================================ diagnóstico da stream
+// A cada segundo, com a call aberta, lê as estatísticas do WebRTC dos dois lados:
+//  - quem transmite: o que sai para o servidor (SFU da Cloudflare) e direto para cada amigo, quanto a internet
+//    aguenta (banda estimada), se o limite é a internet ou o processador, encoder na placa ou no processador;
+//  - quem assiste: o que chega, congelamentos, quadros descartados, perda de pacotes, buffer e decoder.
+// Guarda uns minutos para o botão "Copiar diagnóstico" (texto para colar na conversa e descobrir onde trava).
 const LIMIT = { bandwidth: 'limitado pela internet', cpu: 'limitado pelo processador', other: 'limitado' };
+const DIAG = { tx: [], rx: new Map(), hist: [], prev: new Map(), events: [] };
+const DIAG_KEEP = 1500; // amostras guardadas (≈ 5 min com 2 a 5 linhas por segundo)
+function diagEvent(text) {
+  DIAG.events.push({ t: Date.now(), text });
+  if (DIAG.events.length > 60) DIAG.events.shift();
+}
+function selectedPair(st) {
+  let pair = null;
+  st?.forEach((x) => {
+    if (x.type === 'transport' && x.selectedCandidatePairId) pair = st.get(x.selectedCandidatePairId);
+  });
+  if (!pair) st?.forEach((x) => x.type === 'candidate-pair' && x.nominated && x.state === 'succeeded' && (pair ||= x));
+  return pair;
+}
+async function pairInfo(pc, st) {
+  let s = st;
+  let pair = selectedPair(s);
+  if (!pair) {
+    s = await pc.getStats().catch(() => null);
+    pair = selectedPair(s);
+  }
+  const relay = !!pair && [pair.localCandidateId, pair.remoteCandidateId].some((id) => s.get(id)?.candidateType === 'relay');
+  return { rtt: pair?.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null, bwe: pair?.availableOutgoingBitrate ? pair.availableOutgoingBitrate / 1e6 : null, relay };
+}
+const r1 = (x) => (x == null || !isFinite(x) ? null : Math.round(x * 10) / 10);
+
+async function txSample(id, label, viaSfu, pc, sender) {
+  const st = await sender.getStats().catch(() => null);
+  let out = null;
+  let rin = null;
+  st?.forEach((r) => {
+    if (r.type === 'outbound-rtp' && r.kind === 'video') out = r;
+    if (r.type === 'remote-inbound-rtp' && r.kind === 'video') rin = r;
+  });
+  if (!out) return null;
+  const net = await pairInfo(pc, st);
+  const p = DIAG.prev.get('tx:' + id);
+  const dt = p ? (out.timestamp - p.ts) / 1000 : 0;
+  const fe = (out.framesEncoded || 0) - (p?.fe || 0);
+  DIAG.prev.set('tx:' + id, { ts: out.timestamp, bytes: out.bytesSent || 0, fe: out.framesEncoded || 0, te: out.totalEncodeTime || 0, nack: out.nackCount || 0, pli: out.pliCount || 0 });
+  return {
+    t: Date.now(),
+    dir: 'tx',
+    id,
+    label,
+    route: viaSfu ? 'servidor' : net.relay ? 'TURN' : 'direto',
+    w: out.frameWidth || 0,
+    h: out.frameHeight || 0,
+    fps: Math.round(out.framesPerSecond || 0),
+    mbps: dt > 0 ? r1((((out.bytesSent || 0) - p.bytes) * 8) / dt / 1e6) : null,
+    enc: p && fe > 0 ? r1((((out.totalEncodeTime || 0) - p.te) / fe) * 1000) : null,
+    hw: out.powerEfficientEncoder,
+    lim: out.qualityLimitationReason || 'none',
+    bwe: r1(net.bwe),
+    rtt: net.rtt ?? (rin?.roundTripTime != null ? Math.round(rin.roundTripTime * 1000) : null),
+    loss: rin?.fractionLost != null ? Math.round(rin.fractionLost * 100) : null,
+    nack: p ? (out.nackCount || 0) - p.nack : 0,
+    pli: p ? (out.pliCount || 0) - p.pli : 0,
+    codec: (out.codecId && st.get(out.codecId)?.mimeType?.replace('video/', '')) || '',
+  };
+}
+async function rxSample(pid) {
+  const p = peers.get(pid);
+  const vt = p?.media.screen?.getVideoTracks()[0];
+  if (!vt) return null;
+  let pc = SFU.pulls.get(pid)?.pc;
+  let viaSfu = true;
+  if (!pc?.getReceivers().some((r) => r.track === vt)) {
+    pc = new Map(peerConnections()).get(pid);
+    viaSfu = false;
+  }
+  const rec = pc?.getReceivers?.().find((r) => r.track === vt);
+  if (!rec) return null;
+  const st = await rec.getStats().catch(() => null);
+  let inb = null;
+  st?.forEach((r) => r.type === 'inbound-rtp' && r.kind === 'video' && (inb = r));
+  if (!inb) return null;
+  const net = await pairInfo(pc, st);
+  const k = 'rx:' + pid;
+  const q = DIAG.prev.get(k);
+  const cur = {
+    ts: inb.timestamp,
+    bytes: inb.bytesReceived || 0,
+    lost: inb.packetsLost || 0,
+    recv: inb.packetsReceived || 0,
+    frz: inb.freezeCount || 0,
+    frzDur: inb.totalFreezesDuration || 0,
+    drop: inb.framesDropped || 0,
+    jb: inb.jitterBufferDelay || 0,
+    jbn: inb.jitterBufferEmittedCount || 0,
+    dec: inb.totalDecodeTime || 0,
+    fd: inb.framesDecoded || 0,
+  };
+  DIAG.prev.set(k, cur);
+  const d = (f) => (q ? cur[f] - q[f] : 0);
+  const dt = q ? (cur.ts - q.ts) / 1000 : 0;
+  const pk = d('lost') + d('recv');
+  return {
+    t: Date.now(),
+    dir: 'rx',
+    id: pid,
+    label: p.user?.name || 'Amigo',
+    route: viaSfu ? 'servidor' : net.relay ? 'TURN' : 'direto',
+    w: inb.frameWidth || 0,
+    h: inb.frameHeight || 0,
+    fps: Math.round(inb.framesPerSecond || 0),
+    mbps: dt > 0 ? r1((d('bytes') * 8) / dt / 1e6) : null,
+    loss: pk > 0 ? r1((d('lost') / pk) * 100) : 0,
+    frz: d('frz'),
+    frzMs: Math.round(d('frzDur') * 1000),
+    drop: d('drop'),
+    jb: d('jbn') > 0 ? Math.round((d('jb') / d('jbn')) * 1000) : null,
+    dec: d('fd') > 0 ? r1((d('dec') / d('fd')) * 1000) : null,
+    hw: inb.powerEfficientDecoder,
+    rtt: net.rtt,
+    codec: (inb.codecId && st.get(inb.codecId)?.mimeType?.replace('video/', '')) || '',
+  };
+}
+let diagBusy = false;
+async function collectDiag() {
+  if (diagBusy) return;
+  if (!C.ch) {
+    DIAG.tx = [];
+    DIAG.rx.clear();
+    return;
+  }
+  diagBusy = true;
+  try {
+    const tx = [];
+    const vt = C.screen?.getVideoTracks()[0];
+    if (vt) {
+      const snd = SFU.pub?.ready && SFU.pub.pc.getSenders().find((x) => x.track === vt);
+      if (snd) tx.push(await txSample('sfu', 'Servidor (Cloudflare)', true, SFU.pub.pc, snd));
+      for (const [pid, pc] of peerConnections()) {
+        const s = pc.getSenders?.().find((x) => x.track === vt);
+        if (s) tx.push(await txSample(pid, peers.get(pid)?.user?.name || 'Amigo', false, pc, s));
+      }
+    }
+    DIAG.tx = tx.filter(Boolean);
+    const rx = new Map();
+    for (const pid of C.watching) {
+      const s = await rxSample(pid).catch(() => null);
+      if (s) rx.set(pid, s);
+    }
+    DIAG.rx = rx;
+    DIAG.hist.push(...DIAG.tx, ...rx.values());
+    if (DIAG.hist.length > DIAG_KEEP) DIAG.hist.splice(0, DIAG.hist.length - DIAG_KEEP);
+  } finally {
+    diagBusy = false;
+  }
+  paintDiag();
+}
+setInterval(collectDiag, 1000);
+
+const hwWord = (hw) => (hw === true ? 'placa de vídeo' : hw === false ? 'processador' : '');
+function diagLine(s, noRoute) {
+  const parts = [noRoute ? '' : s.route, s.w ? `${s.w}×${s.h}` : 'iniciando', `${s.fps} fps`];
+  if (s.mbps != null) parts.push(`${s.mbps} Mbps`);
+  if (s.dir === 'tx') {
+    parts.push([s.codec, hwWord(s.hw)].filter(Boolean).join(' na '));
+    if (s.enc != null) parts.push(`encode ${s.enc} ms`);
+    if (s.bwe != null) parts.push(`internet aguenta ~${s.bwe} Mbps`);
+    if (s.rtt != null) parts.push(`ping ${s.rtt} ms`);
+    if (s.loss) parts.push(`perda ${s.loss}%`);
+    if (s.lim && s.lim !== 'none') parts.push(LIMIT[s.lim] || LIMIT.other);
+  } else {
+    parts.push([s.codec, hwWord(s.hw)].filter(Boolean).join(' na '));
+    if (s.loss) parts.push(`perda ${s.loss}%`);
+    if (s.frz) parts.push(`congelou ${s.frz}x (${s.frzMs} ms)`);
+    if (s.drop) parts.push(`${s.drop} quadros descartados`);
+    if (s.jb != null) parts.push(`buffer ${s.jb} ms`);
+    if (s.dec != null) parts.push(`decode ${s.dec} ms`);
+    if (s.rtt != null) parts.push(`ping ${s.rtt} ms`);
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+// o que vale um aviso em destaque (o que está fazendo travar)
+function diagWarn(s) {
+  if (s.dir === 'tx') {
+    if (s.lim === 'cpu') return 'O processador de quem transmite não está dando conta';
+    if (s.lim === 'bandwidth') return 'A internet de quem transmite está no limite';
+    if (s.rtt > 250) return 'Ping alto até ' + (s.route === 'servidor' ? 'o servidor' : s.label);
+  } else {
+    if (s.frz) return 'A imagem congelou';
+    if (s.loss >= 3) return `Perdendo ${s.loss}% dos pacotes no caminho`;
+    if (s.drop > 3) return 'Este PC está descartando quadros (decodificar está pesado)';
+  }
+  return '';
+}
+
+// ----- painel "Ajustar qualidade" de quem transmite -----
+let liveStatsOn = false;
 function startLiveStats() {
-  stopLiveStats();
-  liveStats();
-  statsTimer = setInterval(liveStats, 1000);
+  liveStatsOn = true;
+  paintDiag();
 }
 function stopLiveStats() {
-  clearInterval(statsTimer);
-  statsTimer = null;
-  lastSent.clear();
+  liveStatsOn = false;
 }
-async function liveStats() {
+function paintLiveStats() {
   const box = $('#sqLive');
   const vt = C.screen?.getVideoTracks()[0];
   if (!vt) return box.replaceChildren(el('p', 'muted', 'A stream acabou.'));
   const s = vt.getSettings();
   const t = streamTarget();
+  const viaSfu = DIAG.tx.some((x) => x.route === 'servidor');
   const rows = [
-    el('div', 'sq-live-head', `Capturando ${s.width || '?'}×${s.height || '?'} a ${Math.round(s.frameRate || 0)} fps · teto de ${(t.bitrate / 1e6).toFixed(1)} Mbps por amigo`),
+    el('div', 'sq-live-head', `Capturando ${s.width || '?'}×${s.height || '?'} a ${Math.round(s.frameRate || 0)} fps · teto de ${(t.bitrate / 1e6).toFixed(1)} Mbps · ${viaSfu ? 'enviando 1 cópia para o servidor da Cloudflare' : SFU_URL ? 'enviando direto para cada amigo (o servidor não está em uso agora)' : 'enviando direto para cada amigo'}`),
   ];
-  for (const [pid, pc] of peerConnections()) {
-    const sender = pc.getSenders?.().find((x) => x.track === vt);
-    if (!sender) continue;
-    const stats = await sender.getStats().catch(() => null);
-    let out = null;
-    stats?.forEach((r) => {
-      if (r.type === 'outbound-rtp' && r.kind === 'video') out = r;
-    });
-    if (!out) continue;
-    const codec = out.codecId && stats.get(out.codecId);
-    const prev = lastSent.get(pid);
-    lastSent.set(pid, { b: out.bytesSent, t: out.timestamp });
-    const mbps = prev && out.timestamp > prev.t ? ((out.bytesSent - prev.b) * 8) / (out.timestamp - prev.t) / 1000 : 0;
-    const parts = [
-      out.frameWidth ? `${out.frameWidth}×${out.frameHeight}` : 'iniciando',
-      `${Math.round(out.framesPerSecond || 0)} fps`,
-      `${mbps.toFixed(1)} Mbps`,
-      codec?.mimeType?.replace('video/', '') || '',
-      out.powerEfficientEncoder === true ? 'placa de vídeo' : out.powerEfficientEncoder === false ? 'processador' : '',
-    ].filter(Boolean);
+  for (const x of DIAG.tx) {
     const row = el('div', 'sq-live-row');
-    row.append(el('b', '', peers.get(pid)?.user?.name || 'Amigo'), el('span', '', parts.join(' · ')));
-    if (out.qualityLimitationReason && out.qualityLimitationReason !== 'none') row.append(el('em', '', LIMIT[out.qualityLimitationReason] || LIMIT.other));
+    row.append(el('b', '', x.label), el('span', '', diagLine(x)));
+    const w = diagWarn(x);
+    if (w) row.append(el('em', '', w));
     rows.push(row);
   }
-  if (rows.length === 1) rows.push(el('p', 'muted', 'Ninguém está assistindo agora. O que chega em cada amigo aparece aqui quando alguém clicar em Assistir.'));
-  if (statsTimer || !box.children.length) box.replaceChildren(...rows);
+  if (!DIAG.tx.length) rows.push(el('p', 'muted', 'Ninguém está assistindo agora. O que sai para cada um aparece aqui quando alguém clicar em Assistir.'));
+  rows.push(diagCopyBtn());
+  box.replaceChildren(...rows);
+}
+function diagCopyBtn() {
+  const b = el('button', 'ghost sm diag-copy');
+  b.type = 'button';
+  b.append(icon('copy', 'sm'), document.createTextNode('Copiar diagnóstico'));
+  b.onclick = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(diagText()).then(
+      () => toast('Diagnóstico copiado: cole na conversa para ver onde trava'),
+      () => toast('Não consegui copiar o diagnóstico'),
+    );
+  };
+  return b;
+}
+
+// ----- estatísticas por cima do quadro da stream (quem assiste e a prévia de quem transmite) -----
+const statsOn = new Set(); // chaves dos quadros com as estatísticas abertas
+function toggleTileStats(key) {
+  statsOn.has(key) ? statsOn.delete(key) : statsOn.add(key);
+  renderStage();
+}
+function tileStatsEl(key) {
+  const box = el('div', 'tile-stats');
+  box.dataset.diag = key;
+  box.onclick = (e) => e.stopPropagation();
+  box.ondblclick = (e) => e.stopPropagation();
+  box.append(el('div', 'ts-body'), diagCopyBtn());
+  fillTileStats(box);
+  return box;
+}
+function fillTileStats(box) {
+  const key = box.dataset.diag;
+  const list = key === 'me' ? DIAG.tx : DIAG.rx.has(key) ? [DIAG.rx.get(key)] : [];
+  const body = box.querySelector('.ts-body');
+  const lines = list.map((s) => {
+    const row = el('div', 'ts-row');
+    row.append(el('b', '', key === 'me' ? `${s.label} (${s.route})` : 'Chegando ' + (s.route === 'servidor' ? 'pelo servidor da Cloudflare' : s.route === 'TURN' ? 'pelo TURN da Cloudflare' : 'direto do PC de quem transmite')), el('span', '', diagLine(s, true)));
+    const w = diagWarn(s);
+    if (w) row.append(el('em', '', w));
+    return row;
+  });
+  if (!lines.length) lines.push(el('div', 'ts-row muted', key === 'me' ? 'Ninguém assistindo ainda.' : 'Medindo…'));
+  body.replaceChildren(...lines);
+}
+function paintDiag() {
+  if (liveStatsOn && $('#streamDlg').open) paintLiveStats();
+  for (const box of document.querySelectorAll('.tile-stats')) fillTileStats(box);
+}
+
+// ----- texto para colar na conversa -----
+function diagText() {
+  const hh = (t) => new Date(t).toLocaleTimeString('pt-BR');
+  const q = streamTarget();
+  const lines = [
+    `janjahaters v${appVersion} · diagnóstico da stream · ${new Date().toLocaleString('pt-BR')}`,
+    HW ? hwLabel(HW) : 'PC: (ainda lendo)',
+    `Rede: ${settings.netMode} · Anti-Ping ${settings.antiPing !== false ? 'ligado' : 'desligado'} · servidor de stream ${!SFU_URL ? 'não configurado' : SFU.viewBad ? 'falhou para assistir' : 'ok'}`,
+    C.screen ? `Minha stream: ${settings.stream.preset} · ${q.res || 'original'}p ${q.fps} fps · ${q.codec} · ${q.mode}${C.adapt ? ' · reduzida por falta de processador' : ''}` : 'Não estou transmitindo',
+    'Ping aos amigos: ' + ([...net].map(([pid, n]) => `${peers.get(pid)?.user?.name || '?'} ${n.ping ?? '?'} ms${n.relay ? ' (TURN)' : ''}`).join(', ') || 'ninguém'),
+  ];
+  // resumo por conexão (tudo que está guardado, até ~5 min)
+  const by = new Map();
+  for (const s of DIAG.hist) {
+    const k = s.dir + ':' + s.id;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(s);
+  }
+  lines.push('', 'Resumo:');
+  for (const [, list] of by) {
+    const f = list.map((s) => s.fps);
+    const avg = (a) => (a.length ? r1(a.reduce((x, y) => x + y, 0) / a.length) : 0);
+    const last = list[list.length - 1];
+    const who = last.dir === 'tx' ? `ENVIO para ${last.label}` : `RECEBENDO de ${last.label}`;
+    const extra =
+      last.dir === 'tx'
+        ? `limite: processador ${list.filter((s) => s.lim === 'cpu').length}s, internet ${list.filter((s) => s.lim === 'bandwidth').length}s · ping máx ${Math.max(0, ...list.map((s) => s.rtt || 0))} ms`
+        : `congelou ${list.reduce((a, s) => a + (s.frz || 0), 0)}x (${list.reduce((a, s) => a + (s.frzMs || 0), 0)} ms) · perda máx ${Math.max(0, ...list.map((s) => s.loss || 0))}% · descartados ${list.reduce((a, s) => a + (s.drop || 0), 0)} · ping máx ${Math.max(0, ...list.map((s) => s.rtt || 0))} ms`;
+    lines.push(`- ${who} (${last.route}, ${list.length}s): fps médio ${avg(f)}, mínimo ${Math.min(...f)} · ${avg(list.map((s) => s.mbps || 0))} Mbps · ${extra}`);
+  }
+  if (!by.size) lines.push('- nada medido ainda (abra a call e assista/transmita uma stream)');
+  if (DIAG.events.length) lines.push('', 'Eventos:', ...DIAG.events.map((e) => `${hh(e.t)} ${e.text}`));
+  const since = Date.now() - 120_000;
+  const recent = DIAG.hist.filter((s) => s.t >= since);
+  if (recent.length) {
+    lines.push('', 'Últimos 2 minutos:');
+    for (const s of recent) lines.push(`${hh(s.t)} ${s.dir === 'tx' ? '→ ' + s.label : '← ' + s.label}: ${diagLine(s)}`);
+  }
+  return lines.join('\n');
 }
 
 // ============================================================ relógio do grupo
@@ -5825,8 +6095,10 @@ function fillStreamTile(s, total) {
       saveSettings();
       renderStage();
     });
+  btn('activity', statsOn.has(s.key) ? 'Esconder as estatísticas' : 'Estatísticas da stream (onde está travando)', () => toggleTileStats(s.key), statsOn.has(s.key) ? 'on' : '');
   const fs = btn('maximize', 'Tela cheia', () => (document.fullscreenElement === t ? document.exitFullscreen() : t.requestFullscreen()));
   t.append(tag, tools);
+  if (statsOn.has(s.key)) t.append(tileStatsEl(s.key));
   if (s.key !== 'me') {
     const stop = el('button', 'stop-watch');
     stop.type = 'button';
