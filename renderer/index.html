@@ -27,7 +27,6 @@
     <button type="button" class="tool" id="tbAway" title="Ficar ausente"><i data-icon="moon"></i><span>Ausente</span></button>
     <span class="grow"></span>
     <button type="button" class="tool" id="tbRpg" data-rpg-session title="Mesa de RPG (d2Trinities)" hidden><i data-icon="dices"></i><span>Mesa RPG</span></button>
-    <button type="button" class="tool" id="tbRoom" data-room title="Acampamento"><i data-icon="tent"></i><span>Acampamento</span></button>
     <button type="button" class="tool" id="tbFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span>Amigos</span><span class="badge" data-friends-badge hidden></span></button>
     <button type="button" class="tool" id="tbInvite" title="Convidar amigos"><i data-icon="user-plus"></i><span>Convidar</span></button>
     <button type="button" class="tool" id="tbServer" title="Perfil do servidor"><i data-icon="server"></i><span>Servidor</span></button>
@@ -53,7 +52,6 @@
           <div class="group-desc" id="groupDesc" hidden></div>
         </div>
         <button class="icon-btn" id="btnRpg" data-rpg-session title="Mesa de RPG (d2Trinities)" hidden><i data-icon="dices"></i></button>
-        <button class="icon-btn" id="btnRoom" data-room title="Acampamento"><i data-icon="tent"></i></button>
         <button class="icon-btn" id="btnFriends" title="Amigos e mensagens privadas"><i data-icon="users"></i><span class="badge dot-badge" data-friends-badge hidden></span></button>
         <button class="icon-btn" id="btnServer" title="Perfil do servidor"><i data-icon="settings"></i></button>
         <button class="icon-btn" id="btnInvite" title="Convidar amigos"><i data-icon="user-plus"></i></button>
@@ -138,49 +136,6 @@
           <button class="ctl" id="ctlNoise" title="Supressão de ruído"><i data-icon="sparkles"></i><span>Ruído</span></button>
           <button class="ctl join" id="ctlCall"><i data-icon="phone"></i><span>Entrar</span></button>
         </footer>
-      </section>
-
-      <section id="roomView" class="view" hidden>
-        <div id="roomStage"></div>
-        <div id="roomLoading" class="room-loading">Acendendo a fogueira…</div>
-        <div class="room-hud">
-          <div class="room-hint" id="roomHint"><b>WASD</b> andar · <b>Shift</b> correr · <b>E</b> sentar · <b>1</b> tchau <b>2</b> dança <b>3</b> pulo <b>4</b> sim · <b>F</b> PvP · clique no chão para ir</div>
-          <div class="room-hint" id="pvpHint" hidden><b>J</b> ou clique: atacar · <b>K</b> ou botão direito: defender (na hora certa é parry) · <b>F</b> sair · <b id="pvpKills">0</b> nocautes · <b id="pvpMobs">0</b> monstros</div>
-          <span class="grow"></span>
-          <button type="button" class="ghost sm" id="roomRpg" title="Abrir a mesa de RPG"><i data-icon="dices" class="sm"></i>Mesa de RPG</button>
-          <button type="button" class="ghost sm" id="roomPvp" title="Ligar/desligar o PvP (F)"><i data-icon="swords" class="sm"></i>PvP</button>
-          <button type="button" class="ghost sm" id="roomEdit"><i data-icon="shirt" class="sm"></i>Guarda-roupa</button>
-          <button type="button" class="icon-btn" id="roomClose" title="Sair do acampamento"><i data-icon="x"></i></button>
-        </div>
-        <div class="screen-bar" id="screenBar" hidden></div>
-        <div class="live-big" id="liveBig" hidden>
-          <header><b id="liveBigTitle">Live</b><span class="grow"></span><button type="button" class="icon-btn" id="liveBigClose" title="Voltar para o acampamento"><i data-icon="x"></i></button></header>
-          <video id="liveBigVideo" autoplay muted playsinline></video>
-        </div>
-        <div class="pvp-pad" id="pvpPad" hidden>
-          <button type="button" id="pvpParry">Defender</button>
-          <button type="button" id="pvpAtk">Atacar</button>
-        </div>
-        <aside id="figEditor" class="fig-editor" hidden>
-          <header><h3>Guarda-roupa</h3><button type="button" class="icon-btn sm" id="figClose" title="Fechar"><i data-icon="x"></i></button></header>
-          <div id="figPreview" class="fig-preview" title="Arraste para girar"></div>
-          <div class="fig-scroll">
-            <h4>Arma (PvP)</h4><div class="fig-row" id="fig-wp"></div>
-            <p class="muted small fig-wpinfo" id="fig-wpinfo"></p>
-            <label class="check fig-sh"><input type="checkbox" id="fig-sh"> Escudo (com espada curta ou lança)</label>
-            <h4>Pele</h4><div class="fig-row" id="fig-skin"></div>
-            <h4>Cabelo</h4><div class="fig-row" id="fig-hair"></div>
-            <h4>Cor do cabelo</h4><div class="fig-row" id="fig-hairColor"></div>
-            <h4>Olhos</h4><div class="fig-row" id="fig-eyes"></div>
-            <h4>Acessório</h4><div class="fig-row" id="fig-acc"></div>
-            <h4>Roupa</h4>
-            <div class="fig-colors">
-              <label>Camiseta<input type="color" id="fig-shirt"></label>
-              <label>Calça<input type="color" id="fig-pants"></label>
-              <label>Tênis<input type="color" id="fig-shoes"></label>
-            </div>
-          </div>
-        </aside>
       </section>
 
       <section id="rpgSessionView" class="view rpg-session-view" hidden></section>
@@ -286,7 +241,6 @@
         <ul class="ob-feats">
           <li><i data-icon="phone"></i><div><b>Call e stream</b><span>Voz limpa, câmera e tela em até 1440p.</span></div></li>
           <li><i data-icon="list-music"></i><div><b>Música junto</b><span>Todo mundo ouve no mesmo ponto, com fila e autoplay.</span></div></li>
-          <li><i data-icon="tent"></i><div><b>Acampamento</b><span>Fogueira, telão da live e PvP com seu boneco.</span></div></li>
         </ul>
         <p class="ob-free">De graça, sem anúncio e sem conta em site nenhum.</p>
       </section>
@@ -703,7 +657,6 @@
           </label>
           <label class="check"><input type="checkbox" id="lkCompact"> Mensagens compactas (sem avatar, tudo numa linha)</label>
           <label class="check"><input type="checkbox" id="lkNoAnim"> Reduzir animações</label>
-          <label class="check"><input type="checkbox" id="lkRoom"> Acampamento 3D (desligue para economizar memória: ele nem carrega)</label>
           <label class="check"><input type="checkbox" id="lkNoFx"> Esconder efeitos de perfil e decorações animadas dos outros</label>
         </section>
 
@@ -752,24 +705,6 @@
             <p class="muted small">O janja reconhece uns 25 mil jogos sozinho. Só o nome do jogo aparece, nunca o que mais está aberto no seu PC. Jogo que não aparece? Cadastre aqui (o nome do .exe aparece no Gerenciador de Tarefas, em Detalhes).</p>
             <div class="act-add"><input id="stActName" maxlength="60" placeholder="Nome do jogo"><input id="stActExe" maxlength="80" placeholder="jogo.exe"><button type="button" class="ghost sm" id="stActAdd"><i data-icon="plus"></i>Cadastrar</button></div>
             <div id="stActList" class="act-list"></div>
-            <h3>Sobreposição no jogo</h3>
-            <label class="check"><input type="checkbox" id="stOv"> Mostrar por cima do jogo quem está na call e quem está falando</label>
-            <label>Quando aparece
-              <select id="stOvWhen">
-                <option value="game">Só com um jogo aberto (os que aparecem em "Jogando")</option>
-                <option value="always">Sempre que o janja não estiver na frente</option>
-              </select>
-            </label>
-            <label>Canto da tela
-              <select id="stOvPos">
-                <option value="tl">Em cima, à esquerda</option>
-                <option value="tr">Em cima, à direita</option>
-                <option value="bl">Embaixo, à esquerda</option>
-                <option value="br">Embaixo, à direita</option>
-              </select>
-            </label>
-            <label class="check"><input type="checkbox" id="stOvOnly"> Mostrar só quem está falando</label>
-            <p class="muted small">Funciona com o jogo em janela ou "janela sem bordas" (tela cheia exclusiva não deixa nada por cima). Não aparece na sua transmissão.</p>
             <h3>Atualizações</h3>
           </div>
           <div class="update-row">

@@ -2,7 +2,6 @@ import { joinRoom, selfId } from 'trystero';
 import { TURN, SFU_URL as SFU_URL_BUILD } from './turn.gen.js';
 import { animate, stagger } from 'motion';
 import { buildMicChain } from './mic-chain.js';
-import { FIG, ONE_HAND, cleanFig, cleanPos } from './figure.js';
 import * as ident from './identity.js';
 import { initDM } from './dm.js';
 import {
@@ -1042,7 +1041,6 @@ function onRecsChanged(list) {
     const notifyMsgs = fresh.filter((m) => !m.del && !m.edited && m.uid !== me.id && Date.now() - m.ts < 60_000 && myStatus() !== 'dnd' && (!settings.mutedCh[m.ch] || pingsMe(m)));
     if (textChatCh() && document.hasFocus()) markRead(textChatCh());
     for (const m of notifyMsgs) pluginEmit('message', m);
-    if (G3.ctl) for (const m of fresh) if (!m.del && !m.edited && Date.now() - m.ts < 30_000) roomBubble(m);
     if (notifyMsgs.some((m) => pingsMe(m) || (plug('mentions') && mentionsMe(m.text)))) {
       if (!plug('noTypingSounds')) sfx.msg();
       window.desk?.flash();
@@ -1081,7 +1079,7 @@ function myVoice() {
   return v;
 }
 let appVersion = ''; // versão deste app (vai no "hi" para os amigos)
-const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, fig: myFig(), act: myActivity(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
+const hiPayload = () => ({ user: { id: me.id, name: me.name, color: me.color, g: me.google?.idToken, p: me.p, st: myStatus(), pk: me.pk, hs: hiSig, act: myActivity(), ...(dm?.hiFields() || {}) }, voice: myVoice(), ver: appVersion });
 // guarda o perfil do amigo; se mudou, redesenha quem mostra avatar/nome
 function updateProfile(uid, raw) {
   const prof = cleanProfile(raw);
@@ -1388,12 +1386,8 @@ function connectRoom() {
     move: room.makeAction('move'), // "vai para o canal X" (arrastaram você)
     frq: room.makeAction('frq'), // pedido de amizade (assinado)
     clk: room.makeAction('clk'), // acerto do relógio (para a música tocar no mesmo ponto em todo mundo)
-    pos: room.makeAction('pos'), // onde eu estou na sala de games
-    pvp: room.makeAction('pvp'), // golpes, tiros e parry do PvP do acampamento
     rpg: room.makeAction('rpg'), // pedido de teste e rolagem de dados d2Trinities
   };
-  A.pos.onMessage = (d, { peerId }) => onRoomPos(d, peerId);
-  A.pvp.onMessage = (d, { peerId }) => onRoomAct(d, peerId);
   A.rpg.onMessage = (d, { peerId }) => onRpgNet(d, peerId);
   A.clk.onMessage = (d, { peerId }) => onClk(d, peerId);
   A.frq.onMessage = (d, { peerId }) => dm?.onFriendMsg(d, peerId);
@@ -1405,7 +1399,6 @@ function connectRoom() {
     A.hi.send(hiPayload(), { target: pid });
     A.sum.send([...recs.values()].map((r) => [r.id, r.v]), { target: pid });
     for (const ms of [500, 2000, 5000]) setTimeout(() => pingClock(pid), ms);
-    if (G3.ctl) setTimeout(() => G3.ctl?.resendPos(), 1500);
     setTimeout(retryMissingFiles, 3000);
   };
   A.freq.onMessage = async (d, { peerId }) => {
@@ -1526,7 +1519,6 @@ function onHi(pid, d) {
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
-  if (d?.user?.fig) p.user.fig = cleanFig(d.user.fig, p.user.color, p.user.id);
   p.user.act = cleanAct(d?.user?.act);
   checkGoogle(p, d?.user?.g);
   updateProfile(p.user.id, d?.user?.p);
@@ -1596,7 +1588,6 @@ function unwatchStream(pid) {
 // começando pelo dono, e guarda a cópia para repassar depois.
 const FILE_ID = /^f:[0-9a-f]{24}$/;
 const MAX_ATTACH = 25 * 1024 * 1024;
-const blobMem = new Map();
 const blobUrls = new Map();
 let idbPromise;
 function idb() {
@@ -1607,8 +1598,10 @@ function idb() {
     req.onerror = () => reject(req.error);
   }));
 }
+// Sem cópia na memória: o arquivo fica no IndexedDB (no disco) e o Blob lido de lá só aponta para ele.
+// Antes, todo arquivo até 8 MB que passava pelo app (inclusive os que os amigos pedem para repassar) ficava
+// guardado na RAM do processo principal até fechar o app.
 async function blobGet(id) {
-  if (blobMem.has(id)) return blobMem.get(id);
   try {
     const db = await idb();
     const blob = await new Promise((resolve) => {
@@ -1616,14 +1609,12 @@ async function blobGet(id) {
       q.onsuccess = () => resolve(q.result || null);
       q.onerror = () => resolve(null);
     });
-    if (blob && blob.size < 8e6) blobMem.set(id, blob);
     return blob;
   } catch {
     return null;
   }
 }
 async function blobPut(id, blob) {
-  if (blob.size < 8e6) blobMem.set(id, blob);
   try {
     const db = await idb();
     await new Promise((resolve, reject) => {
@@ -1652,14 +1643,16 @@ function getFile(id, ownerUid) {
       if (blob) {
         await blobPut(id, blob);
         missingFiles.delete(id);
-        return blob;
+        return (await blobGet(id)) || blob; // a cópia do disco: a que chegou pela rede fica livre para sair da RAM
       }
     }
     missingFiles.add(id);
     return null;
   })();
   fileFetches.set(id, p);
-  p.then((b) => !b && fileFetches.delete(id)); // dá para tentar de novo quando alguém entrar
+  // terminou: sai da lista (com falha, dá para tentar de novo quando alguém entrar; com sucesso, a promessa não
+  // segura o arquivo na memória para sempre: quem precisa de novo lê do disco)
+  p.finally(() => fileFetches.get(id) === p && fileFetches.delete(id));
   return p;
 }
 function askPeer(id, pid) {
@@ -4135,7 +4128,13 @@ $('#npMute').onclick = toggleMusicMute;
 const MAX_SOUND_INPUT = 40 * 1024 * 1024; // o arquivo original pode ser uma música inteira: o recorte é que vira o som
 const MAX_SOUND_SECONDS = 15;
 const SOUND_RATE = 24000; // o recorte é salvo como WAV mono 24 kHz (15 s ≈ 700 KB)
-const sndBuffers = new Map(); // fileId -> AudioBuffer
+const sndBuffers = new Map(); // fileId -> AudioBuffer (só os últimos tocados: decodificado, cada som de 15 s ocupa ~3 MB)
+const SND_KEEP = 12;
+function keepSound(file, buf) {
+  sndBuffers.delete(file);
+  sndBuffers.set(file, buf);
+  while (sndBuffers.size > SND_KEEP) sndBuffers.delete(sndBuffers.keys().next().value);
+}
 const lastSoundFrom = new Map();
 let sndGain;
 function sndOut() {
@@ -4152,12 +4151,16 @@ function soundName(id) {
   return recs.get(id)?.name || 'som';
 }
 async function soundBuffer(rec) {
-  if (sndBuffers.has(rec.file)) return sndBuffers.get(rec.file);
+  if (sndBuffers.has(rec.file)) {
+    const b = sndBuffers.get(rec.file);
+    keepSound(rec.file, b); // vai para o fim da fila: foi usado agora
+    return b;
+  }
   const blob = await getFile(rec.file, rec.owner);
   if (!blob) return null;
   try {
     const buf = await audioCtx().decodeAudioData(await blob.arrayBuffer());
-    sndBuffers.set(rec.file, buf);
+    keepSound(rec.file, buf);
     return buf;
   } catch {
     return null;
@@ -4450,7 +4453,7 @@ async function saveSound(buf, { a, b, name }) {
   const blob = encodeWav(cut);
   const file = 'f:' + randId(12);
   await blobPut(file, blob);
-  sndBuffers.set(file, cut);
+  keepSound(file, cut);
   put({
     k: 'snd',
     id: 's:' + randId(),
@@ -6537,7 +6540,6 @@ function renderHeader() {
 }
 
 function renderPresence() {
-  G3.ctl?.refresh();
   renderSidebar();
   renderPeopleList();
   renderMeCard();
@@ -6563,7 +6565,6 @@ function openView(id) {
   store.set('view:' + R.hash, c.id);
   S.unread.delete(c.id);
   const text = c.type === 'text';
-  closeRoom();
   closeRpgSession(false);
   $('#textView').hidden = !text;
   $('#voiceView').hidden = text;
@@ -7750,7 +7751,6 @@ function fillLookForm() {
   $('#lkRadius').value = look.radius;
   $('#lkCompact').checked = look.compact;
   $('#lkNoAnim').checked = look.noAnim;
-  $('#lkRoom').checked = look.room !== false;
   $('#lkStyle').value = look.style === 'classico' ? 'classico' : 'bolha';
   $('#lkNoFx').checked = look.noFx;
   $('#lkBgDel').hidden = !look.bg;
@@ -8899,290 +8899,6 @@ document.addEventListener('keydown', (e) => {
 
 // ============================================================ celular (app Android)
 // Uma tela por vez: Canais | Conversa | Painel (pessoas, chat da call, música, sons)
-// ============================================================ sala de games (room.js)
-// Uma sala 3D (sofá, TV, puffs, fliperama) com um boneco de cada um do grupo, andando com WASD.
-// O three.js vem num arquivo à parte (room.bundle.js) que só carrega quando alguém abre a sala, e a sala é
-// desmontada (memória e placa de vídeo liberadas) quando você sai dela. Desligada em Aparência, nem aparece.
-const G3 = { ctl: null, loading: null, preview: null, open: false };
-const roomOn = () => look.room !== false;
-function myFig() {
-  return cleanFig(store.get('fig', null), me.color, me.id);
-}
-function loadRoom() {
-  if (window.JanjaRoom) return Promise.resolve(window.JanjaRoom);
-  return (G3.loading ||= new Promise((ok, no) => {
-    const s = document.createElement('script');
-    s.src = 'room.bundle.js';
-    s.onload = () => ok(window.JanjaRoom);
-    s.onerror = () => {
-      G3.loading = null;
-      no(new Error('não carregou a sala'));
-    };
-    document.head.append(s);
-  }));
-}
-const roomPeople = () =>
-  [...peers.values()]
-    .filter((p) => p.user && p.user.verified && !p.user.bot && !banOf(p.user.id))
-    .map((p) => ({ key: p.pid, uid: p.user.id, name: p.user.name, color: p.user.color, fig: p.user.fig, speaking: C.speaking.has(p.pid), pos: p.roomPos }));
-const roomApi = {
-  me: () => ({ uid: me.id, name: me.name || 'Eu', color: me.color, fig: myFig(), speaking: C.speaking.has('me') }),
-  people: roomPeople,
-  sendPos: (st) => A.pos?.send(st),
-  tv() {
-    if (!C.ch) return null;
-    const { pb, item } = pbOf(C.ch);
-    return item ? { title: item.title, artist: item.artist, thumb: thumbOf(item), playing: pb.pausedAt == null } : null;
-  },
-  sendAct: (ev) => A.pvp?.send(ev),
-  selfId: () => selfId,
-  onPvp(on, kills, mobs = 0) {
-    $('#roomPvp').classList.toggle('on', on);
-    $('#roomHint').hidden = on;
-    $('#pvpHint').hidden = !on;
-    $('#pvpPad').hidden = !on;
-    $('#pvpKills').textContent = kills;
-    $('#pvpMobs').textContent = mobs;
-  },
-  openArsenal: () => openFigEditor(),
-  // projetor: a live que estou assistindo na call (ou a minha), e quem está transmitindo
-  live() {
-    if (!C.ch) return null;
-    const inCall = [...peers.values()].filter((p) => p.voice?.ch === C.ch && p.user);
-    const streamers = inCall.filter((p) => p.voice.streaming).map((p) => ({ key: p.pid, name: p.user.name }));
-    const watched = inCall.filter((p) => p.media.screen);
-    const cur = watched.find((p) => p.pid === C.focus) || watched[0];
-    if (cur) return { key: cur.pid, name: cur.user.name, stream: cur.media.screen, streamers };
-    if (C.screen) return { key: 'me', name: me.name, stream: C.screen, streamers };
-    return { streamers };
-  },
-  watch: (pid) => peers.has(pid) && watchStream(pid),
-  // perto do telão: botões para escolher a stream e ampliar
-  onScreen(info) {
-    G3.screen = info;
-    const bar = $('#screenBar');
-    const st = info?.streamers || [];
-    bar.hidden = !st.length;
-    if (!bar.hidden) {
-      const chips = st.map((x) => {
-        const b = el('button', 'chip' + (x.key === info.key ? ' on' : ''), x.name);
-        b.type = 'button';
-        b.title = 'Ver a tela de ' + x.name;
-        b.onclick = () => watchStream(x.key);
-        return b;
-      });
-      const big = el('button', 'chip big');
-      big.type = 'button';
-      big.append(icon('maximize', 'sm'), document.createTextNode('Ampliar'));
-      big.onclick = () => openLiveBig();
-      bar.replaceChildren(el('span', 'sb-title', 'Telão'), ...chips, big);
-    }
-    if (!$('#liveBig').hidden) openLiveBig();
-  },
-  // telão do chat: últimas mensagens do chat da call
-  chat() {
-    const ch = callChatCh();
-    const c = ch ? channel(ch) : null;
-    const plain = (m) => {
-      let t = String(m.text || '')
-        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-        .replace(/[*_~`|>#]+/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (m.att?.length) t = (t ? t + ' ' : '') + '📎';
-      return t || '…';
-    };
-    const msgs = ch
-      ? all('msg')
-          .filter((m) => m.ch === ch && !m.del)
-          .sort((a, b) => a.ts - b.ts)
-          .slice(-10)
-          .map((m) => ({ id: m.id, name: m.name || '?', color: m.color, text: plain(m) }))
-      : [];
-    return { title: c ? 'Chat de ' + c.name : 'Chat da call', msgs };
-  },
-};
-// live em tamanho grande por cima do acampamento (com a troca de stream em cima)
-function openLiveBig() {
-  const live = roomApi.live();
-  const box = $('#liveBig');
-  if (!live?.stream) {
-    box.hidden = true;
-    return toast(live?.streamers?.length ? 'Clique num nome no telão para começar a assistir' : 'Ninguém está transmitindo agora');
-  }
-  box.hidden = false;
-  const v = $('#liveBigVideo');
-  if (v.srcObject !== live.stream) v.srcObject = live.stream;
-  v.play().catch(() => {});
-  $('#liveBigTitle').textContent = live.name ? 'Tela de ' + live.name : 'Live';
-}
-$('#liveBigClose').onclick = () => {
-  $('#liveBig').hidden = true;
-  $('#liveBigVideo').srcObject = null;
-};
-// golpes, tiros e parry de quem está no PvP (quem apanha é quem decide; aqui só confere o formato)
-function onRoomAct(d, pid) {
-  const p = peers.get(pid);
-  if (!G3.ctl || !p?.user?.verified || !d || typeof d.t !== 'string') return;
-  const num = (v) => typeof v === 'number' && Number.isFinite(v);
-  const who = (v) => (v === selfId ? 'me' : typeof v === 'string' ? v.slice(0, 40) : '');
-  const ev = { t: d.t };
-  if (d.t === 'atk' || d.t === 'shot') {
-    if (!num(d.x) || !num(d.z) || !num(d.r) || typeof d.w !== 'string') return;
-    Object.assign(ev, { x: d.x, z: d.z, r: d.r, w: d.w.slice(0, 12) });
-    if (d.t === 'shot') {
-      if (!Number.isInteger(d.n) || d.n < 0) return;
-      ev.n = d.n;
-    }
-  } else if (d.t === 'hit') {
-    if (!num(d.hp)) return;
-    Object.assign(ev, { by: who(d.by), hp: Math.max(0, Math.min(100, d.hp)), ko: !!d.ko, dmg: num(d.dmg) ? Math.max(0, Math.min(60, Math.round(d.dmg))) : 20 });
-    if (Number.isInteger(d.pn)) ev.pn = d.pn;
-  } else if (d.t === 'pry') {
-    ev.to = who(d.to);
-    if (Number.isInteger(d.pn)) Object.assign(ev, { pn: d.pn, ranged: true });
-  } else if (d.t === 'mob') {
-    // estado dos monstros (de quem controla): [id, tipo, x, z, r, vida, estado]
-    if (!Array.isArray(d.l) || d.l.length > 12) return;
-    ev.l = d.l.filter((m) => Array.isArray(m) && m.length === 7 && m.every(num) && Number.isInteger(m[0]) && m[1] >= 0 && m[1] <= 2).map((m) => [m[0], m[1] | 0, m[2], m[3], m[4], Math.max(0, Math.min(200, m[5])), m[6] | 0]);
-  } else if (d.t === 'matk') {
-    if (!Number.isInteger(d.id) || !num(d.x) || !num(d.z) || !num(d.r)) return;
-    Object.assign(ev, { id: d.id, x: d.x, z: d.z, r: d.r });
-  } else if (d.t === 'mhit') {
-    if (!Number.isInteger(d.id) || !num(d.dmg)) return;
-    Object.assign(ev, { id: d.id, dmg: Math.max(0, Math.min(60, Math.round(d.dmg))), ...(num(d.slow) ? { slow: Math.min(3, d.slow) } : {}) });
-  } else if (d.t === 'mdie') {
-    if (!Number.isInteger(d.id)) return;
-    Object.assign(ev, { id: d.id, by: who(d.by) });
-  } else if (d.t !== 'grd') return;
-  G3.ctl.handleAct(pid, ev);
-}
-function onRoomPos(d, pid) {
-  const st = cleanPos(d);
-  const p = peers.get(pid);
-  if (!st || !p?.user?.verified) return;
-  p.roomPos = st;
-  G3.ctl?.handlePos(pid, st);
-}
-function roomBubble(m) {
-  if (m.bot || typeof m.text !== 'string' || !m.text.trim()) return;
-  const key = m.uid === me.id ? 'me' : [...peers.values()].find((p) => p.user?.id === m.uid)?.pid;
-  if (key) G3.ctl.bubble(key, m.text.replace(/\s+/g, ' ').trim()); // junta espaços e quebras de linha
-}
-async function openRoom(edit) {
-  if (!roomOn()) return;
-  closeRpgSession(false);
-  setPane('center');
-  $('#textView').hidden = true;
-  $('#voiceView').hidden = true;
-  $('#roomView').hidden = false;
-  $('#viewHead').hidden = true;
-  G3.open = true;
-  $('#roomLoading').hidden = !!G3.ctl;
-  try {
-    const R3 = await loadRoom();
-    if (!G3.open) return;
-    if (!G3.ctl) G3.ctl = R3.mount($('#roomStage'), roomApi);
-    $('#roomLoading').hidden = true;
-    $('#roomStage canvas')?.focus();
-    if (edit) openFigEditor();
-  } catch (err) {
-    console.warn('sala', err);
-    toast('Não deu para abrir o acampamento');
-    closeRoom(true);
-  }
-}
-function closeRoom(back) {
-  if (!G3.open) return;
-  G3.open = false;
-  closeFigEditor();
-  G3.ctl?.destroy();
-  G3.ctl = null;
-  roomApi.onPvp(false, 0, 0);
-  roomApi.onScreen(null);
-  $('#liveBigClose').click();
-  $('#roomView').hidden = true;
-  $('#viewHead').hidden = false;
-  if (back) openView(S.view);
-}
-// editor do boneco: escolhe e já aparece na sala e na prévia girando
-function openFigEditor() {
-  const box = $('#figEditor');
-  box.hidden = false;
-  const f = myFig();
-  const chips = (key, list) => {
-    $('#fig-' + key).replaceChildren(
-      ...list.map(([id, label]) => {
-        const b = el('button', 'chip' + (f[key] === id ? ' on' : ''), label);
-        b.type = 'button';
-        b.onclick = () => setFig({ [key]: id });
-        return b;
-      }),
-    );
-  };
-  const swatches = (key, list) => {
-    $('#fig-' + key).replaceChildren(
-      ...list.map((c) => {
-        const b = el('button', 'swatch' + (f[key] === c ? ' on' : ''));
-        b.type = 'button';
-        b.style.background = c;
-        b.title = c;
-        b.onclick = () => setFig({ [key]: c });
-        return b;
-      }),
-    );
-  };
-  swatches('skin', FIG.skin);
-  chips('hair', FIG.hair);
-  swatches('hairColor', FIG.hairColor);
-  chips('eyes', FIG.eyes);
-  chips('acc', FIG.acc);
-  chips('wp', FIG.wp);
-  const sh = $('#fig-sh');
-  sh.checked = !!f.sh;
-  sh.disabled = !ONE_HAND.has(f.wp);
-  sh.onchange = () => setFig({ sh: sh.checked });
-  $('#fig-wpinfo').textContent = window.JanjaRoom?.WEAPONS?.[f.wp]?.info || '';
-  for (const k of ['shirt', 'pants', 'shoes']) {
-    const inp = $('#fig-' + k);
-    inp.value = f[k];
-    inp.oninput = () => setFig({ [k]: inp.value }, true);
-  }
-  if (!G3.preview && window.JanjaRoom) G3.preview = window.JanjaRoom.preview($('#figPreview'), f);
-}
-function closeFigEditor() {
-  $('#figEditor').hidden = true;
-  G3.preview?.destroy();
-  G3.preview = null;
-}
-let figHiTimer = 0;
-function setFig(change, typing) {
-  const f = { ...myFig(), ...change };
-  store.set('fig', f);
-  G3.preview?.set(f);
-  G3.ctl?.refresh();
-  if (!typing) openFigEditor();
-  clearTimeout(figHiTimer);
-  figHiTimer = setTimeout(sendHi, 600); // os amigos recebem o boneco novo
-}
-function renderRoomButtons() {
-  for (const b of $$('[data-room]')) b.hidden = !roomOn();
-  if (!roomOn()) closeRoom(true);
-}
-$$('[data-room]').forEach((b) => (b.onclick = () => (G3.open ? closeRoom(true) : openRoom())));
-$('#roomClose').onclick = () => closeRoom(true);
-$('#roomEdit').onclick = () => ($('#figEditor').hidden ? openFigEditor() : closeFigEditor());
-$('#roomPvp').onclick = () => G3.ctl?.togglePvp();
-$('#pvpAtk').onclick = () => G3.ctl?.attack();
-$('#pvpParry').onclick = () => G3.ctl?.parry();
-$('#figClose').onclick = closeFigEditor;
-$('#lkRoom').onchange = () => {
-  look.room = $('#lkRoom').checked;
-  saveLook();
-  renderRoomButtons();
-};
-renderRoomButtons();
-
 function setPane(p) {
   if (!isMobile) return;
   $('#app').dataset.pane = p;
@@ -9391,8 +9107,6 @@ window.__toca = {
   musicPos,
   netNow,
   clock: () => clockOff,
-  G3,
-  roomBubble: (m) => roomBubble(m),
   netMode: () => settings.netMode,
   setNetMode,
   antiPing: () => settings.antiPing !== false,
@@ -9702,40 +9416,6 @@ function renderActSettings() {
     }),
   );
 }
-// ----- sobreposição no jogo: a página da call manda a lista; o processo principal desenha a janelinha -----
-settings.overlay = { on: true, when: 'game', pos: 'tl', only: false, ...settings.overlay };
-let ovLast = '';
-function overlayPayload() {
-  const o = settings.overlay;
-  if (VISIT || !o.on || !C.ch || (o.when !== 'always' && !gameAct)) return { show: false };
-  const list = voiceMembers(C.ch)
-    .filter((m) => m.key !== 'dj')
-    .slice(0, 12)
-    .map((m) => ({ n: m.user.name, c: m.user.color || '', s: C.speaking.has(m.key), m: !!m.voice?.muted, d: !!m.voice?.deafened, me: m.key === 'me' }));
-  return { show: true, pos: o.pos, only: !!o.only, ch: channel(C.ch)?.name || '', list };
-}
-setInterval(() => {
-  if (!window.desk?.overlay || VISIT) return;
-  const j = JSON.stringify(overlayPayload());
-  if (j === ovLast) return;
-  ovLast = j;
-  window.desk.overlay(JSON.parse(j));
-}, 150);
-function renderOvSettings() {
-  const o = settings.overlay;
-  $('#stOv').checked = o.on;
-  $('#stOvWhen').value = o.when;
-  $('#stOvPos').value = o.pos;
-  $('#stOvOnly').checked = o.only;
-  for (const id of ['#stOvWhen', '#stOvPos', '#stOvOnly']) $(id).disabled = !o.on;
-}
-for (const id of ['#stOv', '#stOvWhen', '#stOvPos', '#stOvOnly'])
-  $(id).onchange = () => {
-    Object.assign(settings.overlay, { on: $('#stOv').checked, when: $('#stOvWhen').value, pos: $('#stOvPos').value, only: $('#stOvOnly').checked });
-    saveSettings();
-    renderOvSettings();
-  };
-renderOvSettings();
 function saveActSettings() {
   saveSettings();
   window.desk?.activityConfig?.(settings.activity).catch(() => {});
@@ -10251,10 +9931,6 @@ const rpgApi = {
     return id;
   },
   loadData: () => (RPG.data ||= fetch('rpg-data.json').then((r) => r.json())),
-  // a rolagem também aparece em cima do boneco no acampamento
-  onRoll(d) {
-    G3.ctl?.roll?.('me', rollForRoom(d));
-  },
   // ficha feita na mesa antiga (2.9.1 e 2.9.2), que ficava só neste PC: entregue uma vez para virar personagem
   legacy() {
     const old = store.get('rpgSheet', null);
@@ -10265,15 +9941,10 @@ const rpgApi = {
   close: () => closeRpgSession(true),
   endSession: () => confirm('Encerrar a sessão de RPG? As fichas e o mapa ficam guardados.') && setServerRpg(false),
 };
-function rollForRoom(d) {
-  const p = d.parts?.[0] || {};
-  return { label: d.label || 'Rolagem', ptsSym: '', dice: d.dice || [], bonus: (d.parts || []).slice(1).reduce((s, x) => s + x.v, 0), attrVal: p.v ?? 0, attrShort: p.l || '', total: d.total, crit: d.crit, passed: d.df ? !!d.ok : null, dif: d.df || 0 };
-}
 async function openRpgSession() {
   if (!isRpgEnabled() && !canToggleServerRpg()) return toast('A mesa de RPG não está aberta neste servidor');
-  closeRoom();
   setPane('center');
-  for (const id of ['#textView', '#voiceView', '#roomView', '#viewHead']) $(id).hidden = true;
+  for (const id of ['#textView', '#voiceView', '#viewHead']) $(id).hidden = true;
   const view = $('#rpgSessionView');
   view.hidden = false;
   RPG.open = true;
@@ -10326,7 +9997,6 @@ function syncRpgVisibility() {
     b.hidden = !show;
     b.classList.toggle('on', RPG.open || on);
   }
-  if ($('#roomRpg')) $('#roomRpg').hidden = !on;
   if (RPG.open && !on && !canToggleServerRpg()) closeRpgSession(true); // o Mestre encerrou
   else if (RPG.open && on && !RPG.ctl) openRpgSession(); // o Mestre acabou de abrir
   else if (RPG.open && !on && RPG.ctl) openRpgSession();
@@ -10346,15 +10016,14 @@ function onRpgNet(d, pid) {
 }
 function onRpgRecs(list) {
   const kinds = new Set(list.map((r) => r.k));
-  // rolagem nova de um amigo: som (com a mesa aberta) e balão no acampamento
+  // rolagem nova de um amigo: som (com a mesa aberta)
   for (const r of list) {
     if (r.k !== 'rpgr' || r.del || r.by === me.id || !r.d || Date.now() - r.ts > 15_000 || r.d.ap) continue;
     if (RPG.open && r.d.total != null) sfx.dice(r.d.crit);
     const p = [...peers.values()].find((x) => x.user?.id === r.uid);
-    if (p && r.d.total != null) G3.ctl?.roll?.(p.pid, rollForRoom(r.d));
   }
   RPG.ctl?.onRecs(kinds);
   if (kinds.has('rpgc')) renderPresence();
 }
-for (const b of $$('[data-rpg-session], #ctlRpg, #roomRpg')) b.addEventListener('click', () => (RPG.open && b.id !== 'roomRpg' ? closeRpgSession(true) : openRpgSession()));
+for (const b of $('[data-rpg-session], #ctlRpg')) b.addEventListener('click', () => (RPG.open ? closeRpgSession(true) : openRpgSession()));
 window.__janjaRpg = { open: openRpgSession, close: closeRpgSession, enable: setServerRpg, api: rpgApi, state: RPG };
