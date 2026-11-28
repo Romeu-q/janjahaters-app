@@ -34,6 +34,7 @@
       "renderer/pcm-worklet.js",
       "renderer/icon.png",
       "renderer/vendor/**",
+      "renderer/sfx/**",
       "oauth.json"
     ],
     "directories": {

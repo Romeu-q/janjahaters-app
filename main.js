@@ -54,7 +54,7 @@ ipcMain.handle('hw-info', () => hwInfo());
 // o player do YouTube não funciona a partir de file://.
 const UI_PORT = 47610 + PROFILE;
 const RENDERER = path.join(__dirname, 'renderer');
-const MIME = { '.wasm': 'application/wasm', '.gz': 'application/gzip', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.wav': 'audio/wav', '.glb': 'model/gltf-binary', '.json': 'application/json; charset=utf-8' };
+const MIME = { '.wasm': 'application/wasm', '.gz': 'application/gzip', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.glb': 'model/gltf-binary', '.json': 'application/json; charset=utf-8' };
 
 // O YouTube recusa embed vindo de um IP (erro 150), então a janela abre em "localhost".
 // Escuta só no loopback (IPv4 e, se existir, IPv6), nunca na rede.

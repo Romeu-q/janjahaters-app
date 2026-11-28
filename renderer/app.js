@@ -555,9 +555,43 @@ function marimba(freqs) {
     console.warn('som', err);
   }
 }
+// Pacote Halloween: clipes gravados em renderer/sfx/halloween/<nome>.mp3 (gerados no ElevenLabs). Se o
+// arquivo faltar ou não decodificar, cai para a versão sintetizada de sfx-halloween.js.
+const PACK_DIR = 'sfx/halloween/';
+const packBuf = new Map(); // nome → Promise<AudioBuffer|null>
+function packFile(name) {
+  if (!packBuf.has(name)) {
+    packBuf.set(
+      name,
+      fetch(PACK_DIR + name + '.mp3')
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(r.status))))
+        .then((ab) => audioCtx().decodeAudioData(ab))
+        .catch((err) => (console.warn('toque', name, err), null)),
+    );
+  }
+  return packBuf.get(name);
+}
+function playBuf(buf, vol) {
+  const ctx = audioCtx();
+  const src = ctx.createBufferSource();
+  const g = ctx.createGain();
+  g.gain.value = vol * (settings.sfxVol ?? 0.8);
+  src.buffer = buf;
+  src.connect(g).connect(ctx.destination);
+  src.start();
+  src.stop(ctx.currentTime + 4); // toque, não música
+}
 function packSound(kind, arg) {
   if (!settings.sounds) return true;
-  if (settings.sfxPack !== 'halloween' || !HALLOWEEN[kind]) return false;
+  if (settings.sfxPack !== 'halloween' || !(HALLOWEEN[kind] || PACK_FILE_ONLY[kind])) return false;
+  const name = kind === 'dice' && (arg === 'crit' || arg === 'fumble') ? `dice_${arg}` : kind;
+  packFile(name).then((buf) => (buf ? playBuf(buf, 0.9) : HALLOWEEN[kind] ? synthPack(kind, arg) : PACK_FILE_ONLY[kind]()));
+  return true;
+}
+// toques que só existem como arquivo no pacote: se o arquivo faltar, toca o do pacote clássico
+const PACK_FILE_ONLY = { viewer: () => classicViewer() };
+const classicViewer = () => beep([784, 1047], 0.06, 0.16);
+function synthPack(kind, arg) {
   try {
     const ctx = audioCtx();
     const master = ctx.createGain();
@@ -568,20 +602,12 @@ function packSound(kind, arg) {
   } catch (err) {
     console.warn('som', err);
   }
-  return true;
 }
 function joinLeaveSound(kind) {
   if (!settings.sounds) return;
-  const buf = sfxBuf[kind];
+  const buf = sfxBuf[kind]; // arquivo escolhido pela pessoa em Voz e áudio vem antes do pacote
   if (!buf) return packSound(kind) || marimba(kind === 'join' ? [659, 988] : [880, 587]);
-  const ctx = audioCtx();
-  const src = ctx.createBufferSource();
-  const g = ctx.createGain();
-  g.gain.value = settings.sfxVol ?? 0.8;
-  src.buffer = buf;
-  src.connect(g).connect(ctx.destination);
-  src.start();
-  src.stop(ctx.currentTime + 4); // toque, não música
+  playBuf(buf, 1);
 }
 const sfx = {
   join: () => joinLeaveSound('join'), // sobe: entrou
@@ -592,6 +618,7 @@ const sfx = {
   streamOn: () => packSound('streamOn') || beep([392, 523, 659, 1047], 0.09), // arpejo subindo: ao vivo
   streamOff: () => packSound('streamOff') || beep([1047, 659, 392], 0.09),
   poke: () => packSound('poke') || beep([880, 1175, 880, 1175], 0.08, 0.3),
+  viewer: () => packSound('viewer') || classicViewer(), // alguém entrou para assistir a minha stream
   dice: (crit) => packSound('dice', crit) || beep(crit === 'crit' ? [523, 659, 784, 1047] : crit === 'fumble' ? [330, 247, 196] : [587, 740, 880], 0.065, 0.25),
 };
 
@@ -1536,6 +1563,7 @@ function onHi(pid, d) {
   checkFriendVersion(d?.ver);
   const wasIn = C.ch && p.voice?.ch === C.ch;
   const wasLive = wasIn && p.voice.streaming;
+  const wasWatchingMe = wasIn && !!p.voice.watch?.includes(selfId);
   p.user = { id: String(d?.user?.id || pid).slice(0, 64), name: cleanName(d?.user?.name) || 'Anônimo', color: cleanColor(d?.user?.color), st: ['idle', 'dnd'].includes(d?.user?.st) ? d.user.st : 'online', bot: !!d?.user?.bot };
   p.user.act = cleanAct(d?.user?.act);
   checkGoogle(p, d?.user?.g);
@@ -1571,6 +1599,8 @@ function onHi(pid, d) {
     toast(`${p.user.name} começou uma stream. Clique nele para assistir.`);
   }
   if (wasLive && !isLive && isIn && !quietReconnect) sfx.streamOff();
+  // alguém começou a assistir a minha stream
+  if (C.screen && isIn && !wasWatchingMe && p.voice.watch.includes(selfId) && !quietReconnect) sfx.viewer();
   if (!isLive && C.watching.delete(pid)) sendHi();
   if (!isIn) dropMedia(p);
   else if (!isLive && p.media.screen) {
@@ -9146,6 +9176,8 @@ window.addEventListener('beforeunload', () => {
 });
 
 window.__toca = {
+  sfx,
+  packFile,
   peers,
   C,
   recs,
@@ -9780,6 +9812,10 @@ for (const kind of ['join', 'leave']) {
     sfx[kind]();
   };
   loadSfxFile(kind);
+}
+// já deixa os clipes do pacote decodificados, para o primeiro toque sair na hora
+if (settings.sfxPack === 'halloween') {
+  for (const n of ['join', 'leave', 'msg', 'mute', 'unmute', 'streamOn', 'streamOff', 'poke', 'viewer', 'dice', 'dice_crit', 'dice_fumble']) packFile(n);
 }
 
 // ----- aperte para falar: escolher a tecla (vale na hora, sem precisar salvar) -----
