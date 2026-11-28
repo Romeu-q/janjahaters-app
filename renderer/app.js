@@ -1873,13 +1873,15 @@ const applyPtt = () => (VISIT ? Promise.resolve(false) : window.desk?.pttSet?.(s
 applyPtt();
 
 // cada amigo no mesmo canal de voz recebe exatamente os streams certos
+// Quem só fala comigo pelo TURN (sem conexão direta) — só esses recebem/mandam a stream pelo servidor.
+const relayed = (pid) => !!net.get(pid)?.relay;
 function syncMedia() {
   if (!room) return;
   for (const p of peers.values()) {
     const both = !!C.ch && p.voice?.ch === C.ch && canSeeChannel(p.user?.id, C.ch);
     // a tela só vai para quem clicou em "Assistir"
     // a câmera vai para todo mundo da call (como no Discord); a tela só para quem clicou em Assistir
-    const viaSfu = SFU.pub?.ready && SFU.pub.stream === C.screen && p.voice?.sfuOk;
+    const viaSfu = SFU.pub?.ready && SFU.pub.stream === C.screen && p.voice?.sfuOk && relayed(p.pid);
     const out = both ? { mic: chCan(me.id, C.ch, P.Speak) ? C.mic : null, cam: C.cam, screen: p.voice.watch?.includes(selfId) && !viaSfu ? C.screen : null } : {};
     if (!C.sent.has(p.pid)) C.sent.set(p.pid, new Map());
     const sent = C.sent.get(p.pid);
@@ -2022,7 +2024,9 @@ function sfuViewFailed(pid) {
 function sfuSync() {
   if (!SFU_URL) return;
   // publicar: minha tela, enquanto estou na call
-  const want = C.ch && C.screen && SFU.failedFor !== C.screen ? C.screen : null;
+  // só publica no servidor se alguém assistindo está sem conexão direta comigo
+  const needSfu = [...peers.values()].some((p) => p.voice?.ch === C.ch && p.voice?.watch?.includes(selfId) && p.voice?.sfuOk && relayed(p.pid));
+  const want = C.ch && C.screen && needSfu && SFU.failedFor !== C.screen ? C.screen : null;
   if (SFU.pubFor !== want) {
     const old = SFU.pub;
     SFU.pub = null;
@@ -2051,12 +2055,12 @@ function sfuSync() {
   // assistir: puxa do servidor a stream de quem eu escolhi assistir
   for (const [pid, pull] of SFU.pulls) {
     const s = peers.get(pid)?.voice?.sfu;
-    if (!C.watching.has(pid) || !s || s.s !== pull.info.s || s.v !== pull.info.v) sfuStopPull(pid);
+    if (!C.watching.has(pid) || !s || s.s !== pull.info.s || s.v !== pull.info.v || !relayed(pid)) sfuStopPull(pid);
   }
   if (SFU.viewBad) return;
   for (const pid of C.watching) {
     const s = peers.get(pid)?.voice?.sfu;
-    if (!s || SFU.pulls.has(pid)) continue;
+    if (!s || SFU.pulls.has(pid) || !relayed(pid)) continue; // com conexão direta, a stream chega direto
     sfuPull(pid, s).catch((err) => {
       console.warn('SFU: não consegui assistir pelo servidor', err);
       if (SFU.pulls.has(pid)) sfuViewFailed(pid);
@@ -2077,6 +2081,7 @@ const pingClass = (ms) => (ms == null ? '' : ms < 80 ? 'good' : ms < 160 ? 'ok' 
 async function pollNet() {
   if (!room) return;
   const live = new Set();
+  let relayChanged = false;
   for (const [pid, pc] of peerConnections()) {
     live.add(pid);
     try {
@@ -2089,15 +2094,18 @@ async function pollNet() {
       const local = pair && st.get(pair.localCandidateId);
       const remote = pair && st.get(pair.remoteCandidateId);
       const rtt = pair?.currentRoundTripTime;
+      const relay = local?.candidateType === 'relay' || remote?.candidateType === 'relay';
+      if (!!net.get(pid)?.relay !== relay) relayChanged = true;
       net.set(pid, {
         ping: rtt != null ? Math.round(rtt * 1000) : (net.get(pid)?.ping ?? null),
-        relay: local?.candidateType === 'relay' || remote?.candidateType === 'relay',
+        relay,
         state: pc.connectionState,
       });
     } catch {}
   }
   for (const pid of net.keys()) if (!live.has(pid)) net.delete(pid);
   paintNet();
+  if (relayChanged && C.ch) syncMedia(); // a stream troca de caminho (direto <-> servidor) sozinha
 }
 setInterval(pollNet, 2000);
 const netDown = (n) => !!n && !['connected', 'new', 'connecting'].includes(n.state);
