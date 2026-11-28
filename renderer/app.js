@@ -4,6 +4,7 @@ import { animate, stagger } from 'motion';
 import { buildMicChain } from './mic-chain.js';
 import * as ident from './identity.js';
 import { initDM } from './dm.js';
+import { HALLOWEEN, cryptEcho } from './sfx-halloween.js';
 import {
   createElement,
   ArrowDown,
@@ -383,6 +384,7 @@ const settings = Object.assign(
   store.get('settings', {}),
 );
 if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'auto';
+if (!['halloween', 'classico'].includes(settings.sfxPack)) settings.sfxPack = 'halloween'; // pacote de toques do app
 // 2.10.3: a 2.10.2 mandava todo mundo pelo TURN (mais atraso, sem aliviar quem transmite e gastando a cota).
 // Volta todos para o Automático uma vez; quem quiser o servidor escolhe de novo no menu do ping.
 if ((settings.netVersion || 0) < 1) {
@@ -552,10 +554,25 @@ function marimba(freqs) {
     console.warn('som', err);
   }
 }
+function packSound(kind, arg) {
+  if (!settings.sounds) return true;
+  if (settings.sfxPack !== 'halloween' || !HALLOWEEN[kind]) return false;
+  try {
+    const ctx = audioCtx();
+    const master = ctx.createGain();
+    master.gain.value = 0.75 * (settings.sfxVol ?? 0.8);
+    master.connect(ctx.destination);
+    const dur = HALLOWEEN[kind](ctx, cryptEcho(ctx, master), ctx.currentTime + 0.03, arg);
+    setTimeout(() => master.disconnect(), (dur + 1.6) * 1000);
+  } catch (err) {
+    console.warn('som', err);
+  }
+  return true;
+}
 function joinLeaveSound(kind) {
   if (!settings.sounds) return;
   const buf = sfxBuf[kind];
-  if (!buf) return marimba(kind === 'join' ? [659, 988] : [880, 587]);
+  if (!buf) return packSound(kind) || marimba(kind === 'join' ? [659, 988] : [880, 587]);
   const ctx = audioCtx();
   const src = ctx.createBufferSource();
   const g = ctx.createGain();
@@ -568,13 +585,13 @@ function joinLeaveSound(kind) {
 const sfx = {
   join: () => joinLeaveSound('join'), // sobe: entrou
   leave: () => joinLeaveSound('leave'), // desce: saiu
-  msg: () => beep([988, 1319], 0.07, 0.2),
-  mute: () => beep([440], 0.06, 0.2),
-  unmute: () => beep([660], 0.06, 0.2),
-  streamOn: () => beep([392, 523, 659, 1047], 0.09), // arpejo subindo: ao vivo
-  streamOff: () => beep([1047, 659, 392], 0.09),
-  poke: () => beep([880, 1175, 880, 1175], 0.08, 0.3),
-  dice: (crit) => beep(crit === 'crit' ? [523, 659, 784, 1047] : crit === 'fumble' ? [330, 247, 196] : [587, 740, 880], 0.065, 0.25),
+  msg: () => packSound('msg') || beep([988, 1319], 0.07, 0.2),
+  mute: () => packSound('mute') || beep([440], 0.06, 0.2),
+  unmute: () => packSound('unmute') || beep([660], 0.06, 0.2),
+  streamOn: () => packSound('streamOn') || beep([392, 523, 659, 1047], 0.09), // arpejo subindo: ao vivo
+  streamOff: () => packSound('streamOff') || beep([1047, 659, 392], 0.09),
+  poke: () => packSound('poke') || beep([880, 1175, 880, 1175], 0.08, 0.3),
+  dice: (crit) => packSound('dice', crit) || beep(crit === 'crit' ? [523, 659, 784, 1047] : crit === 'fumble' ? [330, 247, 196] : [587, 740, 880], 0.065, 0.25),
 };
 
 // ============================================================ dados sincronizados
@@ -7456,6 +7473,7 @@ async function openSettings(page = 'profile') {
   syncNetUi();
   renderPttKey();
   renderSfxFiles();
+  $('#stSfxPack').value = settings.sfxPack;
   $('#stSfxVol').value = Math.round((settings.sfxVol ?? 0.8) * 100);
   $('#stSfxVal').textContent = $('#stSfxVol').value + '%';
   $('#stHotkeys').checked = desktopPrefs.hotkeys;
@@ -9142,6 +9160,35 @@ window.__toca = {
   groupOwner,
   peerConnections,
   streamTarget,
+  async sfxWav(kind, arg) {
+    const rate = 48000;
+    const len = rate * 3;
+    const ctx = new OfflineAudioContext(1, len, rate);
+    const master = ctx.createGain();
+    master.gain.value = 0.75 * 0.8;
+    master.connect(ctx.destination);
+    HALLOWEEN[kind](ctx, cryptEcho(ctx, master), 0.02, arg);
+    const buf = await ctx.startRendering();
+    const d = buf.getChannelData(0);
+    let end = d.length;
+    while (end > rate * 0.3 && Math.abs(d[end - 1]) < 1e-4) end--;
+    const n = Math.min(d.length, end + rate * 0.1);
+    const wav = new DataView(new ArrayBuffer(44 + n * 2));
+    const w = (o, str) => [...str].forEach((c, i) => wav.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); wav.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    wav.setUint32(16, 16, true); wav.setUint16(20, 1, true); wav.setUint16(22, 1, true); wav.setUint32(24, rate, true);
+    wav.setUint32(28, rate * 2, true); wav.setUint16(32, 2, true); wav.setUint16(34, 16, true); w(36, 'data'); wav.setUint32(40, n * 2, true);
+    let peak = 0;
+    for (let i = 0; i < n; i++) {
+      const v = Math.max(-1, Math.min(1, d[i]));
+      peak = Math.max(peak, Math.abs(v));
+      wav.setInt16(44 + i * 2, v * 32767, true);
+    }
+    let bin = '';
+    const u8 = new Uint8Array(wav.buffer);
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return { b64: btoa(bin), secs: +(n / rate).toFixed(2), peak: +peak.toFixed(2) };
+  },
 }; // para depurar pelo DevTools (Ctrl+Shift+I)
 
 hydrateIcons();
@@ -9667,6 +9714,14 @@ $('#stSfxVol').addEventListener('input', () => {
   sfxPreview = setTimeout(sfx.join, 150);
 });
 let sfxPreview;
+$('#stSfxPack').onchange = () => {
+  settings.sfxPack = $('#stSfxPack').value;
+  saveSettings();
+  // toca uma amostra: entrar, mensagem e ao vivo
+  sfx.join();
+  setTimeout(sfx.msg, 900);
+  setTimeout(sfx.streamOn, 2100);
+};
 
 // ----- som de entrar/sair escolhido pela pessoa (ex.: os do Skype que ela tiver no PC) -----
 function renderSfxFiles() {
