@@ -67,30 +67,32 @@ function needsHeal(hw) {
 function recommend(hw) {
   const screenH = hw.display?.h || 1080;
   let res, fps, why;
+  // Call entre amigos: 60 fps (movimento liso vale mais que resolução). 720p60 nítido é melhor que 1080p
+  // engasgando; se o processador não der conta, o app baixa a resolução antes dos fps.
   if (hw.encode) {
     res = 1080;
-    fps = 30; // 60 fps é escolha da pessoa ("Jogos"): dobra o que cada espectador precisa baixar
-    why = 'a placa de vídeo codifica a stream, então o processador fica livre para o jogo';
-  } else if (hw.threads >= 12) {
+    fps = 60;
+    why = 'a placa de vídeo codifica a stream: 1080p60 sem pesar no processador';
+  } else if (hw.threads >= 16) {
     res = 1080;
-    fps = 30;
-    why = 'sem encode pela placa; o processador aguenta 1080p30';
+    fps = 60;
+    why = 'processador forte: 1080p60 no processador';
   } else if (hw.threads >= 8) {
     res = 720;
-    fps = 30;
-    why = 'sem encode pela placa; 720p30 para não pesar no jogo';
+    fps = 60;
+    why = '720p60 no processador: liso e sem pesar no jogo';
   } else if (hw.threads >= 6) {
     res = 720;
-    fps = 24;
-    why = 'sem encode pela placa; 720p24 para poupar o processador';
+    fps = 30;
+    why = 'processador médio: 720p30 para poupar o jogo';
   } else {
     res = 480;
-    fps = 20;
-    why = 'processador e placa limitados; qualidade leve para não travar o jogo';
+    fps = 30;
+    why = 'processador limitado: qualidade leve para não travar o jogo';
   }
   if (hw.ramGb && hw.ramGb < 6) {
     res = Math.min(res, 480);
-    fps = Math.min(fps, 20);
+    fps = Math.min(fps, 30);
   }
   res = Math.min(res, screenH >= 1440 ? res : Math.max(480, screenH)); // não pede mais que a tela tem
   return { res, fps, codec: 'h264', mode: 'motion', why };

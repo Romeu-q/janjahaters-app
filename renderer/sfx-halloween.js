@@ -1,4 +1,4 @@
-// Pacote de toques "Halloween": fantasma, sino de igreja, órgão em tom menor, morcegos e porta rangendo.
+// Pacote de toques "Halloween": risada de bruxa, fantasma, sino de igreja, órgão em tom menor, morcegos e porta rangendo.
 // Tudo sintetizado aqui (Web Audio), feito para o janja: nada copiado de outro app.
 // Cada som recebe (ctx, out, t) e agenda as notas a partir do instante t na saída `out`; devolve a duração.
 
@@ -170,12 +170,70 @@ function bat(ctx, out, t, vol = 0.5) {
   return 0.08;
 }
 
+// Risada de bruxa: "hi-hi-hi-hi" fino e rápido. Cada sílaba = sopro de "h" + voz (dente de serra) passando
+// pelos formantes da vogal "i" (grave baixo, agudos altos = voz fininha), com o tom caindo ao longo da risada.
+function cackle(ctx, out, t, { n = 6, from = 1150, to = 780, syl = 0.07, gap = 0.032, vol = 0.55 } = {}) {
+  for (let i = 0; i < n; i++) {
+    const tt = t + i * (syl + gap);
+    const last = i === n - 1;
+    const len = last ? syl * 1.8 : syl; // a última sílaba estica ("hiiii")
+    const f = from * Math.pow(to / from, i / Math.max(1, n - 1)) * (1 + (Math.random() - 0.5) * 0.05);
+    const src = ctx.createOscillator();
+    src.type = 'sawtooth';
+    src.frequency.setValueAtTime(f * 1.08, tt);
+    src.frequency.exponentialRampToValueAtTime(f * (last ? 0.78 : 0.9), tt + len);
+    // trêmulo rápido na voz (o "tremido" de bruxa)
+    const vib = ctx.createOscillator();
+    const vibAmt = ctx.createGain();
+    vib.frequency.value = 22;
+    vibAmt.gain.value = f * 0.03;
+    vib.connect(vibAmt).connect(src.frequency);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, tt);
+    env.gain.exponentialRampToValueAtTime(vol, tt + 0.008);
+    env.gain.setValueAtTime(vol * 0.8, tt + len * 0.6);
+    env.gain.exponentialRampToValueAtTime(0.0001, tt + len);
+    for (const [fc, q, amp] of [
+      [420, 6, 0.9],
+      [2700, 9, 1.0],
+      [3500, 11, 0.55],
+    ]) {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = fc;
+      bp.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.value = amp * 2.2;
+      src.connect(bp).connect(g).connect(env);
+    }
+    env.connect(out);
+    // o "h" de cada sílaba: sopro curtinho antes da voz
+    const h = noise(ctx, 0.05);
+    const hbp = ctx.createBiquadFilter();
+    hbp.type = 'bandpass';
+    hbp.frequency.value = 3000;
+    hbp.Q.value = 1.2;
+    const hg = ctx.createGain();
+    hg.gain.setValueAtTime(0.0001, tt - 0.012);
+    hg.gain.exponentialRampToValueAtTime(vol * 0.35, tt - 0.004);
+    hg.gain.exponentialRampToValueAtTime(0.0001, tt + 0.02);
+    h.connect(hbp).connect(hg).connect(out);
+    h.start(Math.max(0, tt - 0.015));
+    h.stop(tt + 0.03);
+    for (const x of [src, vib]) {
+      x.start(tt);
+      x.stop(tt + len + 0.03);
+    }
+  }
+  return n * (syl + gap) + syl;
+}
+
 // Notas (Ré menor, o tom "assombrado" clássico)
 const N = { D3: 146.8, F3: 174.6, A3: 220, Cs4: 277.2, D4: 293.7, F4: 349.2, G4: 392, Gs4: 415.3, A4: 440, D5: 587.3, F5: 698.5, A5: 880 };
 
 export const HALLOWEEN = {
-  join: (ctx, out, t) => ghost(ctx, out, t, N.D4, N.A4, 0.8),
-  leave: (ctx, out, t) => ghost(ctx, out, t, N.A4, N.D4 * 0.75, 0.85),
+  join: (ctx, out, t) => cackle(ctx, out, t), // risada fina de bruxa
+  leave: (ctx, out, t) => cackle(ctx, out, t, { n: 4, from: 820, to: 520, syl: 0.08, gap: 0.04 }), // mais curta e caindo: foi embora
   msg: (ctx, out, t) => {
     bell(ctx, out, t, N.A5, 0.32, 0.9);
     bell(ctx, out, t + 0.13, N.Gs4 * 2, 0.26, 1.1); // trítono abaixo: o intervalo "do diabo"

@@ -385,6 +385,7 @@ const settings = Object.assign(
 );
 if (!['cloudflare', 'auto', 'p2p'].includes(settings.netMode)) settings.netMode = 'auto';
 if (!['halloween', 'classico'].includes(settings.sfxPack)) settings.sfxPack = 'halloween'; // pacote de toques do app
+if (!['auto', 'h264', 'av1'].includes(settings.stream?.codec)) settings.stream = { ...settings.stream, codec: 'h264' }; // VP8/VP9 saíram
 // 2.10.3: a 2.10.2 mandava todo mundo pelo TURN (mais atraso, sem aliviar quem transmite e gastando a cota).
 // Volta todos para o Automático uma vez; quem quiser o servidor escolhe de novo no menu do ping.
 if ((settings.netVersion || 0) < 1) {
@@ -1970,6 +1971,7 @@ async function sfuPublish(stream) {
   const pub = { pc, stream, session: '', names: {}, mids: [], ready: false };
   try {
     const tx = stream.getTracks().map((t) => ({ t, tr: pc.addTransceiver(t, { direction: 'sendonly', streams: [stream] }) }));
+    for (const { t, tr } of tx) setVideoCodecs(tr, t);
     await pc.setLocalDescription(await pc.createOffer());
     await waitIce(pc);
     const { sessionId } = await sfuApi('POST', '/session');
@@ -2240,21 +2242,31 @@ function tuneSenders() {
 }
 
 // Codec escolhido: a stream de tela entra na conexão com ele em primeiro lugar na negociação
-const CODEC_MIME = { h264: 'video/H264', vp8: 'video/VP8', vp9: 'video/VP9', av1: 'video/AV1' };
+// Vídeo só em H.264 ou AV1 (VP8/VP9 fora): a conexão oferece só esses dois, com o escolhido primeiro.
+// Vale para a live e a câmera, nas conexões diretas e no envio para o servidor.
+const CODEC_MIME = { h264: 'video/H264', av1: 'video/AV1' };
+const CODEC_AUX = new Set(['video/rtx', 'video/red', 'video/ulpfec', 'video/flexfec-03']); // reenvio e correção de erros
+const streamCodec = () => (settings.stream.codec === 'av1' ? 'av1' : 'h264');
+function videoCodecPrefs(primary) {
+  const caps = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
+  const want = [CODEC_MIME[primary], ...Object.values(CODEC_MIME).filter((m) => m !== CODEC_MIME[primary])];
+  const main = want.flatMap((m) => caps.filter((c) => c.mimeType === m));
+  if (!main.length) return null; // PC sem nenhum dos dois: deixa o padrão (melhor que ficar sem vídeo)
+  return [...main, ...caps.filter((c) => CODEC_AUX.has(c.mimeType))];
+}
+function setVideoCodecs(tr, track) {
+  if (track?.kind !== 'video' || !tr?.setCodecPreferences) return;
+  try {
+    const prefs = videoCodecPrefs(C.screen?.getVideoTracks().includes(track) ? streamCodec() : 'h264');
+    if (prefs) tr.setCodecPreferences(prefs);
+  } catch (err) {
+    console.warn('codec', err);
+  }
+}
 const nativeAddTrack = RTCPeerConnection.prototype.addTrack;
 RTCPeerConnection.prototype.addTrack = function (track, ...streams) {
   const sender = nativeAddTrack.call(this, track, ...streams);
-  const mime = CODEC_MIME[settings.stream.codec];
-  if (mime && track.kind === 'video' && C.screen?.getVideoTracks().includes(track)) {
-    try {
-      const caps = RTCRtpReceiver.getCapabilities('video')?.codecs || [];
-      const first = caps.filter((c) => c.mimeType === mime);
-      const tr = this.getTransceivers().find((x) => x.sender === sender);
-      if (first.length && tr?.setCodecPreferences) tr.setCodecPreferences([...first, ...caps.filter((c) => c.mimeType !== mime)]);
-    } catch (err) {
-      console.warn('codec', err);
-    }
-  }
+  setVideoCodecs(this.getTransceivers().find((x) => x.sender === sender), track);
   return sender;
 };
 
@@ -2549,10 +2561,8 @@ const RES_OPTS = [
 ];
 const FPS_OPTS = [5, 10, 15, 20, 24, 30, 48, 60, 90, 120, 144];
 const CODEC_OPTS = [
-  ['h264', 'H.264 (usa a placa de vídeo; mais leve para o processador)'],
-  ['vp8', 'VP8 (o mais fluido e compatível)'],
-  ['vp9', 'VP9 (mais nítido, pesa mais)'],
-  ['av1', 'AV1 (o mais eficiente, pesa bastante)'],
+  ['h264', 'H.264 (o mais leve para o processador)'],
+  ['av1', 'AV1 (imagem melhor na mesma internet; pesa bem mais no processador)'],
 ];
 const CONTENT_HINT = { motion: 'motion', detail: 'detail', balanced: '' };
 
@@ -2568,7 +2578,7 @@ function applyHw(h) {
   HW = h;
   const rec = h.rec || {};
   const have = new Set((window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs || []).map((c) => c.mimeType));
-  const codec = have.has(CODEC_MIME[rec.codec]) ? rec.codec : have.has(CODEC_MIME.vp8) ? 'vp8' : 'auto';
+  const codec = have.has(CODEC_MIME[rec.codec]) ? rec.codec : 'h264';
   STREAM_PRESETS.auto = { res: rec.res || 1080, fps: rec.fps || 30, rate: 0, codec, mode: rec.mode || 'motion' };
   // quem nunca mexeu na qualidade (padrão antigo) passa para o Automático
   if (!settings.hwV) {
@@ -2589,13 +2599,18 @@ window.desk?.hwInfo?.().then(applyHw).catch(() => {});
 
 // Se o processador não aguenta (o Chromium avisa com qualityLimitationReason = cpu), baixa a stream aos poucos
 // em vez de deixar todo mundo assistindo travado: primeiro os quadros por segundo, depois a resolução.
-const ADAPT_FPS = [60, 45, 30, 24, 20];
-const ADAPT_RES = [1080, 720, 480];
+// Ordem: primeiro a resolução (1080 → 900 → 720) mantendo os fps; só abaixo de 720p mexe nos fps.
+// Gatilho: o Chromium diz "limitado pelo processador", ou (encode no processador) cada quadro leva mais
+// tempo para codificar do que o intervalo entre quadros (16 ms a 60 fps).
+const ADAPT_RES = [1080, 900, 720, 480];
+const ADAPT_FPS = [60, 45, 30, 24];
 let cpuHits = 0;
+let encPrev = null;
 setInterval(async () => {
   const vt = C.screen?.getVideoTracks()[0];
   if (!vt) {
     cpuHits = 0;
+    encPrev = null;
     return;
   }
   const sender = [...peerConnections().map((x) => x[1]), ...(SFU.pub ? [SFU.pub.pc] : [])].flatMap((pc) => pc.getSenders?.() || []).find((x) => x.track === vt);
@@ -2605,20 +2620,26 @@ setInterval(async () => {
     if (r.type === 'outbound-rtp' && r.kind === 'video') out = r;
   });
   if (!out) return;
-  cpuHits = out.qualityLimitationReason === 'cpu' ? cpuHits + 1 : 0;
+  const q = streamTarget();
+  const fe = out.framesEncoded || 0;
+  const te = out.totalEncodeTime || 0;
+  const encMs = encPrev && fe > encPrev.fe ? ((te - encPrev.te) / (fe - encPrev.fe)) * 1000 : 0;
+  encPrev = { fe, te };
+  const slow = !HW?.encode && encMs > (1000 / q.fps) * 0.9; // na placa o tempo é de fila, não de CPU
+  cpuHits = out.qualityLimitationReason === 'cpu' || slow ? cpuHits + 1 : 0;
   if (cpuHits < 3) return; // 3 leituras seguidas (6 s): não reage a um soluço
   cpuHits = 0;
-  const q = streamTarget();
-  const next = ADAPT_FPS.find((f) => f < q.fps);
   const a = { ...(C.adapt || {}) };
-  if (next && next >= 24) a.fps = next;
+  const cur = q.res || vt.getSettings().height || 1080;
+  const lower = ADAPT_RES.find((r) => r < cur);
+  if (cur > 720 && lower) a.res = lower;
   else {
-    const cur = q.res || (vt.getSettings().height ?? 1080);
-    const lower = ADAPT_RES.find((r) => r < cur);
-    if (!lower) return;
-    a.res = lower;
-    a.fps = Math.min(q.fps, 30);
+    const f = ADAPT_FPS.find((x) => x < q.fps);
+    if (f) a.fps = f;
+    else if (lower) a.res = lower;
+    else return;
   }
+  a.fps ||= q.fps;
   C.adapt = a;
   await applyStreamQuality();
   toast(`O processador não está dando conta: baixei a stream para ${a.res || q.res || 1080}p ${a.fps} fps`);
@@ -2627,11 +2648,12 @@ setInterval(async () => {
 
 function codecOptions() {
   const have = new Set((window.RTCRtpReceiver?.getCapabilities?.('video')?.codecs || []).map((c) => c.mimeType));
-  return [['auto', 'Automático'], ...CODEC_OPTS.filter(([k]) => have.has(CODEC_MIME[k]))];
+  return [['auto', 'Automático (H.264)'], ...CODEC_OPTS.filter(([k]) => have.has(CODEC_MIME[k]))];
 }
 function autoBitrate(q, w, h) {
-  const perPixel = q.codec === 'vp9' || q.codec === 'av1' ? 0.045 : 0.07;
-  return Math.round(clamp(w * h * q.fps * perPixel, 800_000, 30_000_000));
+  // 720p60 ≈ 6,6 Mbps e 1080p60 = 12 Mbps em H.264 (call entre amigos: imagem limpa em movimento); AV1 comprime melhor
+  const perPixel = q.codec === 'av1' ? 0.075 : 0.12;
+  return Math.round(clamp(w * h * q.fps * perPixel, 2_500_000, 12_000_000));
 }
 // o que a stream deve usar agora (a taxa automática sai da resolução real capturada)
 function adapted(q) {
